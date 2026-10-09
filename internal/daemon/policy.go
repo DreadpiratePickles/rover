@@ -107,10 +107,13 @@ type judgment struct {
 	pinEvents   []pin.Event   // audited before the message itself, mismatches notified
 	poisoned    []poisonEvent // tools detection removed: audited and notified the same way
 	untrusted   bool          // a result with a detection finding: the session saw untrusted data
-	bodyOut     []byte        // the line as forwarded, for the audit body when it was rewritten
 }
 
 var forwardJ = judgment{action: ipc.ActionForward, audit: ipc.ActionForward}
+
+// scannedReply are the requests whose results detection scans (besides
+// tools/list, which filterList handles).
+var scannedReply = map[string]bool{"tools/call": true, "resources/read": true, "prompts/get": true, "initialize": true}
 
 // judge runs the policy on one message. It never fails open: every error
 // path ends in block (or, for a server response, a replacement error).
@@ -129,10 +132,11 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	// A result answering tools/list, or answering nothing we know of (a
 	// server could otherwise send a second, unfiltered reply), is filtered.
 	if dir == policy.DirS2C && m.Kind == jsonrpc.KindResult && (replyTo == "tools/list" || replyTo == "") {
-		return s.filterList(st, server, m, replyTo == "", cursor)
+		return s.filterList(st, sess, server, m, replyTo == "", cursor)
 	}
-	// Tool and resource results are scanned for injection (M5), in every mode.
-	if dir == policy.DirS2C && m.Kind == jsonrpc.KindResult && (replyTo == "tools/call" || replyTo == "resources/read") {
+	// What else a server sends back is scanned for injection (M5), in
+	// every mode: results the model reads, and error messages.
+	if dir == policy.DirS2C && !s.o.DisableDetection && (m.Kind == jsonrpc.KindError || m.Kind == jsonrpc.KindResult && scannedReply[replyTo]) {
 		return s.detectResult(m, replyTo)
 	}
 	// Pins come before policy and apply in every mode (D6): a tool that
@@ -219,13 +223,16 @@ func blockJ(m jsonrpc.Message, reason string, ids, findings []string) judgment {
 }
 
 // filterList removes from a tools/list result first every tool whose pin
-// does not match (pin.Checker.Check, in every mode), then every tool the
-// policy hides. The rest of the line (id, jsonrpc, unknown members) stays
-// byte-identical. uncorrelated is a result answering no request we know of:
-// it is checked too if it carries tools (a server could otherwise send a
-// second, unfiltered list).
-func (s *Server) filterList(st *loaded, server string, m jsonrpc.Message, uncorrelated bool, cursor string) judgment {
-	line, result := m.Raw, m.Result
+// does not match (pin.Checker.CheckPage, in every mode), then every tool
+// detection removes, then every tool the policy hides. Each step works on
+// the result value alone; the line is put together once at the end from the
+// original bytes around it (jsonrpc.Message.ResultAt), so the id, jsonrpc
+// and unknown members stay byte-identical and the line is not parsed again.
+// uncorrelated is a result answering no request we know of: it is checked
+// too if it carries tools (a server could otherwise send a second,
+// unfiltered list), and otherwise scanned like a tool result.
+func (s *Server) filterList(st *loaded, sess *Session, server string, m jsonrpc.Message, uncorrelated bool, cursor string) judgment {
+	result := m.Result
 	var reasons, found []string
 	var removed []poisonEvent
 	filtered, pinChanged, events, err := s.pins.CheckPage(server, m.Result, cursor)
@@ -236,44 +243,49 @@ func (s *Server) filterList(st *loaded, server string, m jsonrpc.Message, uncorr
 	case err != nil:
 		return rejectList(m, err)
 	case pinChanged:
-		if line, err = spliceResult(line, filtered); err != nil {
-			return rejectList(m, err)
-		}
 		result = filtered
 		reasons = append(reasons, ReasonPinMismatch+": "+strings.Join(mismatched(events), ", "))
 	}
 	// Detection (M5): after pins, before the policy hides tools.
-	if !notList {
+	if !notList && !s.o.DisableDetection {
 		var rep []byte
-		if rep, removed, found, err = s.detectList(server, result); err != nil {
+		if rep, removed, found, err = s.detectList(sess, server, result, cursor); err != nil {
 			return rejectList(m, err)
 		}
 		if len(removed) > 0 {
-			if line, err = spliceResult(line, rep); err != nil {
-				return rejectList(m, err)
-			}
 			result = rep
 			reasons = append(reasons, ReasonToolPoisoning+": "+strings.Join(poisonedNames(removed), ", "))
 		}
 	}
 	if st.pol != nil { // without a policy nothing is hidden
 		rep, hidden, changed, err := st.pol.FilterToolsList(server, result)
-		if err == nil && changed {
-			line, err = spliceResult(line, rep)
-			reasons = append(reasons, "hidden: "+strings.Join(hidden, ", "))
-		}
 		if err != nil {
 			return rejectList(m, err)
 		}
+		if changed {
+			result = rep
+			reasons = append(reasons, "hidden: "+strings.Join(hidden, ", "))
+		}
 	}
 	if notList {
+		if s.o.DisableDetection {
+			return forwardJ
+		}
 		return s.detectResult(m, "")
 	}
 	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, pinEvents: events, poisoned: removed, findings: found}
 	if len(reasons) > 0 {
-		j.action, j.audit, j.reason, j.replacement = ipc.ActionReplace, ipc.ActionReplace, strings.Join(reasons, "; "), line
+		j.action, j.audit, j.reason, j.replacement = ipc.ActionReplace, ipc.ActionReplace, strings.Join(reasons, "; "), withResult(m, result)
 	}
 	return j
+}
+
+// withResult is m's line with the value of "result" replaced by rep.
+func withResult(m jsonrpc.Message, rep []byte) []byte {
+	out := make([]byte, 0, len(m.Raw)-(m.ResultAt[1]-m.ResultAt[0])+len(rep))
+	out = append(out, m.Raw[:m.ResultAt[0]]...)
+	out = append(out, rep...)
+	return append(out, m.Raw[m.ResultAt[1]:]...)
 }
 
 // rejectList replaces a tools/list result that could not be checked or

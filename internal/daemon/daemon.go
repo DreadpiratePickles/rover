@@ -60,6 +60,9 @@ type Options struct {
 	// StateDBCreated (state.db did not exist) and AuditHadHistory (the audit
 	// anchor existed) together mean every pin was lost: see reportStateLoss.
 	StateDBCreated, AuditHadHistory bool
+	// DisableDetection turns detection tier 1 off. Tests only: it exists so
+	// a test can measure what detection adds to a decision (plan §6 M5).
+	DisableDetection bool
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -77,7 +80,8 @@ type Server struct {
 
 	pins           *pin.Checker
 	notes          *pin.Coalescer
-	det            detectState // detection's memory (detect.go)
+	detNotes       *pin.Coalescer // tools removed by detection, coalesced the same way
+	det            detectState    // detection's memory (detect.go)
 	pol            atomic.Pointer[loaded]
 	noPolicyWarned atomic.Int64 // unix nanos of the last "no policy" warning
 }
@@ -104,7 +108,8 @@ func New(o Options) *Server {
 		store = pin.NewBoltStore(o.State)
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
-		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescer(o.Notifier, o.Now)}
+		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescer(o.Notifier, o.Now),
+		detNotes: pin.NewCoalescerWith(o.Notifier, o.Now, removedMessage)}
 	s.pol.Store(&loaded{pol: o.Policy, cfg: o.Config}) // startup: any mode (D6)
 	return s
 }
@@ -331,9 +336,6 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
-	}
-	if s.o.LogBodies && j.bodyOut != nil {
-		e.Body = j.bodyOut // a rewritten result is logged as forwarded
 	}
 	entries := append(append(pinEntries(e, j.pinEvents), poisonEntries(e, j.poisoned)...), e)
 	if j.action == ipc.ActionBlock && m.Kind == jsonrpc.KindRequest {

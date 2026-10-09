@@ -22,8 +22,24 @@ func (s *scan) token(ws, we int) {
 	if p := s.sensitivePath(tok, ws, we); p != "" {
 		s.emit(RuleSensitivePath, s.pick(Medium, Low, Low, Medium), ws, we, "mentions "+p)
 	}
+	if string(tok) == "important" {
+		s.importantTag(ws, we)
+	}
 	if string(tok) == "hidden" && s.inTagAttr(ws, we) {
 		s.emit(RuleHiddenMarkup, s.ruleSeverity(RuleHiddenMarkup), ws, we, "hidden attribute")
+	}
+}
+
+// importantTag reports "<IMPORTANT>" written with spaces or attributes
+// ("< important >", "<Important level=1>"): "<" and white space before the
+// word. (The plain form is in phrases.txt.)
+func (s *scan) importantTag(ws, we int) {
+	i := ws - 1
+	for i >= 0 && ws-i <= 8 && isSpace(s.text[i]) {
+		i--
+	}
+	if i >= 0 && s.text[i] == '<' {
+		s.emit(RuleInstruction, s.ruleSeverity(RuleInstruction), i, we, "<IMPORTANT> tag")
 	}
 }
 
@@ -81,7 +97,7 @@ func (s *scan) sensitivePath(word []byte, ws, we int) string {
 	}
 	switch tok {
 	case "ssh":
-		if s.dotted(ws) && !s.at(we, "/config") && !s.pubKeyAfter(we) {
+		if s.dotted(ws) && !s.at(we, "/config") && !s.at(we, "\\config") && !s.pubKeyAfter(we) {
 			return "~/.ssh"
 		}
 	case "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa":
@@ -93,11 +109,11 @@ func (s *scan) sensitivePath(word []byte, ws, we int) string {
 			return ".env"
 		}
 	case "credentials":
-		if s.byteAt(ws-1) == '/' || s.at(ws-4, "git-") || s.at(we, ".json") || s.at(we, ".yml") || s.at(we, ".yaml") || s.at(we, ".toml") || s.at(we, ".ini") || s.at(we, ".db") {
+		if s.byteAt(ws-1) == '/' || s.byteAt(ws-1) == '\\' || s.at(ws-4, "git-") || s.at(we, ".json") || s.at(we, ".yml") || s.at(we, ".yaml") || s.at(we, ".toml") || s.at(we, ".ini") || s.at(we, ".db") {
 			return "credentials file"
 		}
 	case "aws", "kube", "docker", "cursor":
-		if s.dotted(ws) && s.byteAt(we) == '/' {
+		if s.dotted(ws) && (s.byteAt(we) == '/' || s.byteAt(we) == '\\') {
 			return "~/." + tok
 		}
 	case "gnupg", "npmrc", "netrc", "pgpass", "pypirc", "bash_history", "zsh_history":
@@ -133,7 +149,7 @@ var sensitiveWords = func() map[string]string {
 
 // pubKeyAfter reports whether ".ssh/" is followed by a public key file.
 func (s *scan) pubKeyAfter(we int) bool {
-	if s.byteAt(we) != '/' {
+	if s.byteAt(we) != '/' && s.byteAt(we) != '\\' {
 		return false
 	}
 	i := we + 1
@@ -166,10 +182,12 @@ func (s *scan) inTagAttr(ws, we int) bool {
 	return false
 }
 
-// knownTools finds names of other servers' tools in a description.
+// knownTools finds names of other servers' tools in a description: medium
+// alone, high when the mention is part of an instruction.
 func (s *scan) knownTools() {
 	l := s.text
-	isName := func(c byte) bool { return isWordByte(c) || c == '-' }
+	isName := func(c byte) bool { return isWordByte(c) || c == '-' || c == '.' }
+	phrase := s.count[RuleInstruction] > 0
 	for i := 0; i < len(l); {
 		if !isName(s.byteAt(i)) {
 			i++
@@ -179,13 +197,60 @@ func (s *scan) knownTools() {
 		for i < len(l) && isName(s.byteAt(i)) {
 			i++
 		}
-		name := strings.ToLower(strings.TrimRight(string(l[ws:i]), "-"))
+		name := strings.ToLower(strings.TrimRight(string(l[ws:i]), "-."))
 		servers := s.rules.tools[name]
 		if len(servers) == 0 || contains(servers, s.rules.server) {
 			continue
 		}
-		s.emit(RuleCrossTool, s.ruleSeverity(RuleCrossTool), ws, ws+len(name), "names "+servers[0]+"/"+name)
+		sev := s.pick(Medium, "", Low, Low)
+		if phrase || s.instructedBefore(ws) {
+			sev = s.pick(High, "", Low, Low)
+		}
+		s.emit(RuleCrossTool, sev, ws, ws+len(name), "names "+servers[0]+"/"+name)
 	}
+}
+
+// A mention is an instruction when, in the same sentence, it follows a
+// condition word ("when ... send_email", "before replying ... send_email")
+// or directly follows a verb ("call send_email", "use the send_email tool").
+var (
+	conditionWords = map[string]bool{"when": true, "whenever": true, "before": true, "after": true, "instead": true}
+	verbWords      = map[string]bool{"call": true, "use": true, "invoke": true, "run": true, "calling": true, "using": true}
+	fillerWords    = map[string]bool{"the": true, "a": true, "an": true, "tool": true, "its": true}
+)
+
+// instructedBefore looks back from i to the start of the sentence (at most
+// 120 bytes) for a condition word, or for a verb right before the name
+// (only "the", "a", "tool" between).
+func (s *scan) instructedBefore(i int) bool {
+	lo := max(0, i-120)
+	for j := i - 1; j >= lo; j-- {
+		switch s.text[j] {
+		case '.', '!', '?', '\n', ';':
+			lo = j + 1
+		}
+	}
+	adjacent := true
+	for j := i - 1; j >= lo; {
+		for j >= lo && !isWordByte(s.byteAt(j)) {
+			j--
+		}
+		end := j + 1
+		for j >= lo && isWordByte(s.byteAt(j)) {
+			j--
+		}
+		if end <= j+1 {
+			break
+		}
+		w := strings.ToLower(string(s.text[j+1 : end]))
+		switch {
+		case conditionWords[w], adjacent && verbWords[w]:
+			return true
+		case !fillerWords[w]:
+			adjacent = false
+		}
+	}
+	return false
 }
 
 func contains(ss []string, s string) bool {

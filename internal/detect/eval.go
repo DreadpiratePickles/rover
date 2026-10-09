@@ -21,7 +21,9 @@ import (
 const (
 	GateRecall = 0.90 // attack cases detected, overall
 	GateFPRate = 0.05 // benign cases with a medium or high finding, overall
-	// MinAttack and MinBenign are the plan's floor for the corpus size.
+	// MinAttack and MinBenign are the plan's floor for the corpus size;
+	// MinBenign benign cases must come from real servers (source not
+	// "synthetic").
 	MinAttack = 40
 	MinBenign = 60
 	// maxCaseBytes bounds one case file.
@@ -123,13 +125,17 @@ type Outcome struct {
 }
 
 // Detected reports whether an attack case counts as caught: one of its
-// expected rules fired, or, with nothing expected, any medium or high
-// finding.
+// expected rules fired at medium or high, or, with nothing expected, any
+// medium or high finding. A low finding only annotates the log, so it does
+// not count, exactly as it does not count as a false positive.
 func Detected(c Case, fs []Finding) bool {
 	if len(c.Expect) == 0 {
 		return significant(fs)
 	}
 	for _, f := range fs {
+		if f.Severity != Medium && f.Severity != High {
+			continue
+		}
 		for _, id := range c.Expect {
 			if f.ID == id {
 				return true
@@ -225,6 +231,15 @@ func (r Report) Gates() []string {
 	}
 	if r.Total.Attacks < MinAttack || r.Total.Benign < MinBenign {
 		fails = append(fails, fmt.Sprintf("corpus has %d attack and %d benign cases, need %d and %d", r.Total.Attacks, r.Total.Benign, MinAttack, MinBenign))
+	}
+	fromServers := 0
+	for _, o := range r.Outcomes {
+		if !o.Case.Attack() && o.Case.Source != "synthetic" {
+			fromServers++
+		}
+	}
+	if fromServers < MinBenign {
+		fails = append(fails, fmt.Sprintf("only %d benign cases come from real servers, need %d", fromServers, MinBenign))
 	}
 	return fails
 }

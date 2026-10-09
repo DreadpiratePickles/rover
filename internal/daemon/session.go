@@ -29,6 +29,9 @@ type Session struct {
 	// flags is context.session for the policy: what this agent has done
 	// across every server it uses (plan §5.1).
 	flags policy.SessionCtx
+	// tools is each server's tool names as this agent saw them listed, for
+	// detection's cross_tool_reference (review M4: per session, per server).
+	tools map[string][]string
 }
 
 type pendingReq struct {
@@ -40,6 +43,27 @@ type pendingReq struct {
 
 func newSession(id string, clientPID int, now time.Time) *Session {
 	return &Session{ID: id, ClientPID: clientPID, Created: now, servers: map[string]int{}, pending: map[string]pendingReq{}}
+}
+
+// noteTools records server's tool names from one tools/list page (fresh:
+// the first page of a listing, which replaces what was known) and returns
+// a copy of every server's names in this session.
+func (s *Session) noteTools(server string, names []string, fresh bool) map[string][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tools == nil {
+		s.tools = map[string][]string{}
+	}
+	if fresh {
+		s.tools[server] = append([]string(nil), names...)
+	} else {
+		s.tools[server] = append(s.tools[server], names...)
+	}
+	snap := make(map[string][]string, len(s.tools))
+	for k, v := range s.tools {
+		snap[k] = v
+	}
+	return snap
 }
 
 func (s *Session) join(server string) {

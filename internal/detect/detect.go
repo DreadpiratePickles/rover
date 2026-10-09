@@ -80,6 +80,7 @@ const (
 	RuleANSIEscape      = "ansi_escape"
 	RuleHTMLComment     = "html_comment"
 	RuleHiddenMarkup    = "hidden_markup"
+	RuleHiddenText      = "hidden_text" // a zero-width or soft-hyphen character inside a word
 	RuleInstruction     = "instruction_phrase"
 	RuleSensitivePath   = "sensitive_path"
 	RuleCrossTool       = "cross_tool_reference"
@@ -92,7 +93,7 @@ const (
 // RuleIDs lists every rule id.
 var RuleIDs = []string{
 	RuleUnicodeTags, RuleZeroWidth, RuleBidiOverride, RuleANSIEscape, RuleHTMLComment,
-	RuleHiddenMarkup, RuleInstruction, RuleSensitivePath, RuleCrossTool, RuleMarkdownExfil,
+	RuleHiddenMarkup, RuleHiddenText, RuleInstruction, RuleSensitivePath, RuleCrossTool, RuleMarkdownExfil,
 	RuleBase64Blob, RuleOversized, RuleOversizedResult,
 }
 

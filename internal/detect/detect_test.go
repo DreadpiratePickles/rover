@@ -98,7 +98,7 @@ func TestRules(t *testing.T) {
 		{"short query is fine", KindToolDescription, "see https://a.example/s?q=cats&page=2", "", ""},
 		{"base64 blob", KindToolResult, "x " + strings.Repeat("aGVsbG8gd29ybGQh", 13), RuleBase64Blob, Medium},
 		{"hex digest is fine", KindToolResult, strings.Repeat("0123456789abcdef", 16), "", ""},
-		{"oversized description", KindToolDescription, strings.Repeat("Counts words. ", 300), RuleOversized, Low},
+		{"oversized description", KindToolDescription, strings.Repeat("Counts words. ", 300), RuleOversized, Medium},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fs := NewRules().Scan(tc.kind, []byte(tc.text))

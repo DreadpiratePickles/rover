@@ -23,6 +23,8 @@ const (
 	maxPerRule = 8
 	// noteMax caps the quoted text in a Finding's Note.
 	noteMax = 60
+	// minToolName: shorter tool names are never looked for in other texts.
+	minToolName = 6
 )
 
 // Option configures NewRules.
@@ -30,10 +32,10 @@ type Option func(*Rules)
 
 // WithKnownTools tells the scanner which tools each server offers (server
 // name -> tool names). A tool description on one server that names a tool
-// of ANOTHER server is a cross_tool_reference (shadowing). Only names that
-// look like identifiers (an underscore, a hyphen or an inner capital, as in
-// send_email, list-files, getWeather) count: a tool called "search" is too
-// common a word to tell anything.
+// of ANOTHER server is a cross_tool_reference (shadowing): medium on its own,
+// high when the mention sits in an instruction ("when ... send_email",
+// "call send_email", or an instruction phrase in the same text). Only
+// distinctive names count (see identLike).
 func WithKnownTools(tools map[string][]string) Option {
 	return func(r *Rules) {
 		for server, names := range tools {
@@ -73,29 +75,23 @@ func NewRules(opts ...Option) Scanner {
 	return r
 }
 
-// identLike reports whether a tool name is distinctive enough to look for.
+// identLike reports whether a tool name is distinctive enough to look for:
+// at least 6 characters with an underscore, hyphen or dot (send_email,
+// list-files, files.read). "search" or "notes" would match ordinary prose.
 func identLike(n string) bool {
-	if len(n) < 4 {
-		return false
-	}
-	if strings.ContainsAny(n, "_-") {
-		return true
-	}
-	for i, r := range n {
-		if i > 0 && unicode.IsUpper(r) {
-			return true
-		}
-	}
-	return false
+	return len(n) >= minToolName && strings.ContainsAny(n, "_-.")
 }
 
 // Scan runs every rule that applies to kind over text, in one linear pass
 // (pass.go) plus a few bytes.Index loops for markup. Findings come out
 // in rule order, at most maxPerRule per rule.
 func (r *Rules) Scan(kind Kind, text []byte) []Finding {
-	s := &scan{kind: kind, text: text, rules: r, last: map[string]int{}, count: map[string]int{}}
+	s := &scan{kind: kind, text: text, rules: r, count: map[string]int{}}
 	s.oversized()
 	s.pass()
+	if kind != KindToolArgs {
+		s.normalised()
+	}
 	if kind != KindToolArgs {
 		s.htmlComments()
 		if kind == KindToolDescription && len(r.tools) > 0 {
@@ -111,19 +107,31 @@ type scan struct {
 	text     []byte
 	rules    *Rules
 	out      []Finding
-	last     map[string]int // end of the last finding per rule (no overlaps)
 	count    map[string]int // findings per rule (maxPerRule)
 	oscClear int            // OSC terminator search: none before this offset
 }
 
 // add records a finding unless the rule is at its cap or overlaps itself.
 func (s *scan) add(id string, sev Severity, start, end int, note string) {
-	if s.count[id] >= maxPerRule || (s.count[id] > 0 && start < s.last[id]) {
+	if s.count[id] >= maxPerRule || s.overlaps(id, start, end) {
 		return
 	}
 	s.count[id]++
-	s.last[id] = end
 	s.out = append(s.out, Finding{ID: id, Severity: sev, Span: [2]int{start, end}, Note: note})
+}
+
+// overlaps reports an earlier finding of rule id that overlaps [start, end)
+// (at most maxPerRule to look at).
+func (s *scan) overlaps(id string, start, end int) bool {
+	if s.count[id] == 0 {
+		return false
+	}
+	for _, f := range s.out {
+		if f.ID == id && start < f.Span[1] && f.Span[0] < max(end, start+1) {
+			return true
+		}
+	}
+	return false
 }
 
 // pick chooses a severity by kind: tool description, tool arguments, tool
@@ -153,7 +161,7 @@ func (s *scan) emit(id string, sev Severity, start, end int, note string) {
 func (s *scan) oversized() {
 	switch {
 	case s.kind == KindToolDescription && len(s.text) > MaxDescriptionBytes:
-		s.add(RuleOversized, Low, 0, len(s.text), "description longer than 4 KiB")
+		s.add(RuleOversized, Medium, 0, len(s.text), "description longer than 4 KiB")
 	case (s.kind == KindToolResult || s.kind == KindResource) && len(s.text) > MaxResultBytes:
 		s.add(RuleOversizedResult, Low, 0, len(s.text), "result longer than 1 MiB")
 	}

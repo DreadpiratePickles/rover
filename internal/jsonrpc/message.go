@@ -50,6 +50,10 @@ type Message struct {
 	Error   *RPCError
 	Raw     []byte
 	Invalid string // why the message is KindInvalid; "" otherwise
+	// ResultAt and ErrorAt are where the "result" or "error" value sits in
+	// Raw (Raw[ResultAt[0]:ResultAt[1]]), so a caller can rewrite it without
+	// parsing the line again. Zero unless Kind is KindResult or KindError.
+	ResultAt, ErrorAt [2]int
 }
 
 // RPCError is the "error" member of a JSON-RPC error response.
@@ -62,6 +66,7 @@ type RPCError struct {
 // envelope holds the exact members of one message; nil means absent.
 type envelope struct {
 	jsonrpc, id, method, params, result, err json.RawMessage
+	resultAt, errAt                          [2]int
 }
 
 // Parse classifies a single JSON-RPC message. It never returns an error:
@@ -82,6 +87,7 @@ func Parse(line []byte) Message {
 	if reason != "" {
 		m.Invalid = reason
 		m.Kind, m.Params, m.Result, m.Error = KindInvalid, nil, nil, nil
+		m.ResultAt, m.ErrorAt = [2]int{}, [2]int{}
 		m.salvage()
 	}
 	return m
@@ -105,9 +111,9 @@ func readEnvelope(raw []byte) (envelope, string) {
 		case "params":
 			env.params = f.Value
 		case "result":
-			env.result = f.Value
+			env.result, env.resultAt = f.Value, [2]int{f.Start, f.End}
 		case "error":
-			env.err = f.Value
+			env.err, env.errAt = f.Value, [2]int{f.Start, f.End}
 		default:
 			return env, fmt.Sprintf("unknown member %q", f.Key)
 		}
@@ -145,14 +151,14 @@ func (m *Message) classify(env envelope) string {
 			m.Kind = KindNotification
 		}
 	case env.method == nil && hasID && env.result != nil && env.err == nil && env.params == nil:
-		m.Kind, m.ID, m.Result = KindResult, env.id, env.result
+		m.Kind, m.ID, m.Result, m.ResultAt = KindResult, env.id, env.result, env.resultAt
 	case env.method == nil && env.err != nil && env.result == nil && env.params == nil:
 		e, why := parseError(env.err)
 		if why != "" {
 			return why
 		}
 		// An error may have a null id (e.g. a parse error), so hasID is not required.
-		m.Kind, m.Error = KindError, e
+		m.Kind, m.Error, m.ErrorAt = KindError, e, env.errAt
 		if hasID {
 			m.ID = env.id
 		}

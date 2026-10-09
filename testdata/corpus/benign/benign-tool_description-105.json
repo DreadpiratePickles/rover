@@ -1,0 +1,8 @@
+{
+ "id": "benign-tool_description-105",
+ "kind": "tool_description",
+ "text": "Delete a GitHub repository after the user confirms the exact owner/repository name",
+ "label": "benign",
+ "source": "https://github.com/github/github-mcp-server/blob/main/pkg/github/repositories.go",
+ "notes": "M5 review addition, verbatim: github delete_repository"
+}

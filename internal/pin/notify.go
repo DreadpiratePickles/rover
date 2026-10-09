@@ -104,6 +104,7 @@ type Coalescer struct {
 	next  Notifier
 	now   func() time.Time
 	after func(time.Duration, func()) // time.AfterFunc; tests replace it
+	count func(server string, n int) string
 
 	mu sync.Mutex
 	st map[string]*coalesceState
@@ -117,7 +118,13 @@ type coalesceState struct {
 
 // NewCoalescer wraps next; now is the daemon clock.
 func NewCoalescer(next Notifier, now func() time.Time) *Coalescer {
-	return &Coalescer{next: next, now: now, st: map[string]*coalesceState{},
+	return NewCoalescerWith(next, now, countMessage)
+}
+
+// NewCoalescerWith is NewCoalescer with its own "N tools ..." message, for
+// events that are not pin changes (detection removing tools, M5).
+func NewCoalescerWith(next Notifier, now func() time.Time, count func(server string, n int) string) *Coalescer {
+	return &Coalescer{next: next, now: now, st: map[string]*coalesceState{}, count: count,
 		after: func(d time.Duration, f func()) { time.AfterFunc(d, f) }}
 }
 
@@ -135,7 +142,7 @@ func (c *Coalescer) Add(server string, n int, single string) {
 		st.last = now
 		c.mu.Unlock()
 		if n != 1 || single == "" {
-			single = countMessage(server, n)
+			single = c.count(server, n)
 		}
 		c.next.Notify(notifyTitle, single)
 		return
@@ -155,7 +162,7 @@ func (c *Coalescer) flush(server string) {
 	st.pending, st.armed, st.last = 0, false, c.now()
 	c.mu.Unlock()
 	if n > 0 {
-		c.next.Notify(notifyTitle, countMessage(server, n))
+		c.next.Notify(notifyTitle, c.count(server, n))
 	}
 }
 

@@ -51,6 +51,7 @@ fuzz:
 	go test ./internal/pin -run='^$$' -fuzz=FuzzCanonical -fuzztime=$(FUZZTIME)
 	go test ./internal/detect -run='^$$' -fuzz=FuzzScan -fuzztime=$(FUZZTIME)
 	go test ./internal/daemon -run='^$$' -fuzz=FuzzScanResult -fuzztime=$(FUZZTIME)
+	go test ./internal/daemon -run='^$$' -fuzz=FuzzUnescape -fuzztime=$(FUZZTIME)
 
 # The detection gates (plan §6 M5): recall, false positives and corpus size
 # on testdata/corpus. Exits non-zero if a gate fails.

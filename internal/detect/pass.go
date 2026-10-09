@@ -19,7 +19,7 @@ func (s *scan) pass() {
 	tags := tagState{}
 	var prev rune = -1
 	ws, key, last := -1, 0, 0 // current word: start, key of its first two letters, last letter
-	b64Start, b64Mix := -1, 0
+	b64Start, b64Mix, b64Len := -1, 0, 0
 	w, wi := uint64(0), -8 // w holds t[wi:wi+8], read in one access
 	inURL, url := false, urlState{}
 	urlsOn := s.kind != KindToolArgs
@@ -50,6 +50,13 @@ func (s *scan) pass() {
 				url.hash = i
 			}
 		}
+		// "](//host/...": a protocol-relative markdown target.
+		if c == '(' && prev == ']' && !inURL && urlsOn && s.at(i+1, "//") {
+			url, inURL = urlState{start: i + 1, query: -1, hash: -1, markdown: true}, true
+			prev = rune(c)
+			i++
+			continue
+		}
 		// Words: start, extend, or end (and maybe look closer).
 		if isWordByte(lc) {
 			last = wordCode(lc)
@@ -71,13 +78,17 @@ func (s *scan) pass() {
 			ws = -1
 		}
 		// Base64 runs: alphabet only, mixing upper, lower and digits.
-		if isB64(c) {
+		switch {
+		case isB64(c):
 			if b64Start < 0 {
-				b64Start, b64Mix = i, 0
+				b64Start, b64Mix, b64Len = i, 0, 0
 			}
 			b64Mix |= b64Class(c)
-		} else if b64Start >= 0 {
-			if i-b64Start >= base64MinRun && b64Mix == b64All {
+			b64Len++
+		case c == '\r' || c == '\n':
+			// a blob may be wrapped over lines (MIME style)
+		case b64Start >= 0:
+			if b64Len >= base64MinRun && b64Mix == b64All {
 				s.blob(b64Start, i)
 			}
 			b64Start = -1
@@ -87,6 +98,9 @@ func (s *scan) pass() {
 			s.rune(r, prev, i, size, &tags, &zw, &bidi)
 			prev = r
 			i += size
+			if r == csiC1 {
+				i = csiEnd(t, i) // its parameters are not words: "\u009b2Kignore"
+			}
 			continue
 		}
 		if len(tags.held) > 0 {
@@ -105,7 +119,7 @@ func (s *scan) pass() {
 	if ws >= 0 && len(t)-ws >= 2 && len(t)-ws < maxTokenLen {
 		s.token(ws, len(t))
 	}
-	if b64Start >= 0 && len(t)-b64Start >= base64MinRun && b64Mix == b64All {
+	if b64Start >= 0 && b64Len >= base64MinRun && b64Mix == b64All {
 		s.blob(b64Start, len(t))
 	}
 	tags.end()
@@ -132,7 +146,17 @@ func (s *scan) rune(r, prev rune, i, size int, tags *tagState, zw, bidi *runs) {
 		}
 	case isBidi(r):
 		bidi.hit(i, i+size)
-	case r == csiC1:
-		s.emit(RuleANSIEscape, s.pick(High, Medium, High, High), i, i+size, "C1 control sequence introducer")
+	case isC1(r):
+		s.emit(RuleANSIEscape, s.pick(High, Medium, High, High), i, i+size, "C1 control character")
 	}
+	if (r >= 0x200B && r <= 0x200D || r == 0x2060 || r == 0xFEFF || r == softHyphen) && s.insideWord(prev, i+size) {
+		s.emit(RuleHiddenText, s.pick(High, "", Medium, Medium), i, i+size, "invisible character inside a word")
+	}
+}
+
+// insideWord reports an invisible character between two ASCII letters or
+// digits ("norm\u200bal"): it splits a word so a filter misses it.
+func (s *scan) insideWord(prev rune, next int) bool {
+	alnum := func(c rune) bool { return c < 0x80 && isWordByte(byte(c|0x20)) && c != '_' }
+	return alnum(prev) && next < len(s.text) && alnum(rune(s.text[next]))
 }

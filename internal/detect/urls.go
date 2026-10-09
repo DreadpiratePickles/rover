@@ -16,6 +16,7 @@ const (
 )
 
 var (
+	imageOpen  = []byte("![")
 	commentBeg = []byte("<!--")
 	commentEnd = []byte("-->")
 )
@@ -55,6 +56,8 @@ func isURLEnd(c byte) bool {
 type urlState struct {
 	start, query, hash int
 	markdown           bool // the target of a markdown link or image: "](" before it
+	refdef             bool // a reference definition: "[label]: URL"
+	img                bool // an HTML image: src="URL"
 }
 
 // startURL is called by the pass when the word text[ws:i] is followed by
@@ -64,8 +67,18 @@ func (s *scan) startURL(ws, i int) (urlState, bool) {
 	if !scheme || !s.at(i, "://") {
 		return urlState{}, false
 	}
-	md := s.at(ws-2, "](") || s.at(ws-3, "](<")
-	return urlState{start: ws, query: -1, hash: -1, markdown: md}, true
+	u := urlState{start: ws, query: -1, hash: -1, markdown: s.at(ws-2, "](") || s.at(ws-3, "](<")}
+	j := ws - 1
+	if c := s.byteAt(j); c == '"' || c == '\'' {
+		j--
+	}
+	u.img = s.at(j-3, "src=")
+	j = ws - 1
+	for j >= 0 && (s.text[j] == ' ' || s.text[j] == '\t') {
+		j--
+	}
+	u.refdef = s.byteAt(j) == ':' && s.byteAt(j-1) == ']'
+	return u, true
 }
 
 // endURL judges the URL text[u.start:end] once the pass reaches its end.
@@ -78,6 +91,19 @@ func (s *scan) endURL(u urlState, end int) {
 		qEnd = u.hash
 	}
 	qLen := qEnd - u.query - 1
+	hasEq := bytes.IndexByte(s.text[u.query:qEnd], '=') >= 0
+	switch {
+	case u.img && qLen > 0:
+		s.emit(RuleMarkdownExfil, s.pick(High, "", High, High), u.start, end, "HTML image with a query string: "+quote(s.text, u.start, end))
+		return
+	case u.refdef && qLen > 0 && bytes.Contains(s.text, imageOpen):
+		// "![alt][label]" uses it: fetched without a click
+		s.emit(RuleMarkdownExfil, s.pick(High, "", High, High), u.start, end, "markdown image reference with a query string: "+quote(s.text, u.start, end))
+		return
+	case u.refdef && hasEq:
+		s.emit(RuleMarkdownExfil, s.pick(High, "", Medium, Medium), u.start, end, "markdown link reference with a query string: "+quote(s.text, u.start, end))
+		return
+	}
 	if u.markdown {
 		at := u.start - 2
 		if s.byteAt(at) != ']' {
@@ -88,7 +114,7 @@ func (s *scan) endURL(u urlState, end int) {
 		case start > 0 && s.text[start-1] == '!' && qLen > 0:
 			s.emit(RuleMarkdownExfil, s.pick(High, "", High, High), start-1, end, "markdown image with a query string: "+quote(s.text, u.start, end))
 			return
-		case bytes.IndexByte(s.text[u.query:qEnd], '=') >= 0:
+		case hasEq:
 			s.emit(RuleMarkdownExfil, s.pick(High, "", Medium, Medium), max(start, 0), end, "markdown link with a query string: "+quote(s.text, u.start, end))
 			return
 		}

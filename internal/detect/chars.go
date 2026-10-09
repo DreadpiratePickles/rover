@@ -51,8 +51,15 @@ func isZeroWidth(r rune) bool {
 }
 
 func isBidi(r rune) bool {
-	return r >= 0x202A && r <= 0x202E || r >= 0x2066 && r <= 0x2069
+	return r >= 0x202A && r <= 0x202E || r >= 0x2066 && r <= 0x2069 || r == 0x061C
 }
+
+// isC1 reports a C1 control character (U+0080-U+009F): terminals act on
+// some of them (U+009B starts a control sequence), none belongs in text.
+func isC1(r rune) bool { return r >= 0x80 && r <= 0x9F }
+
+// softHyphen is invisible unless a line breaks at it.
+const softHyphen = 0x00AD
 
 func isTag(r rune) bool { return r >= 0xE0000 && r <= 0xE007F }
 
@@ -196,6 +203,18 @@ func (s *scan) ansi(i int) int {
 		sev = s.pick(High, Medium, High, High)
 	}
 	s.emit(RuleANSIEscape, sev, i, j, what)
+	return j
+}
+
+// csiEnd returns the index after the parameters, intermediates and final
+// byte of a control sequence whose body starts at j.
+func csiEnd(t []byte, j int) int {
+	for j < len(t) && t[j] >= 0x20 && t[j] <= 0x3F {
+		j++
+	}
+	if j < len(t) && t[j] >= 0x40 && t[j] <= 0x7E {
+		j++
+	}
 	return j
 }
 

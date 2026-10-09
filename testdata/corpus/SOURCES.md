@@ -19,3 +19,5 @@
 - https://simonwillison.net/2025/Apr/9/mcp-prompt-injection/ - MCP prompt injection overview
 - https://owasp.org/www-community/attacks/CSV_Injection - CSV formula injection
 Attack text is reconstructed/paraphrased and synthetic; domains are attacker.example/example.com, keys are fake.
+- https://github.com/github/github-mcp-server/blob/main/pkg/github/repositories.go - GitHub MCP server repository tool descriptions (verbatim, M5 review)
+- https://github.com/modelcontextprotocol/servers/blob/main/src/everything/tools/get-sum.ts - everything server get-sum (verbatim, M5 review)
