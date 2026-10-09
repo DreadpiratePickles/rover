@@ -14,7 +14,7 @@ The full curriculum, with modules, labs and the Gopher parity map, is in the
 | --- | --- | --- |
 | A0 | Hand-written MCP server (`examples/echo-server`) | done |
 | A1 | `rover-gate wrap`: transparent stdio proxy + JSONL audit log | done |
-| A2 | Policy engine (per-tool / per-parameter, default-deny) | next |
+| — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
 
