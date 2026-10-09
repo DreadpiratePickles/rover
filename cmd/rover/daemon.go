@@ -41,6 +41,13 @@ func runDaemon(args []string) int {
 		logf("%v", err)
 		return 1
 	}
+	// Files that already exist must still be owner-only (§4.2).
+	for _, f := range []string{filepath.Join(dirs.State, "audit.jsonl"), filepath.Join(dirs.State, "state.db"), filepath.Join(dirs.State, "roverd.log")} {
+		if perr := paths.CheckPrivate(f, 0o600); perr != nil && !errors.Is(perr, os.ErrNotExist) {
+			logf("%v", perr)
+			return 1
+		}
+	}
 	db, err := state.Open(filepath.Join(dirs.State, "state.db"))
 	if errors.Is(err, state.ErrLocked) {
 		logf("another roverd holds the state database; exiting")
@@ -52,12 +59,14 @@ func runDaemon(args []string) int {
 	}
 	defer func() { _ = db.Close() }()
 
-	log, err := audit.Open(filepath.Join(dirs.State, "audit.jsonl"))
+	logPath := filepath.Join(dirs.State, "audit.jsonl")
+	log, err := audit.Open(logPath)
 	if err != nil {
 		logf("audit log: %v", err)
 		return 1
 	}
 	defer func() { _ = log.Close() }()
+	log.AnchorPath = anchorPath(logPath)
 
 	sock, err := paths.SocketPath(dirs)
 	if err != nil {
@@ -69,7 +78,8 @@ func runDaemon(args []string) int {
 		Audit:      log,
 		LogBodies:  *logBodies,
 		SelfUID:    uint32(os.Getuid()), //nolint:gosec // G115: uid fits in uint32 on all supported platforms
-		PeerUID:    ipc.PeerUID,
+		PeerCreds:  ipc.PeerCreds,
+		ParentPID:  ipc.ParentPID,
 		Logf:       logf,
 	})
 	if err := srv.Listen(); err != nil {

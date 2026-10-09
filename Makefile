@@ -30,10 +30,13 @@ race:
 # Fails only if the fuzzer finds a crashing input (saved under
 # internal/jsonrpc/testdata/fuzz/). Finding no new coverage is not a failure.
 # One fuzz run per parser of attacker-controlled input (plan §0.5): the
-# JSON-RPC classifier and the wrapper<->roverd frame parser.
+# JSON-RPC classifier, the wrapper<->roverd frame parser, the audit-log
+# verifier and the line reader under all of them.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
+	go test ./internal/audit -run='^$$' -fuzz=FuzzVerify -fuzztime=$(FUZZTIME)
+	go test ./internal/framing -run='^$$' -fuzz=FuzzReadLine -fuzztime=$(FUZZTIME)
 
 lint:
 	golangci-lint run ./...

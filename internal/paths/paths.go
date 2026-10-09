@@ -96,8 +96,9 @@ func Ensure(d Dirs) error {
 var ErrTooOpen = errors.New("permissions too open")
 
 // CheckPrivate fails if path is readable, writable or searchable by anyone
-// but its owner. want is the expected owner mode (0700 for a directory, 0600
-// for a file); it is reported in the error so the fix is obvious.
+// but its owner, or is owned by someone else. want is the expected owner
+// mode (0700 for a directory, 0600 for a file); it is reported in the error
+// so the fix is obvious.
 func CheckPrivate(path string, want os.FileMode) error {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -105,6 +106,9 @@ func CheckPrivate(path string, want os.FileMode) error {
 	}
 	if fi.Mode()&0o077 != 0 {
 		return fmt.Errorf("%w: %s is %04o, want %04o (chmod %o %q)", ErrTooOpen, path, fi.Mode().Perm(), want, want, path)
+	}
+	if owner, ok := fileOwner(fi); ok && owner != uint32(os.Getuid()) { //nolint:gosec // G115: uid fits in uint32 on all supported platforms
+		return fmt.Errorf("%w: %s is owned by uid %d, not by you (uid %d)", ErrTooOpen, path, owner, os.Getuid())
 	}
 	return nil
 }

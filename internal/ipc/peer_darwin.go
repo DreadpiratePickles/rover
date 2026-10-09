@@ -2,15 +2,31 @@
 
 package ipc
 
-import "golang.org/x/sys/unix"
+import (
+	"golang.org/x/sys/unix"
+)
 
-// peerUID uses LOCAL_PEERCRED at level SOL_LOCAL (both 0x0 and 0x1 in
-// <sys/un.h>, confirmed in x/sys/unix for M1), which fills an xucred with
-// the effective uid and groups of the connecting process.
-func peerUID(fd int) (uint32, error) {
+// peerCreds uses LOCAL_PEERCRED and LOCAL_PEERPID at level SOL_LOCAL
+// (0x0, 0x1 and 0x2 in <sys/un.h>, confirmed in x/sys/unix for M1). The
+// first fills an xucred with the effective uid of the connecting process;
+// the second returns its pid.
+func peerCreds(fd int) (Creds, error) {
 	cred, err := unix.GetsockoptXucred(fd, unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
+	if err != nil {
+		return Creds{}, err
+	}
+	pid, err := unix.GetsockoptInt(fd, unix.SOL_LOCAL, unix.LOCAL_PEERPID)
+	if err != nil {
+		return Creds{}, err
+	}
+	return Creds{UID: cred.Uid, PID: pid}, nil
+}
+
+// parentPID asks the kernel through sysctl kern.proc.pid.
+func parentPID(pid int) (int, error) {
+	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
 		return 0, err
 	}
-	return cred.Uid, nil
+	return int(kp.Eproc.Ppid), nil
 }

@@ -23,11 +23,14 @@ func TestPeerUIDIsOurOwnOverLoopbackSocket(t *testing.T) {
 			return
 		}
 		defer func() { _ = ac.Close() }()
-		uid, perr := PeerUID(ac)
+		creds, perr := PeerCreds(ac)
 		if perr != nil {
 			t.Error(perr)
 		}
-		done <- uid
+		if creds.PID != os.Getpid() {
+			t.Errorf("peer pid %d, want our own %d", creds.PID, os.Getpid())
+		}
+		done <- creds.UID
 	}()
 	c, err := net.Dial("unix", path)
 	if err != nil {
@@ -36,6 +39,37 @@ func TestPeerUIDIsOurOwnOverLoopbackSocket(t *testing.T) {
 	defer func() { _ = c.Close() }()
 	if uid := <-done; uid != uint32(os.Getuid()) { //nolint:gosec // G115: uid fits in uint32 on all supported platforms
 		t.Fatalf("peer uid %d, want %d", uid, os.Getuid())
+	}
+}
+
+func TestParentPIDOfSelfIsOurParent(t *testing.T) {
+	ppid, err := ParentPID(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ppid != os.Getppid() {
+		t.Fatalf("ParentPID(self) = %d, want %d", ppid, os.Getppid())
+	}
+}
+
+func TestCheckHello(t *testing.T) {
+	parent := func(pid int) (int, error) {
+		if pid == 10 {
+			return 1, nil
+		}
+		return 0, errors.New("no such process")
+	}
+	if err := CheckHello(Creds{PID: 10}, 10, 1, parent); err != nil {
+		t.Fatalf("honest hello refused: %v", err)
+	}
+	if err := CheckHello(Creds{PID: 10}, 11, 1, parent); !errors.Is(err, ErrWrongPID) {
+		t.Fatalf("wrapper_pid lie accepted: %v", err)
+	}
+	if err := CheckHello(Creds{PID: 10}, 10, 2, parent); !errors.Is(err, ErrWrongPID) {
+		t.Fatalf("client_pid lie accepted: %v", err)
+	}
+	if err := CheckHello(Creds{PID: 99}, 99, 1, parent); !errors.Is(err, ErrWrongPID) {
+		t.Fatalf("unreadable parent must refuse: %v", err)
 	}
 }
 

@@ -35,11 +35,14 @@ type Options struct {
 
 	// SelfUID is who roverd runs as; peers with any other uid are refused.
 	SelfUID uint32
-	// PeerUID reads the connecting process's uid. Tests inject it; production
-	// uses ipc.PeerUID.
-	PeerUID func(*net.UnixConn) (uint32, error)
-	Now     func() time.Time
-	Logf    func(format string, a ...any)
+	// PeerCreds reads the connecting process's uid and pid from the kernel.
+	// Tests inject it; production uses ipc.PeerCreds.
+	PeerCreds func(*net.UnixConn) (ipc.Creds, error)
+	// ParentPID returns a process's parent, used to check the client_pid a
+	// wrapper claims. Tests inject it; production uses ipc.ParentPID.
+	ParentPID func(int) (int, error)
+	Now       func() time.Time
+	Logf      func(format string, a ...any)
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -58,8 +61,11 @@ type Server struct {
 
 // New prepares a Server; call Listen then Serve.
 func New(o Options) *Server {
-	if o.PeerUID == nil {
-		o.PeerUID = ipc.PeerUID
+	if o.PeerCreds == nil {
+		o.PeerCreds = ipc.PeerCreds
+	}
+	if o.ParentPID == nil {
+		o.ParentPID = ipc.ParentPID
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -188,12 +194,13 @@ func (s *Server) handle(uc *net.UnixConn) {
 	s.track(uc, true)
 	defer s.track(uc, false)
 
-	uid, err := s.o.PeerUID(uc)
+	// Who is this? Ask the kernel before reading a single byte from them.
+	creds, err := s.o.PeerCreds(uc)
 	if err != nil {
 		s.o.Logf("refusing connection: %v", err)
 		return
 	}
-	if perr := ipc.CheckPeer(uid, s.o.SelfUID); perr != nil {
+	if perr := ipc.CheckPeer(creds.UID, s.o.SelfUID); perr != nil {
 		s.o.Logf("refusing connection: %v", perr)
 		return
 	}
@@ -209,8 +216,16 @@ func (s *Server) handle(uc *net.UnixConn) {
 		s.o.Logf("bad hello: %v", err)
 		return
 	}
-	sess := s.session(hello.ClientPID)
-	sess.join(hello.ServerName)
+	// The hello names a wrapper pid and a client (agent) pid. Both are checked
+	// against the kernel: the connecting pid must be the wrapper, and its
+	// parent must be the agent. Otherwise any same-user process could join
+	// another agent's session, or dodge its own, just by lying.
+	if herr := ipc.CheckHello(creds, hello.WrapperPID, hello.ClientPID, s.o.ParentPID); herr != nil {
+		_ = cn.send(ipc.Frame{Type: ipc.TypeError, Message: herr.Error()})
+		s.o.Logf("refusing hello from pid %d: %v", creds.PID, herr)
+		return
+	}
+	sess := s.join(hello.ClientPID, hello.ServerName)
 	defer s.release(sess, hello.ServerName)
 	if err := cn.send(ipc.Frame{Type: ipc.TypeWelcome, SessionID: sess.ID}); err != nil {
 		return
@@ -284,24 +299,31 @@ func (s *Server) decide(sess *Session, server string, f ipc.Frame) ipc.Frame {
 	return ipc.Frame{Type: ipc.TypeVerdict, Seq: f.Seq, Action: ipc.ActionForward}
 }
 
-func (s *Server) session(clientPID int) *Session {
+// join finds or creates the session for clientPID and attaches a wrapper to
+// it, atomically with release, so a wrapper arriving while the last one
+// leaves never lands on a session that is about to be deleted.
+func (s *Server) join(clientPID int, server string) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sess, ok := s.sessions[clientPID]; ok {
-		return sess
+	sess, ok := s.sessions[clientPID]
+	if !ok {
+		sess = newSession(newID(), clientPID, s.o.Now())
+		s.sessions[clientPID] = sess
 	}
-	sess := newSession(newID(), clientPID, s.o.Now())
-	s.sessions[clientPID] = sess
+	sess.join(server)
 	return sess
 }
 
 func (s *Server) release(sess *Session, server string) {
-	if sess.leave(server) {
-		s.mu.Lock()
+	s.mu.Lock()
+	last := sess.leave(server)
+	if last {
 		if cur, ok := s.sessions[sess.ClientPID]; ok && cur == sess {
 			delete(s.sessions, sess.ClientPID)
 		}
-		s.mu.Unlock()
+	}
+	s.mu.Unlock()
+	if last {
 		s.o.Logf("session %s: closed", sess.ID)
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -78,7 +77,9 @@ func wrap(args []string) int {
 		errf("cannot start server %q: %v", server[0], err)
 		return 1
 	}
-	errf("session %s: wrapping %s as %q", client.SessionID(), strings.Join(server, " "), *name)
+	// Only the command's base name: MCP configs often carry tokens in the
+	// arguments, and stderr ends up in the client's log files.
+	errf("session %s: wrapping %s as %q", client.SessionID(), filepath.Base(server[0]), *name)
 
 	// Pass Ctrl-C / termination through to the child so it can shut down cleanly.
 	sigs := make(chan os.Signal, 1)

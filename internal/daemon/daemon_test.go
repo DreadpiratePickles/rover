@@ -41,9 +41,13 @@ func start(t *testing.T, o Options) *Server {
 	if o.SocketPath == "" {
 		o.SocketPath = filepath.Join(shortTempDir(t), "d.sock")
 	}
-	if o.PeerUID == nil {
-		o.PeerUID = func(*net.UnixConn) (uint32, error) { return 7, nil }
+	if o.PeerCreds == nil {
+		o.PeerCreds = func(*net.UnixConn) (ipc.Creds, error) { return ipc.Creds{UID: 7, PID: 100}, nil }
 		o.SelfUID = 7
+	}
+	if o.ParentPID == nil {
+		// Every test wrapper claims pid 100 and the client pid it names.
+		o.ParentPID = func(int) (int, error) { return claimedClient, nil }
 	}
 	s := New(o)
 	if err := s.Listen(); err != nil {
@@ -61,8 +65,22 @@ func start(t *testing.T, o Options) *Server {
 	return s
 }
 
+// claimedClient is what the injected ParentPID answers; tests that use more
+// than one client pid override ParentPID themselves.
+var claimedClient = 1
+
 func hello(clientPID int, server string) ipc.Hello {
 	return ipc.Hello{WrapperPID: 100, ClientPID: clientPID, ServerName: server, Transport: "stdio"}
+}
+
+// parentOf answers ParentPID from a fixed table (wrapper pid -> client pid).
+func parentOf(table map[int]int) func(int) (int, error) {
+	return func(pid int) (int, error) {
+		if p, ok := table[pid]; ok {
+			return p, nil
+		}
+		return 0, errors.New("no such process")
+	}
 }
 
 func TestDecideForwardsAndLogs(t *testing.T) {
@@ -106,18 +124,26 @@ func TestDecideForwardsAndLogs(t *testing.T) {
 
 // Acceptance (M1): two wrappers under the same parent pid share a session.
 func TestWrappersWithSameClientPIDShareSession(t *testing.T) {
-	s := start(t, Options{Audit: audit.New(&bytes.Buffer{})})
+	// Three wrappers: pids 100 and 101 under agent 42, pid 102 under agent 43.
+	pids := []int{100, 101, 102}
+	var n int
+	s := start(t, Options{
+		Audit:     audit.New(&bytes.Buffer{}),
+		SelfUID:   7,
+		PeerCreds: func(*net.UnixConn) (ipc.Creds, error) { p := pids[n]; n++; return ipc.Creds{UID: 7, PID: p}, nil },
+		ParentPID: parentOf(map[int]int{100: 42, 101: 42, 102: 43}),
+	})
 	a, err := ipc.Dial(s.Addr(), hello(42, "fs"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = a.Close() }()
-	b, err := ipc.Dial(s.Addr(), hello(42, "github"))
+	b, err := ipc.Dial(s.Addr(), ipc.Hello{WrapperPID: 101, ClientPID: 42, ServerName: "github", Transport: "stdio"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = b.Close() }()
-	other, err := ipc.Dial(s.Addr(), hello(43, "fs"))
+	other, err := ipc.Dial(s.Addr(), ipc.Hello{WrapperPID: 102, ClientPID: 43, ServerName: "fs", Transport: "stdio"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +161,9 @@ func TestWrappersWithSameClientPIDShareSession(t *testing.T) {
 }
 
 func TestSessionEndsWhenLastWrapperLeaves(t *testing.T) {
-	s := start(t, Options{Audit: audit.New(&bytes.Buffer{})})
+	s := start(t, Options{Audit: audit.New(&bytes.Buffer{}), SelfUID: 7,
+		PeerCreds: func(*net.UnixConn) (ipc.Creds, error) { return ipc.Creds{UID: 7, PID: 100}, nil },
+		ParentPID: parentOf(map[int]int{100: 5})})
 	a, _ := ipc.Dial(s.Addr(), hello(5, "fs"))
 	b, _ := ipc.Dial(s.Addr(), hello(5, "git"))
 	_ = a.Close()
@@ -156,9 +184,9 @@ func TestSessionEndsWhenLastWrapperLeaves(t *testing.T) {
 // Acceptance (M1): a connection from another uid is rejected.
 func TestOtherUserIsRefusedBeforeHello(t *testing.T) {
 	s := start(t, Options{
-		Audit:   audit.New(&bytes.Buffer{}),
-		SelfUID: 501,
-		PeerUID: func(*net.UnixConn) (uint32, error) { return 1000, nil },
+		Audit:     audit.New(&bytes.Buffer{}),
+		SelfUID:   501,
+		PeerCreds: func(*net.UnixConn) (ipc.Creds, error) { return ipc.Creds{UID: 1000, PID: 100}, nil },
 	})
 	_, err := ipc.Dial(s.Addr(), hello(1, "fs"))
 	if err == nil {
@@ -168,11 +196,28 @@ func TestOtherUserIsRefusedBeforeHello(t *testing.T) {
 
 func TestPeerCredentialErrorIsRefused(t *testing.T) {
 	s := start(t, Options{
-		Audit:   audit.New(&bytes.Buffer{}),
-		PeerUID: func(*net.UnixConn) (uint32, error) { return 0, errors.New("no creds") },
+		Audit:     audit.New(&bytes.Buffer{}),
+		PeerCreds: func(*net.UnixConn) (ipc.Creds, error) { return ipc.Creds{}, errors.New("no creds") },
 	})
 	if _, err := ipc.Dial(s.Addr(), hello(1, "fs")); err == nil {
 		t.Fatal("unknown peer must be refused (fail closed)")
+	}
+}
+
+// A wrapper cannot join another agent's session by naming its pid: the
+// kernel's view of the connecting process must agree with the hello.
+func TestHelloMustMatchKernelView(t *testing.T) {
+	s := start(t, Options{Audit: audit.New(&bytes.Buffer{}), SelfUID: 7,
+		PeerCreds: func(*net.UnixConn) (ipc.Creds, error) { return ipc.Creds{UID: 7, PID: 100}, nil },
+		ParentPID: parentOf(map[int]int{100: 42})})
+	if _, err := ipc.Dial(s.Addr(), ipc.Hello{WrapperPID: 100, ClientPID: 99, ServerName: "fs", Transport: "stdio"}); err == nil || !strings.Contains(err.Error(), "client_pid") {
+		t.Fatalf("client_pid lie must be refused with a reason, got %v", err)
+	}
+	if _, err := ipc.Dial(s.Addr(), ipc.Hello{WrapperPID: 123, ClientPID: 42, ServerName: "fs", Transport: "stdio"}); err == nil || !strings.Contains(err.Error(), "wrapper_pid") {
+		t.Fatalf("wrapper_pid lie must be refused with a reason, got %v", err)
+	}
+	if len(s.Sessions()) != 0 {
+		t.Fatal("a refused hello must not create a session")
 	}
 }
 

@@ -93,7 +93,12 @@ func (c *Client) Decide(dir string, raw []byte) (Frame, <-chan Frame, error) {
 	c.seq++
 	seq := c.seq
 	ch := make(chan Frame, 1)
+	rel := make(chan Frame, 1)
+	// Register the release channel now, not after the verdict: roverd may push
+	// the release in the same instant as a hold verdict, and a release with
+	// nobody waiting would otherwise be lost and the held message stuck.
 	c.waiting[seq] = ch
+	c.released[seq] = rel
 	c.mu.Unlock()
 
 	if err := c.send(Frame{Type: TypeDecide, SessionID: c.session, Seq: seq, Dir: dir, Raw: raw}); err != nil {
@@ -103,12 +108,11 @@ func (c *Client) Decide(dir string, raw []byte) (Frame, <-chan Frame, error) {
 	select {
 	case v := <-ch:
 		if v.Action == ActionHold {
-			rel := make(chan Frame, 1)
-			c.mu.Lock()
-			c.released[seq] = rel
-			c.mu.Unlock()
 			return v, rel, nil
 		}
+		c.mu.Lock()
+		delete(c.released, seq)
+		c.mu.Unlock()
 		return v, nil, nil
 	case <-c.done:
 		c.mu.Lock()
@@ -121,6 +125,7 @@ func (c *Client) Decide(dir string, raw []byte) (Frame, <-chan Frame, error) {
 func (c *Client) forget(seq uint64) {
 	c.mu.Lock()
 	delete(c.waiting, seq)
+	delete(c.released, seq)
 	c.mu.Unlock()
 }
 
@@ -167,9 +172,16 @@ func (c *Client) readLoop(r *bufio.Reader) {
 	c.mu.Lock()
 	c.closed = true
 	c.err = ferr
-	// Wake every waiter: a hold whose release will never come is a deny.
+	// Wake every held message: a hold whose release will never come is a
+	// deny. Seqs still waiting for a verdict are woken through done below.
 	for seq, ch := range c.released {
-		ch <- Frame{Type: TypeRelease, Seq: seq, Action: ActionBlock, Reason: "roverd connection lost"}
+		if _, stillWaiting := c.waiting[seq]; stillWaiting {
+			continue
+		}
+		select {
+		case ch <- Frame{Type: TypeRelease, Seq: seq, Action: ActionBlock, Reason: "roverd connection lost"}:
+		default:
+		}
 	}
 	c.mu.Unlock()
 	close(c.done)

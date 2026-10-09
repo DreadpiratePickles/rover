@@ -275,6 +275,17 @@ Proof: `TestParseRejectsOversize` (ipc),
 `TestReadLineEnforcesLimitAcrossBufferRefills` (framing),
 `TestRejectsOversizedMessage` (proxy).
 
+### 15. What the independent review changed
+
+An independent review of M1 (a separate agent, given the plan and the diff, told to assume the work was broken) found four problems worth fixing before building on this milestone. They are good examples of the difference between "has a test" and "is secure".
+
+- **Session identity was self-asserted.** The hello carried `client_pid`, and roverd believed it. Any same-user process could join another agent's session, or dodge its own, by naming a different pid. Now roverd asks the kernel for the connecting pid (`LOCAL_PEERPID` on macOS, the pid in `SO_PEERCRED` on Linux), requires it to equal `wrapper_pid`, and looks up that process's parent (`sysctl kern.proc.pid` on macOS, `/proc/<pid>/stat` on Linux) and requires it to equal `client_pid`. See `ipc.CheckHello` and `TestHelloMustMatchKernelView`. The lesson: never trust a claim you can check.
+- **A hold could deadlock.** The wrapper registered its interest in a release only after it had read the hold verdict. A release arriving in that gap was dropped, and the held message, and the wrapper, waited forever. The registration now happens before the decide is even sent. Nothing in M1 holds, so this was latent until M9; it was still a bug.
+- **`--verify` could not see a cut head or tail.** A hash chain proves that the lines you have fit together. It cannot prove that lines were not removed from the front (the first line's `prev` is simply believed) or from the end (nothing follows the last line). Two changes: `rover log --verify` now checks every rotated file plus the live one as a single chain, so the oldest file must start with `prev: ""` and each file must continue the last; and roverd writes the newest hash to `state/audit.anchor` after every entry, so a log whose tail was removed no longer contains the anchored hash and fails verification. An attacker who can rewrite the log can also rewrite the anchor, which is why plan §3 says a same-user attacker is only partly in scope; the anchor raises the bar from "delete lines" to "forge two files consistently".
+- **Bodies could be inflated six-fold.** `encoding/json` escapes `<`, `>` and `&` as `\u003c` and friends, so a 3 MiB message of `<` became an 18 MiB audit line, larger than the verifier would read, and roverd refused to start the next time. HTML escaping is now off for the audit log, and a write larger than the limit is refused rather than written. Size limits belong on the way in and on the way out.
+
+Smaller changes from the same review: joining and leaving a session happen under one lock, the wrapper prints only the server's base name on stderr (arguments often carry tokens), existing files are checked for owner and mode at startup, and `audit.Verify` and `framing.ReadLine` have fuzz targets.
+
 ## (c) Exercise it by hand
 
 Run everything from the repo root on macOS. First, point Rover at a lab
