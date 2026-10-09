@@ -64,10 +64,14 @@ type Entry struct {
 	Reason    string          `json:"reason,omitempty"`
 	RuleIDs   []string        `json:"rule_ids,omitempty"` // deciding policy ids (M2)
 	Findings  []string        `json:"findings,omitempty"` // conversion/normalisation findings (M2)
-	Bytes     int             `json:"bytes"`
-	Body      json.RawMessage `json:"body,omitempty"`
-	Prev      string          `json:"prev"` // hash of the previous entry, "" for the very first
-	Hash      string          `json:"hash,omitempty"`
+	// Digest and PrevDigest are tool-pin digests (M4): the digest pinned,
+	// seen or approved, and the one it replaces or differs from.
+	Digest     string          `json:"digest,omitempty"`
+	PrevDigest string          `json:"prev_digest,omitempty"`
+	Bytes      int             `json:"bytes"`
+	Body       json.RawMessage `json:"body,omitempty"`
+	Prev       string          `json:"prev"` // hash of the previous entry, "" for the very first
+	Hash       string          `json:"hash,omitempty"`
 }
 
 // DefaultRotateBytes is the size at which the daemon starts a new log file.

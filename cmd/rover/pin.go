@@ -20,7 +20,10 @@ import (
 
 const pinUsage = `usage:
   rover pin list [server]            show pinned tools; a MISMATCH or new tool gets a diff
-  rover pin approve <server> <tool>  trust the definition the server sent last
+  rover pin approve <server> <tool> <digest>
+                                     trust the definition with this digest (the 12+ hex
+                                     digits "rover pin list" prints); refused if the
+                                     server changed the tool again since
   rover pin reset <server>           forget a server's pins: its next tools/list is trusted on first use
 
 roverd holds the state database locked while it runs (bbolt allows no reader
@@ -40,10 +43,10 @@ func runPin(args []string) int {
 		if len(args) == 2 {
 			req.ServerName = args[1]
 		}
-	case args[0] == "approve" && len(args) == 3:
+	case args[0] == "approve" && len(args) == 4:
 		// TODO(M9): OS authentication. Until then anyone who can run this
 		// CLI as the user can approve, which the plan accepts for M4.
-		req = ipc.Frame{Op: ipc.OpPinApprove, ServerName: args[1], Tool: args[2]}
+		req = ipc.Frame{Op: ipc.OpPinApprove, ServerName: args[1], Tool: args[2], Digest: args[3]}
 	case args[0] == "reset" && len(args) == 2:
 		// TODO(M9): OS authentication.
 		req = ipc.Frame{Op: ipc.OpPinReset, ServerName: args[1]}
@@ -154,8 +157,11 @@ func printPins(result json.RawMessage) int {
 		if !p.Mismatch {
 			continue
 		}
-		fmt.Printf("\n%s %s/%s (latest %s); approve with: rover pin approve %s %s\n",
-			p.State(), cell(p.Server), cell(p.Tool), orDash(p.Latest.Short()), cell(p.Server), cell(p.Tool))
+		approve := "cannot be approved (no canonical form)"
+		if p.Latest != "" {
+			approve = fmt.Sprintf("approve with: rover pin approve %s %s %s", cell(p.Server), cell(p.Tool), p.Latest.Short())
+		}
+		fmt.Printf("\n%s %s/%s (latest %s); %s\n", p.State(), cell(p.Server), cell(p.Tool), orDash(p.Latest.Short()), approve)
 		fmt.Print(pin.TerminalSafe(pin.DiffOf(p)))
 	}
 	return 0

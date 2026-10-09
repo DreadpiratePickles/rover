@@ -37,10 +37,14 @@ func (d Digest) Short() string {
 	return string(d)
 }
 
-// pinnedMembers are the members of a tool object that define what the model
-// is told about it. Anything else (_meta, outputSchema, title, vendor
-// extensions) is ignored by the digest; the plan pins exactly these four.
-var pinnedMembers = map[string]bool{"name": true, "description": true, "inputSchema": true, "annotations": true}
+// unpinnedMember is the one member of a tool object left out of the digest:
+// MCP reserves _meta for protocol and vendor metadata that may change between
+// lists without changing what the model is told. Every other member is
+// pinned: name, description, inputSchema and annotations (the plan's four),
+// and also title, outputSchema and any extension, since a client may show
+// those to the model too. This is a strict superset of the plan's "four
+// members" (review M3): it can only add mismatches, never hide one.
+const unpinnedMember = "_meta"
 
 // maxDepth bounds the nesting Canonical will follow. Tool schemas are a few
 // levels deep; a hostile server could send thousands.
@@ -50,9 +54,8 @@ const maxDepth = 64
 // checker treats such a tool as mismatched, never as a match.
 var ErrUncanonicalisable = errors.New("tool definition cannot be canonicalised")
 
-// Canonical returns the canonical JSON of one tool object: only name,
-// description, inputSchema and annotations (absent members stay absent,
-// never null), object keys sorted bytewise at every level, no white space,
+// Canonical returns the canonical JSON of one tool object: every member
+// except _meta (absent members stay absent, never null), object keys sorted bytewise at every level, no white space,
 // strings re-encoded by encoding/json with HTML escaping off, and numbers as
 // their original literal text.
 //
@@ -76,9 +79,9 @@ func Canonical(tool json.RawMessage) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUncanonicalisable, err)
 	}
-	kept := make(jsonrpc.Fields, 0, len(pinnedMembers))
+	kept := make(jsonrpc.Fields, 0, len(fields))
 	for _, f := range fields {
-		if pinnedMembers[f.Key] {
+		if f.Key != unpinnedMember {
 			kept = append(kept, f)
 		}
 	}

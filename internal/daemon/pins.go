@@ -75,27 +75,49 @@ func pinEntries(msg audit.Entry, events []pin.Event) []audit.Entry {
 		e := audit.Entry{Time: msg.Time, Session: msg.Session, Server: ev.Server, Dir: msg.Dir, Kind: AuditKindPin, Tool: ev.Tool}
 		switch ev.Kind {
 		case pin.KindPinned:
-			e.Action, e.Reason = AuditPinned, pin.MethodTOFU
+			e.Action, e.Reason, e.Digest = AuditPinned, pin.MethodTOFU, string(ev.New)
 		case kindRecheck:
 			e.Action, e.Reason = AuditRecheck, MethodToolsListChanged
 		default:
 			e.Action, e.Reason, e.Findings = ipc.ActionBlock, ReasonPinMismatch+":"+ev.Tool, []string{ev.Kind}
+			e.Digest, e.PrevDigest = string(ev.New), string(ev.Old)
 		}
 		out = append(out, e)
 	}
 	return out
 }
 
-// notifyPins logs and notifies the mismatches among events.
+// notifyPins logs the mismatches among events and notifies them, at most
+// once per server per pin.NotifyWindow. The log names server, tool and
+// digests and gives the diff's length, never its text: descriptions are
+// attacker-controlled and roverd's log is not the audit log (review L2).
+// `rover pin list` shows the diff.
 func (s *Server) notifyPins(events []pin.Event) {
+	count := map[string]int{}
+	single := map[string]string{}
+	var order []string
 	for _, ev := range events {
 		if ev.Kind == pin.KindPinned || ev.Kind == kindRecheck {
 			continue
 		}
-		s.o.Logf("PIN MISMATCH %s/%s (%s): removed from tools/list and blocked until `rover pin approve %s %s`\n%s",
-			ev.Server, ev.Tool, ev.Kind, ev.Server, ev.Tool, ev.Diff)
-		s.o.Notifier.Notify(pin.Message(ev))
+		s.o.Logf("PIN MISMATCH %s/%s (%s): %s -> %s, diff %d bytes; removed from tools/list and blocked until approved (see `rover pin list %s`)",
+			ev.Server, ev.Tool, ev.Kind, orNone(ev.Old.Short()), orNone(ev.New.Short()), len(ev.Diff), ev.Server)
+		if count[ev.Server] == 0 {
+			order = append(order, ev.Server)
+		}
+		count[ev.Server]++
+		_, single[ev.Server] = pin.Message(ev)
 	}
+	for _, server := range order {
+		s.notes.Add(server, count[server], single[server])
+	}
+}
+
+func orNone(d string) string {
+	if d == "" {
+		return "none"
+	}
+	return d
 }
 
 // Admin runs one CLI admin request (ipc.TypeAdmin) and returns the reply.
@@ -126,11 +148,12 @@ func (s *Server) Admin(f ipc.Frame) ipc.Frame {
 		}
 		return adminResult(ps, "")
 	case ipc.OpPinApprove:
-		p, err := s.pins.Approve(f.ServerName, f.Tool, pin.MethodCLI)
+		p, prev, err := s.pins.Approve(f.ServerName, f.Tool, f.Digest, pin.MethodCLI)
 		if err != nil {
 			return fail(err)
 		}
 		result, entry.Action, entry.Reason = p, AuditPinApproved, "method:"+pin.MethodCLI
+		entry.Digest, entry.PrevDigest = string(p.Digest), string(prev)
 		s.o.Logf("pin approved by CLI: %s/%s -> %s", f.ServerName, f.Tool, p.Digest.Short())
 	case ipc.OpPinReset:
 		n, err := s.pins.Reset(f.ServerName)

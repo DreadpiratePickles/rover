@@ -59,6 +59,9 @@ type Options struct {
 	State *state.DB
 	// Notifier tells the human about a blocked tool; nil means none.
 	Notifier pin.Notifier
+	// StateDBCreated (state.db did not exist) and AuditHadHistory (the audit
+	// anchor existed) together mean every pin was lost: see reportStateLoss.
+	StateDBCreated, AuditHadHistory bool
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -75,6 +78,7 @@ type Server struct {
 	unhealthy bool
 
 	pins           *pin.Checker
+	notes          *pin.Coalescer
 	pol            atomic.Pointer[loaded]
 	noPolicyWarned atomic.Int64 // unix nanos of the last "no policy" warning
 }
@@ -100,7 +104,8 @@ func New(o Options) *Server {
 	if o.State != nil {
 		store = pin.NewBoltStore(o.State)
 	}
-	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{}, pins: pin.NewChecker(store, o.Now, o.Logf)}
+	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
+		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescer(o.Notifier, o.Now)}
 	s.pol.Store(&loaded{pol: o.Policy, cfg: o.Config}) // startup: any mode (D6)
 	return s
 }
@@ -127,6 +132,10 @@ func (s *Server) Listen() error {
 		return err
 	}
 	s.ln = ln
+	if err := s.reportStateLoss(); err != nil {
+		_ = ln.Close()
+		return err
+	}
 	return nil
 }
 
@@ -318,8 +327,8 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	server := hello.ServerName
 	m := jsonrpc.Parse(f.Raw)
 	now := s.o.Now()
-	e := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
-	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, now)
+	e, cursor := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
+	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, cursor, now)
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
@@ -346,21 +355,6 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 		Type: ipc.TypeVerdict, Seq: f.Seq, Action: j.action, Reason: j.reason, RuleIDs: j.ruleIDs,
 		ResponseRaw: j.responseRaw, ReplacementRaw: j.replacement,
 	}
-}
-
-// writeAudit appends entries in order. On failure roverd turns unhealthy:
-// every later decision is a block.
-func (s *Server) writeAudit(entries ...audit.Entry) error {
-	for _, e := range entries {
-		if err := s.o.Audit.Write(e); err != nil {
-			s.mu.Lock()
-			s.unhealthy = true
-			s.mu.Unlock()
-			s.o.Logf("AUDIT LOG FAILED, blocking everything from now on: %v", err)
-			return err
-		}
-	}
-	return nil
 }
 
 // join finds or creates the session for clientPID and attaches a wrapper to

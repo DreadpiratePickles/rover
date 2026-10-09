@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -88,5 +89,82 @@ func Message(e Event) (title, message string) {
 		KindNewAfterPins: "the server added it after its tools were pinned",
 		KindInvalid:      "its definition is malformed",
 	}[e.Kind]
-	return "Rover blocked a tool", fmt.Sprintf("%s/%s: %s. Review with `rover pin list %s`.", e.Server, e.Tool, what, e.Server)
+	return notifyTitle, fmt.Sprintf("%s/%s: %s. Review with `rover pin list %s`.", e.Server, e.Tool, what, e.Server)
+}
+
+// NotifyWindow is the shortest gap between two notifications for one server.
+const NotifyWindow = 10 * time.Second
+
+// Coalescer limits desktop notifications to one per server per NotifyWindow
+// (review L4): a server that changes fifty tools, or flaps, must not bury
+// the desktop. The first change is shown at once with its own message;
+// changes within the window are counted and shown as one "N tools changed
+// on <server>" when it ends. Safe for concurrent use.
+type Coalescer struct {
+	next  Notifier
+	now   func() time.Time
+	after func(time.Duration, func()) // time.AfterFunc; tests replace it
+
+	mu sync.Mutex
+	st map[string]*coalesceState
+}
+
+type coalesceState struct {
+	last    time.Time
+	pending int
+	armed   bool
+}
+
+// NewCoalescer wraps next; now is the daemon clock.
+func NewCoalescer(next Notifier, now func() time.Time) *Coalescer {
+	return &Coalescer{next: next, now: now, st: map[string]*coalesceState{},
+		after: func(d time.Duration, f func()) { time.AfterFunc(d, f) }}
+}
+
+// Add reports n changed tools on server; single is the message to show when
+// it can be sent at once and n is 1.
+func (c *Coalescer) Add(server string, n int, single string) {
+	c.mu.Lock()
+	st, ok := c.st[server]
+	if !ok {
+		st = &coalesceState{}
+		c.st[server] = st
+	}
+	now := c.now()
+	if !st.armed && (st.last.IsZero() || now.Sub(st.last) >= NotifyWindow) {
+		st.last = now
+		c.mu.Unlock()
+		if n != 1 || single == "" {
+			single = countMessage(server, n)
+		}
+		c.next.Notify(notifyTitle, single)
+		return
+	}
+	st.pending += n
+	if !st.armed {
+		st.armed = true
+		c.after(NotifyWindow-now.Sub(st.last), func() { c.flush(server) })
+	}
+	c.mu.Unlock()
+}
+
+func (c *Coalescer) flush(server string) {
+	c.mu.Lock()
+	st := c.st[server]
+	n := st.pending
+	st.pending, st.armed, st.last = 0, false, c.now()
+	c.mu.Unlock()
+	if n > 0 {
+		c.next.Notify(notifyTitle, countMessage(server, n))
+	}
+}
+
+const notifyTitle = "Rover blocked a tool"
+
+func countMessage(server string, n int) string {
+	tools := "tools"
+	if n == 1 {
+		tools = "tool"
+	}
+	return fmt.Sprintf("%d %s changed on %s. Review with `rover pin list %s`.", n, tools, server, server)
 }

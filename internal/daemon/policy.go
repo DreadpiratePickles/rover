@@ -110,7 +110,8 @@ var forwardJ = judgment{action: ipc.ActionForward, audit: ipc.ActionForward}
 
 // judge runs the policy on one message. It never fails open: every error
 // path ends in block (or, for a server response, a replacement error).
-func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.Message, replyTo string, now time.Time) judgment {
+// cursor is the params.cursor of the tools/list request a result answers.
+func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.Message, replyTo, cursor string, now time.Time) judgment {
 	st := s.pol.Load()
 	// A line that is not unambiguous JSON-RPC is blocked in both directions,
 	// in every mode and with or without a policy: whatever Rover would judge
@@ -124,7 +125,7 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	// A result answering tools/list, or answering nothing we know of (a
 	// server could otherwise send a second, unfiltered reply), is filtered.
 	if dir == policy.DirS2C && m.Kind == jsonrpc.KindResult && (replyTo == "tools/list" || replyTo == "") {
-		return s.filterList(st, server, m, replyTo == "")
+		return s.filterList(st, server, m, replyTo == "", cursor)
 	}
 	// Pins come before policy and apply in every mode (D6): a tool that
 	// changed under the agent is refused even while learning.
@@ -200,10 +201,10 @@ func blockJ(m jsonrpc.Message, reason string, ids, findings []string) judgment {
 // byte-identical. uncorrelated is a result answering no request we know of:
 // it is checked too if it carries tools (a server could otherwise send a
 // second, unfiltered list).
-func (s *Server) filterList(st *loaded, server string, m jsonrpc.Message, uncorrelated bool) judgment {
+func (s *Server) filterList(st *loaded, server string, m jsonrpc.Message, uncorrelated bool, cursor string) judgment {
 	line, result := m.Raw, m.Result
 	var reasons []string
-	filtered, pinChanged, events, err := s.pins.Check(server, m.Result)
+	filtered, pinChanged, events, err := s.pins.CheckPage(server, m.Result, cursor)
 	switch {
 	case errors.Is(err, pin.ErrNotToolsList) && uncorrelated:
 		// not a tool list: nothing to pin

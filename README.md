@@ -57,10 +57,12 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover daemon           # run roverd by hand to watch its log
 ./bin/rover policy test audit.jsonl  # replay a log (recorded with --log-bodies) through the current policy
 
-# tool pinning (M4): the first tools/list of a server is trusted and pinned;
-# later a changed or new tool is hidden and its calls blocked (pin_mismatch)
+# tool pinning (M4): the first tools/list of a server (and its cursor pages,
+# for 60 s) is trusted and pinned; every tool member except _meta is hashed.
+# Later a changed or new tool is hidden and its calls blocked (pin_mismatch)
 ./bin/rover pin list                 # pins, MISMATCH/new markers and a diff of each change
-./bin/rover pin approve filesystem read_file   # trust the latest definition (TODO(M9): OS auth)
+./bin/rover pin approve filesystem read_file 3f2a9c01b7de   # the digest prefix pin list printed;
+                                     # refused if the tool changed again since (TODO(M9): OS auth)
 ./bin/rover pin reset filesystem     # forget a server's pins; next list is trusted on first use
 ```
 

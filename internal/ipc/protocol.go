@@ -56,6 +56,9 @@ const (
 // MaxToolName bounds the tool named in an admin frame.
 const MaxToolName = 1024
 
+// MinDigestPrefix is the shortest digest prefix pin_approve accepts.
+const MinDigestPrefix = 12
+
 // Actions a verdict or release can carry.
 const (
 	ActionForward = "forward"
@@ -98,8 +101,11 @@ type Frame struct {
 	Message string `json:"message,omitempty"`
 
 	// admin (ServerName names the server), admin_result
-	Op     string          `json:"op,omitempty"`
-	Tool   string          `json:"tool,omitempty"`
+	Op   string `json:"op,omitempty"`
+	Tool string `json:"tool,omitempty"`
+	// Digest is the digest prefix a pin_approve approves: the one the
+	// human saw in `rover pin list` (at least MinDigestPrefix hex digits).
+	Digest string          `json:"digest,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 }
 
@@ -199,7 +205,22 @@ func validateAdmin(f Frame) error {
 	if !needTool && f.Tool != "" {
 		return fmt.Errorf("%w: %s takes no tool", ErrBadFrame, f.Op)
 	}
+	if needTool != validDigestPrefix(f.Digest) {
+		return fmt.Errorf("%w: %s needs a digest prefix of %d..64 lowercase hex digits only with a tool", ErrBadFrame, f.Op, MinDigestPrefix)
+	}
 	return nil
+}
+
+func validDigestPrefix(s string) bool {
+	if len(s) < MinDigestPrefix || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if (s[i] < '0' || s[i] > '9') && (s[i] < 'a' || s[i] > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Encode returns f as one line.

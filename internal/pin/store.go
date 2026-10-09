@@ -21,8 +21,10 @@ const (
 )
 
 // maxStoredCanonical caps the copy of a tool's canonical JSON kept for diffs.
-// The digest always covers the whole definition; only the copy is cut.
-const maxStoredCanonical = 64 << 10
+// The digest always covers the whole definition and only digests are ever
+// compared, so a change beyond the cap is still a change; only the copy
+// (and so the diff) is cut.
+const maxStoredCanonical = 1 << 20
 
 // Pinned is everything Rover remembers about one (server, tool).
 //

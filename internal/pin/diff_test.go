@@ -21,8 +21,12 @@ func TestUnifiedDiffOfNewTool(t *testing.T) {
 
 func TestUnifiedDiffIsCapped(t *testing.T) {
 	big := strings.Repeat("x", 100) + "\n"
-	got := UnifiedDiff("", strings.Repeat(big, 100))
-	if len(got) > MaxDiff || !strings.HasSuffix(got, "cut at 4 KiB)\n") {
+	if got := UnifiedDiff("", strings.Repeat(big, 100)); !strings.HasSuffix(got, "... 60 more changed lines\n") {
+		t.Fatalf("tail %q", got[len(got)-40:])
+	}
+	wide := strings.Repeat(string(rune(0x1F600)), 100) + "\n" // 400 bytes a line
+	got := UnifiedDiff("", strings.Repeat(wide, 100))
+	if len(got) > MaxDiff || !strings.HasSuffix(got, "cut at 8 KiB)\n") {
 		t.Fatalf("len %d, tail %q", len(got), got[len(got)-30:])
 	}
 }

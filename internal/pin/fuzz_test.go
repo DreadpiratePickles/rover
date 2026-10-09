@@ -7,7 +7,7 @@ import (
 
 // FuzzCanonical: Canonical never panics; when it succeeds its output is
 // valid JSON, is a fixed point (canonicalising it again gives the same
-// bytes), and keeps no member but the four pinned ones.
+// bytes), and never keeps _meta.
 func FuzzCanonical(f *testing.F) {
 	for _, s := range []string{
 		echoTool,
@@ -34,10 +34,8 @@ func FuzzCanonical(f *testing.F) {
 		if err := json.Unmarshal(c, &m); err != nil {
 			t.Fatal(err)
 		}
-		for k := range m {
-			if !pinnedMembers[k] {
-				t.Fatalf("kept member %q", k)
-			}
+		if _, ok := m[unpinnedMember]; ok {
+			t.Fatal("kept _meta")
 		}
 	})
 }

@@ -41,10 +41,10 @@ func TestCanonicalDetectsOneCharacterChange(t *testing.T) {
 	}
 }
 
-func TestCanonicalKeepsOnlyPinnedMembers(t *testing.T) {
-	// Extra members are ignored; absent ones stay absent (not null).
+func TestCanonicalKeepsEverythingButMeta(t *testing.T) {
+	// _meta is ignored; absent members stay absent (not null).
 	c, err := Canonical(json.RawMessage(`{"_meta":{"x":1},"title":"T","name":"n","annotations":{"readOnlyHint":true}}`))
-	if err != nil || string(c) != `{"annotations":{"readOnlyHint":true},"name":"n"}` {
+	if err != nil || string(c) != `{"annotations":{"readOnlyHint":true},"name":"n","title":"T"}` {
 		t.Fatalf("got %s %v", c, err)
 	}
 }

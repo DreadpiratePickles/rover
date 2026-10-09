@@ -23,8 +23,9 @@ const (
 )
 
 // tofuWindow is how long the first listing of a server may take across
-// pages (nextCursor). Tools on later pages within it are trusted on first
-// use too; after it, a server that keeps paginating gets no more free pins.
+// pages. Within it, a list whose request carried the nextCursor of the
+// previous page of that first listing is still trusted on first use. Any
+// other list, and any page after the window, is "after pins" (review L1).
 const tofuWindow = time.Minute
 
 // maxToolName bounds a tool name (it becomes a database key).
@@ -58,7 +59,7 @@ type Checker struct {
 
 	mu      sync.Mutex
 	cache   map[string]map[string]Pinned // server -> tool -> pin
-	tofu    map[string]time.Time         // server -> first-listing window start
+	tofu    map[string]firstListing      // server -> first listing in progress
 	recheck map[string]bool
 }
 
@@ -70,7 +71,7 @@ func NewChecker(store Store, now func() time.Time, logf func(string, ...any)) *C
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Checker{store: store, now: now, logf: logf, cache: map[string]map[string]Pinned{}, tofu: map[string]time.Time{}, recheck: map[string]bool{}}
+	return &Checker{store: store, now: now, logf: logf, cache: map[string]map[string]Pinned{}, tofu: map[string]firstListing{}, recheck: map[string]bool{}}
 }
 
 // load returns the cached pins of server, reading the Store the first time.
@@ -90,6 +91,12 @@ func (c *Checker) load(server string) (map[string]Pinned, error) {
 	return m, nil
 }
 
+// firstListing is a paginated first listing still in progress.
+type firstListing struct {
+	start      time.Time
+	nextCursor string // the cursor the next page's request must carry
+}
+
 type listedTool struct {
 	name string
 	raw  json.RawMessage
@@ -98,41 +105,59 @@ type listedTool struct {
 // parseList reads a tools/list result strictly: its members, the tools
 // array, and each tool's exact name. Duplicate names are refused (a client
 // might use either copy).
-func parseList(result []byte) (jsonrpc.Fields, int, []listedTool, bool, error) {
+// next is the nextCursor string ("" when absent or null; any other non-string
+// value gives a cursor no request can match).
+func parseList(result []byte) (members jsonrpc.Fields, at int, tools []listedTool, more bool, next string, err error) {
+	members, at, more, next, err = listMembers(result)
+	if err != nil {
+		return nil, 0, nil, false, "", err
+	}
+	tools, err = listTools(members[at].Value)
+	return members, at, tools, more, next, err
+}
+
+func listMembers(result []byte) (jsonrpc.Fields, int, bool, string, error) {
 	members, err := jsonrpc.Object(result)
 	if err != nil {
-		return nil, 0, nil, false, fmt.Errorf("%w: %w", ErrToolsList, err)
+		return nil, 0, false, "", fmt.Errorf("%w: %w", ErrToolsList, err)
 	}
-	at, more := -1, false
+	at, more, next := -1, false, ""
 	for i, m := range members {
 		switch m.Key {
 		case "tools":
 			at = i
 		case "nextCursor":
 			more = !bytes.Equal(bytes.TrimSpace(m.Value), []byte("null"))
+			if more && json.Unmarshal(m.Value, &next) != nil {
+				next = "\x00not a string"
+			}
 		}
 	}
 	if at < 0 {
-		return nil, 0, nil, false, ErrNotToolsList
+		return nil, 0, false, "", ErrNotToolsList
 	}
+	return members, at, more, next, nil
+}
+
+func listTools(value json.RawMessage) ([]listedTool, error) {
 	var raws []json.RawMessage
-	if err := json.Unmarshal(members[at].Value, &raws); err != nil {
-		return nil, 0, nil, false, fmt.Errorf("%w: tools: %w", ErrToolsList, err)
+	if err := json.Unmarshal(value, &raws); err != nil {
+		return nil, fmt.Errorf("%w: tools: %w", ErrToolsList, err)
 	}
 	tools := make([]listedTool, 0, len(raws))
 	seen := map[string]bool{}
 	for i, r := range raws {
 		name, err := toolName(r)
 		if err != nil {
-			return nil, 0, nil, false, fmt.Errorf("%w: tool %d: %w", ErrToolsList, i, err)
+			return nil, fmt.Errorf("%w: tool %d: %w", ErrToolsList, i, err)
 		}
 		if seen[name] {
-			return nil, 0, nil, false, fmt.Errorf("%w: tool %q listed twice", ErrToolsList, name)
+			return nil, fmt.Errorf("%w: tool %q listed twice", ErrToolsList, name)
 		}
 		seen[name] = true
 		tools = append(tools, listedTool{name, r})
 	}
-	return members, at, tools, more, nil
+	return tools, nil
 }
 
 func toolName(raw json.RawMessage) (string, error) {
@@ -160,8 +185,16 @@ func toolName(raw json.RawMessage) (string, error) {
 // never seen before, or a tool with no canonical form is removed from the
 // list and marked mismatched until Approve. changed reports whether filtered
 // differs from listResult; filtered keeps every other byte of the original.
+// It is CheckPage for a list whose request carried no cursor.
 func (c *Checker) Check(server string, listResult json.RawMessage) (filtered json.RawMessage, changed bool, events []Event, err error) {
-	members, at, tools, more, err := parseList(listResult)
+	return c.CheckPage(server, listResult, "")
+}
+
+// CheckPage is Check for a list whose request carried cursor ("" for none).
+// Only a page whose cursor continues the server's first listing, within
+// tofuWindow, is still trusted on first use.
+func (c *Checker) CheckPage(server string, listResult json.RawMessage, cursor string) (filtered json.RawMessage, changed bool, events []Event, err error) {
+	members, at, tools, more, next, err := parseList(listResult)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -172,7 +205,7 @@ func (c *Checker) Check(server string, listResult json.RawMessage) (filtered jso
 		return nil, false, nil, fmt.Errorf("%w: load pins: %w", ErrToolsList, err)
 	}
 	now := c.now()
-	tofu := c.tofuOpen(server, len(pins) == 0, now)
+	tofu := c.tofuOpen(server, len(pins) == 0, cursor, now)
 
 	var writes []Pinned
 	kept := make([]json.RawMessage, 0, len(tools))
@@ -188,7 +221,10 @@ func (c *Checker) Check(server string, listResult json.RawMessage) (filtered jso
 			kept = append(kept, t.raw)
 		}
 	}
-	if !more {
+	switch {
+	case tofu && more: // the first listing continues on the next page
+		c.tofu[server] = firstListing{start: c.tofu[server].start, nextCursor: next}
+	case tofu:
 		delete(c.tofu, server) // the first listing is complete
 	}
 	if err := c.store.Put(writes...); err != nil {
@@ -204,14 +240,16 @@ func (c *Checker) Check(server string, listResult json.RawMessage) (filtered jso
 	return splice(listResult, members[at], joinArray(kept)), true, events, nil
 }
 
-// tofuOpen reports whether tools not yet pinned may be trusted on first use.
-func (c *Checker) tofuOpen(server string, noPins bool, now time.Time) bool {
+// tofuOpen reports whether tools not yet pinned may be trusted on first use:
+// the server has no pins (a first listing starts now), or this page is the
+// cursor follow-up of the first listing within tofuWindow.
+func (c *Checker) tofuOpen(server string, noPins bool, cursor string, now time.Time) bool {
 	if noPins {
-		c.tofu[server] = now
+		c.tofu[server] = firstListing{start: now}
 		return true
 	}
-	start, ok := c.tofu[server]
-	return ok && now.Sub(start) < tofuWindow
+	fl, ok := c.tofu[server]
+	return ok && cursor != "" && cursor == fl.nextCursor && now.Sub(fl.start) < tofuWindow
 }
 
 // judgeTool decides one listed tool: the record to write (nil: none), the
@@ -303,54 +341,6 @@ func (c *Checker) RecheckPending(server string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.recheck[server]
-}
-
-// ErrNothingToApprove is returned by Approve for a tool that is not blocked.
-var ErrNothingToApprove = errors.New("nothing to approve")
-
-// Approve re-pins a mismatched tool to the definition the server sent most
-// recently. TODO(M9): only after OS authentication; until then the CLI is
-// the only caller, and it is not reachable through the MCP stream.
-func (c *Checker) Approve(server, tool, method string) (Pinned, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	pins, err := c.load(server)
-	if err != nil {
-		return Pinned{}, err
-	}
-	p, known := pins[tool]
-	switch {
-	case !known:
-		return Pinned{}, fmt.Errorf("%w: %s/%s has never been listed", ErrNothingToApprove, server, tool)
-	case !p.Mismatch:
-		return Pinned{}, fmt.Errorf("%w: %s/%s matches its pin", ErrNothingToApprove, server, tool)
-	case p.Latest == "":
-		return Pinned{}, fmt.Errorf("%s/%s cannot be approved: its definition has no canonical form (%s)", server, tool, p.Problem)
-	}
-	np := Pinned{Server: server, Tool: tool, Digest: p.Latest, ApprovedAt: c.now().UTC(), Method: method, Canonical: p.LatestCanonical}
-	if err := c.store.Put(np); err != nil {
-		return Pinned{}, err
-	}
-	pins[tool] = np
-	return np, nil
-}
-
-// Reset forgets every pin of server; its next tools/list is trusted on
-// first use again. TODO(M9): OS authentication.
-func (c *Checker) Reset(server string) (int, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	n, err := c.store.DeleteServer(server)
-	delete(c.cache, server) // reload from the store either way
-	delete(c.tofu, server)
-	return n, err
-}
-
-// List returns the stored pins of server ("" for all), read fresh.
-func (c *Checker) List(server string) ([]Pinned, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.store.List(server)
 }
 
 func joinArray(items []json.RawMessage) []byte {
