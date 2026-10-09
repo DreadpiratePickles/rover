@@ -10,6 +10,7 @@ import (
 	"github.com/DreadpiratePickles/rover/internal/detect"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
+	"github.com/DreadpiratePickles/rover/internal/learn"
 	"github.com/DreadpiratePickles/rover/internal/pin"
 	"github.com/DreadpiratePickles/rover/internal/policy"
 )
@@ -104,9 +105,11 @@ type judgment struct {
 	replacement []byte   // replace: the line forwarded instead
 	callLabels  []string // a forwarded tools/call: its labels, for the session flags
 	call        bool
-	pinEvents   []pin.Event   // audited before the message itself, mismatches notified
-	poisoned    []poisonEvent // tools detection removed: audited and notified the same way
-	untrusted   bool          // a result with a detection finding: the session saw untrusted data
+	pinEvents   []pin.Event    // audited before the message itself, mismatches notified
+	poisoned    []poisonEvent  // tools detection removed: audited and notified the same way
+	untrusted   bool           // a result with a detection finding: the session saw untrusted data
+	obs         *learn.Pending // learn mode: the observation of a forwarded request
+	learnFlags  []string       // learn mode: medium/high finding ids that flag the request's observation
 }
 
 var forwardJ = judgment{action: ipc.ActionForward, audit: ipc.ActionForward}
@@ -155,13 +158,17 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 		pinEvents = s.pinRecheck(server)
 	}
 	var det detect.Summary
+	var detFs []detect.Finding
 	if m.Kind == jsonrpc.KindRequest {
 		var blocked *judgment
-		if det, blocked = s.detectRequest(dir, m); blocked != nil {
+		if det, detFs, blocked = s.detectRequest(dir, m); blocked != nil {
 			return *blocked // high: blocked in every mode (D6)
 		}
 	}
 	j := s.judgePolicy(st, sess, server, transport, dir, m, now, det)
+	if j.obs != nil {
+		j.obs.Flagged = flagIDs(detFs)
+	}
 	j.pinEvents = pinEvents
 	return j
 }
@@ -181,7 +188,8 @@ func (s *Server) judgePolicy(st *loaded, sess *Session, server, transport, dir s
 	in.Detection = policy.DetectionCtx{MaxScore: det.MaxScore, Findings: det.IDs}
 	o := st.pol.Decide(in)
 	findings := sortedUnique(append(append([]string(nil), det.IDs...), o.Findings...))
-	j := judgment{action: o.Action, audit: o.Action, reason: o.Reason, ruleIDs: o.RuleIDs, findings: findings}
+	j := judgment{action: o.Action, audit: o.Action, reason: o.Reason, ruleIDs: o.RuleIDs, findings: findings,
+		obs: learnPending(st, in, o)}
 	switch {
 	case o.Action == ipc.ActionBlock:
 		j.responseRaw = o.Response
@@ -235,6 +243,7 @@ func (s *Server) filterList(st *loaded, sess *Session, server string, m jsonrpc.
 	result := m.Result
 	var reasons, found []string
 	var removed []poisonEvent
+	var listFlags []string
 	filtered, pinChanged, events, err := s.pins.CheckPage(server, m.Result, cursor)
 	notList := errors.Is(err, pin.ErrNotToolsList) && uncorrelated
 	switch {
@@ -249,7 +258,7 @@ func (s *Server) filterList(st *loaded, sess *Session, server string, m jsonrpc.
 	// Detection (M5): after pins, before the policy hides tools.
 	if !notList && !s.o.DisableDetection {
 		var rep []byte
-		if rep, removed, found, err = s.detectList(sess, server, result, cursor); err != nil {
+		if rep, removed, found, listFlags, err = s.detectList(sess, server, result, cursor); err != nil {
 			return rejectList(m, err)
 		}
 		if len(removed) > 0 {
@@ -273,7 +282,8 @@ func (s *Server) filterList(st *loaded, sess *Session, server string, m jsonrpc.
 		}
 		return s.detectResult(m, "")
 	}
-	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, pinEvents: events, poisoned: removed, findings: found}
+	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, pinEvents: events, poisoned: removed, findings: found,
+		learnFlags: listFlags}
 	if len(reasons) > 0 {
 		j.action, j.audit, j.reason, j.replacement = ipc.ActionReplace, ipc.ActionReplace, strings.Join(reasons, "; "), withResult(m, result)
 	}

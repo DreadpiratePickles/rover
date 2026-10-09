@@ -35,6 +35,10 @@ type Outcome struct {
 	// WouldDeny is set in observe mode when the message was denied but is
 	// forwarded anyway; the audit log records it as "would_deny".
 	WouldDeny bool
+	// Args and Norm are context.args and context.norm of a judged
+	// call_tool (empty otherwise). Learn mode (M6) records their shape;
+	// they are immutable Cedar values, safe to keep after Decide returns.
+	Args, Norm types.Record
 }
 
 // Decide judges one message. It never returns an error: every failure on
@@ -67,7 +71,9 @@ func (e *Engine) Decide(in Input) Outcome {
 		return block(in, d.reason, nil, nil)
 	}
 	decision, diag := cedar.Authorize(e.policies, b.entities, b.req)
-	return e.outcome(in, decision, diag, b.findings)
+	o := e.outcome(in, decision, diag, b.findings)
+	o.Args, o.Norm = b.args, b.norm
+	return o
 }
 
 // outcome turns Cedar's answer into an Outcome.

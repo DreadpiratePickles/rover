@@ -28,7 +28,8 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | M3 | YAML → Cedar compiler (`rover policy compile`, `policy init --yaml`), schema generated from config | done |
 | M4 | Tool pinning (rug-pull defence): TOFU digests, changed/new tools filtered and blocked, `rover pin list/approve/reset` | done |
 | M5 | Detection tier 1 (local rules: invisible characters, instruction phrases, exfil URLs, shadowing, ...), evaluation corpus, `rover eval` gates | done |
-| M6 | Learn mode and policy proposals | next |
+| M6 | Learn mode (observe records call shapes) and policy proposals: `rover policy propose/diff`, flagged calls excluded | done |
+| M7 | Client installers and doctor | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -69,6 +70,13 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 # detection tier 1 (M5): always on, in every mode. A poisoned tool is removed
 # from tools/list; an injected result block is replaced or gets a warning.
 ./bin/rover eval                     # precision/recall/false positives on testdata/corpus; exit 1 if a gate fails
+
+# learn mode (M6): in observe mode roverd records the shape of every call
+# (resolved paths, hosts, short literals; never contents). Then:
+./bin/rover policy propose --yaml    # Cedar (+ YAML) permitting what was seen; flagged calls
+                                     # listed as "suspicious, not proposed"; new roots to add
+./bin/rover policy propose --out proposal.cedar
+./bin/rover policy diff              # current policy vs the proposal (or: policy diff FILE)
 ```
 
 Detection tier 1 is a set of local rules (no model, nothing leaves the

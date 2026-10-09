@@ -41,6 +41,10 @@ var DefaultArgNames = []string{"branch", "owner", "path", "query", "repo", "url"
 // official servers.
 var pluralPathArgs = map[string]bool{"files": true, "paths": true}
 
+// IsPluralPathArg reports whether the schema declares a path argument of
+// this name as a NormPaths (a list) rather than a NormPath.
+func IsPluralPathArg(name string) bool { return pluralPathArgs[name] }
+
 // DefaultSchemaExtension is what the shipped schema.cedarschema declares:
 // one root named "projects" and the built-in normalisers.
 func DefaultSchemaExtension() SchemaExtension {

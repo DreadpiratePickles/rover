@@ -19,19 +19,20 @@ type listTool struct {
 // detectList scans every tool of one tools/list page (result, the value of
 // "result"; cursor, the request's params.cursor) and removes the tools with
 // a high finding. findings are the ids of everything else (medium and low),
-// for the list's audit entry.
+// for the list's audit entry; flags are the medium ones, which flag the
+// tools/list observation in learn mode (M6).
 //
 // Which tools exist is remembered per session and per server (review M4):
 // one agent's evil server cannot make tool names count against another
 // agent's servers, and a server's own names never count against itself.
-func (s *Server) detectList(sess *Session, server string, result []byte, cursor string) (rep []byte, removed []poisonEvent, findings []string, err error) {
+func (s *Server) detectList(sess *Session, server string, result []byte, cursor string) (rep []byte, removed []poisonEvent, findings, flags []string, err error) {
 	members, err := splitObject(result, 0, len(result))
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	tf, ok := field(members, "tools")
 	if !ok {
-		return result, nil, nil, nil
+		return result, nil, nil, nil, nil
 	}
 	next := ""
 	if nf, ok := field(members, "nextCursor"); ok {
@@ -39,19 +40,19 @@ func (s *Server) detectList(sess *Session, server string, result []byte, cursor 
 	}
 	els, err := splitArray(result, tf.Start, tf.End)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("tools: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("tools: %w", err)
 	}
 	tools := make([]listTool, 0, len(els))
 	names := make([]string, 0, len(els))
 	for i, e := range els {
 		fs, ferr := splitObject(result, e[0], e[1])
 		if ferr != nil {
-			return nil, nil, nil, fmt.Errorf("tool %d: %w", i, ferr)
+			return nil, nil, nil, nil, fmt.Errorf("tool %d: %w", i, ferr)
 		}
 		nf, _ := field(fs, "name")
 		name, isString := stringValue(nf.Value)
 		if !isString {
-			return nil, nil, nil, fmt.Errorf("tool %d: name is not a string", i)
+			return nil, nil, nil, nil, fmt.Errorf("tool %d: name is not a string", i)
 		}
 		tools = append(tools, listTool{at: e, name: name, fields: fs})
 		names = append(names, name)
@@ -77,7 +78,7 @@ func (s *Server) detectList(sess *Session, server string, result []byte, cursor 
 	for _, t := range tools {
 		fs, serr := scanTool(rules, result, t)
 		if serr != nil {
-			return nil, nil, nil, fmt.Errorf("tool %q: %w", t.name, serr)
+			return nil, nil, nil, nil, fmt.Errorf("tool %q: %w", t.name, serr)
 		}
 		if detect.Max(fs) == detect.High {
 			removed = append(removed, poisonEvent{server: server, tool: t.name, ids: detect.Score(fs).IDs})
@@ -87,15 +88,15 @@ func (s *Server) detectList(sess *Session, server string, result []byte, cursor 
 		kept = append(kept, result[t.at[0]:t.at[1]])
 	}
 	s.det.page(server, cursor, next, removed)
-	findings = detect.Score(all).IDs
+	findings, flags = detect.Score(all).IDs, flagIDs(all)
 	if len(removed) == 0 {
-		return result, nil, findings, nil
+		return result, nil, findings, flags, nil
 	}
 	rep, err = applyEdits(result, []edit{{tf.Start, tf.End, joinArray(kept)}})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return rep, removed, findings, nil
+	return rep, removed, findings, flags, nil
 }
 
 // scanTool scans every string of a tool the model may read: name, title,

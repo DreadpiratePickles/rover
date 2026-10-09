@@ -74,6 +74,10 @@ type built struct {
 	req      types.Request
 	entities types.EntityMap
 	findings []string
+	// args and norm are context.args and context.norm of a call_tool, for
+	// learn mode (Outcome.Args, Outcome.Norm).
+	args types.Record
+	norm types.Record
 }
 
 // denyError is a pre-evaluation failure: the message is blocked with reason.
@@ -119,7 +123,8 @@ func buildRequest(in Input, action string) (built, error) {
 			return built{}, denyError{reason: ReasonNormReject}
 		}
 		b.findings = append(b.findings, norm.Findings...)
-		extra = types.RecordMap{"args": args, "norm": types.NewRecord(norm.Norm)}
+		b.args, b.norm = args, types.NewRecord(norm.Norm)
+		extra = types.RecordMap{"args": args, "norm": b.norm}
 	case actReadResource:
 		res, err := resourceEntity(in, server.UID, params)
 		if err != nil {

@@ -51,6 +51,9 @@ const (
 	OpPinList    = "pin_list"
 	OpPinApprove = "pin_approve"
 	OpPinReset   = "pin_reset"
+	// OpObservationsDump returns the learn-mode observations (M6) as a JSON
+	// array, oldest first, capped at 50,000 entries. Read-only.
+	OpObservationsDump = "observations_dump"
 )
 
 // MaxToolName bounds the tool named in an admin frame.
@@ -191,6 +194,11 @@ func validateAdmin(f Frame) error {
 	case OpPinApprove:
 		needTool = true
 	case OpPinReset:
+	case OpObservationsDump:
+		needServer = false
+		if f.ServerName != "" {
+			return fmt.Errorf("%w: %s takes no server", ErrBadFrame, f.Op)
+		}
 	default:
 		return fmt.Errorf("%w: unknown admin op %q", ErrBadFrame, f.Op)
 	}

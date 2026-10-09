@@ -130,6 +130,9 @@ func orNone(d string) string {
 // TODO(M9): pin_approve and pin_reset need OS authentication.
 func (s *Server) Admin(f ipc.Frame) ipc.Frame {
 	fail := func(err error) ipc.Frame { return ipc.Frame{Type: ipc.TypeError, Message: err.Error()} }
+	if f.Op == ipc.OpObservationsDump {
+		return s.dumpObservations()
+	}
 	if f.Op != ipc.OpPinList {
 		s.mu.Lock()
 		unhealthy := s.unhealthy
