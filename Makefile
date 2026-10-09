@@ -37,6 +37,8 @@ fuzz:
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/audit -run='^$$' -fuzz=FuzzVerify -fuzztime=$(FUZZTIME)
 	go test ./internal/framing -run='^$$' -fuzz=FuzzReadLine -fuzztime=$(FUZZTIME)
+	go test ./internal/policy -run='^$$' -fuzz=FuzzDecide -fuzztime=$(FUZZTIME)
+	go test ./internal/policy -run='^$$' -fuzz=FuzzFilterToolsList -fuzztime=$(FUZZTIME)
 
 lint:
 	golangci-lint run ./...
