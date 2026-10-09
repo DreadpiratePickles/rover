@@ -1,0 +1,45 @@
+# Built-in normalizer mappings for the official MCP reference servers.
+#
+# Shape: servers -> <server name> -> <tool name> -> <argument name> -> <kind>
+# Kinds: path, url, email, shell_command, sql.
+#
+# Argument names follow the servers' published tool schemas
+# (modelcontextprotocol/servers: filesystem, fetch, git; GitHub MCP server).
+# A path argument may be a string or an array of strings (read_multiple_files
+# "paths", git_add "files"); each element is normalised.
+servers:
+  filesystem:
+    read_file: {path: path}
+    read_text_file: {path: path}
+    read_media_file: {path: path}
+    read_multiple_files: {paths: path}
+    write_file: {path: path}
+    edit_file: {path: path}
+    create_directory: {path: path}
+    list_directory: {path: path}
+    list_directory_with_sizes: {path: path}
+    directory_tree: {path: path}
+    move_file: {source: path, destination: path}
+    search_files: {path: path}
+    get_file_info: {path: path}
+  fetch:
+    fetch: {url: url}
+  git:
+    git_status: {repo_path: path}
+    git_diff_unstaged: {repo_path: path}
+    git_diff_staged: {repo_path: path}
+    git_diff: {repo_path: path}
+    git_commit: {repo_path: path}
+    git_add: {repo_path: path, files: path}
+    git_reset: {repo_path: path}
+    git_log: {repo_path: path}
+    git_create_branch: {repo_path: path}
+    git_checkout: {repo_path: path}
+    git_show: {repo_path: path}
+    git_branch: {repo_path: path}
+  # GitHub paths are repository-relative: the caller passes no roots, so they
+  # are cleaned only (finding path_no_root) and never touch the local disk.
+  github:
+    create_or_update_file: {path: path}
+    delete_file: {path: path}
+    get_file_contents: {path: path}
