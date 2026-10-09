@@ -177,7 +177,7 @@ Every regular expression is Go's RE2 (no backtracking, so linear time),
 anchored on a literal first word and limited to a 256-byte window, and each
 rule stops after 8 findings. The scanner reads the text once, 8 bytes at a
 time, and looks closer only at words that start some rule. A 64 KB result
-takes about 0.45 ms (about 1.1 ms under `-race`).
+takes about 0.43 ms (about 1.6 ms under `-race`).
 `TestWorstCaseInputsStayLinear` feeds 64 KB walls of `<`, `ignore `, base64,
 U+200B, `ESC ]` and more, and checks the time grows linearly with the size.
 It found one quadratic case during the build: an `ESC ]` without a

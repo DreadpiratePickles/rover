@@ -26,16 +26,17 @@ func realisticResult() []byte {
 
 // TestScanLatency64KB is the plan's accept criterion (§6 M5: the rule scan
 // adds no more than 2 ms p99 to a decide on a 64 KB result), written as a
-// load-tolerant guard like M2's latency tests: the median must meet the
-// 2 ms budget, the p99 only 10x that, so a machine busy with -race and
-// fuzzers does not fail it while a real regression (a quadratic rule) does.
-// BenchmarkScan64KB is the real number.
+// load-tolerant guard like M2's latency tests: median <= 2 ms, p99 <= 20 ms.
+// Under -race every memory access is instrumented, so the budget there is
+// median <= 10 ms, p99 <= 50 ms: a guard against a quadratic rule, not the
+// measurement. BenchmarkScan64KB (without -race) is the real number.
 func TestScanLatency64KB(t *testing.T) {
 	// Arrange
-	const (
-		runs   = 300
-		budget = 2 * time.Millisecond
-	)
+	const runs = 300
+	median, p99Max := 2*time.Millisecond, 20*time.Millisecond
+	if raceBuild {
+		median, p99Max = 10*time.Millisecond, 50*time.Millisecond
+	}
 	sc := NewRules()
 	text := realisticResult()
 	durations := make([]time.Duration, runs)
@@ -50,12 +51,12 @@ func TestScanLatency64KB(t *testing.T) {
 	// Assert
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	p50, p99 := durations[runs/2], durations[runs*99/100]
-	t.Logf("Scan of a 64 KB result: p50 %v, p99 %v, max %v", p50, p99, durations[runs-1])
-	if p50 > budget {
-		t.Fatalf("p50 %v, want <= %v", p50, budget)
+	t.Logf("Scan of a 64 KB result (race=%v): p50 %v, p99 %v, max %v", raceBuild, p50, p99, durations[runs-1])
+	if p50 > median {
+		t.Fatalf("p50 %v, want <= %v", p50, median)
 	}
-	if p99 > 10*budget {
-		t.Fatalf("p99 %v, want <= %v", p99, 10*budget)
+	if p99 > p99Max {
+		t.Fatalf("p99 %v, want <= %v", p99, p99Max)
 	}
 }
 
