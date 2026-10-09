@@ -114,6 +114,9 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	// in every mode and with or without a policy: whatever Rover would judge
 	// it as, the receiver may read it as something else (review C1).
 	if m.Kind == jsonrpc.KindInvalid {
+		if dir == policy.DirS2C && m.Method == "" && m.ID != nil && sess.take(server, policy.DirC2S, m.ID) {
+			return invalidReplyJ(m)
+		}
 		return invalidJ(m)
 	}
 	// A result answering tools/list, or answering nothing we know of (a
@@ -151,6 +154,17 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 func invalidJ(m jsonrpc.Message) judgment {
 	o := policy.InvalidOutcome(m)
 	return judgment{action: o.Action, audit: o.Action, reason: o.Reason, responseRaw: o.Response}
+}
+
+// invalidReplyJ replaces an invalid server line that names a pending agent
+// request with a -32001 error for that id, so the agent is not left waiting
+// for a reply that will never come. The line itself is never forwarded.
+func invalidReplyJ(m jsonrpc.Message) judgment {
+	reason := ReasonInvalidJSONRPC + ": " + m.Invalid
+	return judgment{
+		action: ipc.ActionReplace, audit: ipc.ActionBlock, reason: reason,
+		replacement: policy.ErrorResponse(m.ID, reason),
+	}
 }
 
 func blockJ(m jsonrpc.Message, reason string, ids, findings []string) judgment {

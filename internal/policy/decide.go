@@ -135,7 +135,9 @@ func Policed(dir string, m jsonrpc.Message) bool {
 // InvalidOutcome blocks an invalid line, in every mode (review C1: Rover
 // cannot know how the receiver will read an ambiguous line). If it still
 // names an exact id and method, the requester gets -32600 Invalid Request
-// rather than waiting forever; anything else is dropped.
+// rather than waiting forever; anything else is dropped. (roverd also
+// answers the agent when an invalid server line names a pending agent
+// request; that needs session state, so it lives in package daemon.)
 func InvalidOutcome(m jsonrpc.Message) Outcome {
 	o := Outcome{Action: ipc.ActionBlock, Reason: ReasonInvalidJSONRPC + ": " + m.Invalid}
 	if m.InvalidRequest() {
