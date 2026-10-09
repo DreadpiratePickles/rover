@@ -260,13 +260,8 @@ func parseRotated(name, file string) (k rotatedKey, ok bool) {
 // rotatedFiles lists the rotated files of the log called name, oldest first.
 // A file that looks rotated (<stem>-*.jsonl) but has an unexpected name is an
 // error: we cannot tell where it belongs in the chain, so we refuse to guess.
-func rotatedFiles(root *os.Root, name string) ([]string, error) {
-	d, err := root.Open(".")
-	if err != nil {
-		return nil, err
-	}
-	ents, err := d.ReadDir(-1)
-	_ = d.Close() // read-only
+func rotatedFiles(dir, name string) ([]string, error) {
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -307,17 +302,13 @@ func rotatedFiles(root *os.Root, name string) ([]string, error) {
 // of entries and the last hash.
 func VerifyFiles(dir string) (n int, last string, err error) {
 	const name = "audit.jsonl"
-	root, err := os.OpenRoot(dir)
+	// Only the fixed name and names rotatedFiles validated are joined with
+	// dir, and openInDir refuses symlinks (see logger.go).
+	files, err := rotatedFiles(dir, name)
 	if err != nil {
 		return 0, "", err
 	}
-	defer func() { _ = root.Close() }()
-
-	files, err := rotatedFiles(root, name)
-	if err != nil {
-		return 0, "", err
-	}
-	if _, err := root.Lstat(name); err == nil {
+	if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
 		files = append(files, name)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return 0, "", err
@@ -327,7 +318,7 @@ func VerifyFiles(dir string) (n int, last string, err error) {
 	}
 
 	for _, fn := range files {
-		f, err := root.Open(fn)
+		f, err := openInDir(dir, fn, os.O_RDONLY)
 		if err != nil {
 			return n, "", err
 		}

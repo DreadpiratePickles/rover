@@ -79,8 +79,8 @@ type Logger struct {
 	mu   sync.Mutex
 	w    io.Writer
 	f    *os.File // the open log file; nil for New
-	root *os.Root // the log's directory; nil for New
-	name string   // the log's file name inside root
+	dir  string   // the log's directory; "" for New
+	name string   // the log's file name inside dir
 	size int64
 	last string // hash of the last entry written (the next entry's Prev)
 	err  error  // sticky: once set, every Write fails
@@ -95,22 +95,22 @@ func Open(path string) (*Logger, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	// os.Root: every later open, rename and stat is confined to this
-	// directory, so a symlink cannot redirect rotation somewhere else.
-	root, err := os.OpenRoot(dir)
+	// Every later open, rename and stat joins dir with a plain file name:
+	// the fixed log name, or a rotated name that parseRotated (or rotatedName)
+	// produced, which cannot contain a path separator, so no path leaves dir.
+	// openInDir refuses symlinks. The directory itself is created 0700 and
+	// owner-checked by internal/paths before roverd opens the log.
+	// (The os package's Root type is avoided on purpose: GO-2026-6604, see
+	// openInDir.)
+	l, err := openIn(dir, name)
 	if err != nil {
-		return nil, err
-	}
-	l, err := openIn(root, name)
-	if err != nil {
-		_ = root.Close()
 		return nil, fmt.Errorf("audit log %s: %w", path, err)
 	}
 	return l, nil
 }
 
-func openIn(root *os.Root, name string) (*Logger, error) {
-	f, err := root.OpenFile(name, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+func openIn(dir, name string) (*Logger, error) {
+	f, err := openInDir(dir, name, os.O_CREATE|os.O_RDWR|os.O_APPEND)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func openIn(root *os.Root, name string) (*Logger, error) {
 		last, err = lastHashOf(f, fi.Size())
 	}
 	if err == nil && fi.Size() == 0 {
-		last, err = lastRotatedHash(root, name)
+		last, err = lastRotatedHash(dir, name)
 	}
 	if err != nil {
 		_ = f.Close()
@@ -134,7 +134,7 @@ func openIn(root *os.Root, name string) (*Logger, error) {
 		Now:      time.Now,
 		w:        f,
 		f:        f,
-		root:     root,
+		dir:      dir,
 		name:     name,
 		size:     fi.Size(),
 		last:     last,
@@ -152,15 +152,48 @@ func checkFile(fi fs.FileInfo) error {
 	return nil
 }
 
+// openInDir opens the file called name in dir with flag (mode 0600 if it is
+// created). name must be a plain file name: the fixed log name, or a rotated
+// name that parseRotated accepted. A symlink is refused, not followed, so it
+// cannot point the log (or rotation) at a file outside dir.
+//
+// LESSON: this used to use the os package's Root type, which confines opens
+// to one directory in the kernel. Its Mkdir and MkdirAll can follow junctions
+// out of the root on Windows (GO-2026-6604, fixed only in newer Go), and
+// govulncheck's source mode does not filter by target OS, so CI failed on
+// every OS. We use plain paths plus these checks instead. Lstat then
+// open is not atomic, but the directory is private (0700, owner-checked), so
+// only its owner could swap a file in between. O_NOFOLLOW would close that
+// gap but does not exist on every GOOS.
+func openInDir(dir, name string, flag int) (*os.File, error) {
+	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
+		return nil, fmt.Errorf("invalid audit log file name %q", name)
+	}
+	p := filepath.Join(dir, name)
+	fi, err := os.Lstat(p)
+	switch {
+	case err == nil:
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%s is a symlink; refusing to use it (audit logs must be regular files)", p)
+		}
+	case errors.Is(err, fs.ErrNotExist) && flag&os.O_CREATE != 0:
+		// Not there yet: OpenFile creates it. (With O_EXCL, as rotate uses,
+		// OpenFile also refuses a symlink that appears in between.)
+	default:
+		return nil, err
+	}
+	return os.OpenFile(p, flag, 0o600) //nolint:gosec // G304: name is checked above to be a plain file name, so p stays inside the private audit dir
+}
+
 // lastRotatedHash continues the chain from the newest rotated file, for when
 // the current file is empty (e.g. roverd restarted right after a rotation).
-func lastRotatedHash(root *os.Root, name string) (string, error) {
-	names, err := rotatedFiles(root, name)
+func lastRotatedHash(dir, name string) (string, error) {
+	names, err := rotatedFiles(dir, name)
 	if err != nil || len(names) == 0 {
 		return "", err
 	}
 	newest := names[len(names)-1]
-	f, err := root.Open(newest)
+	f, err := openInDir(dir, newest, os.O_RDONLY)
 	if err != nil {
 		return "", err
 	}
@@ -249,7 +282,7 @@ func (l *Logger) rotate() error {
 	// get -1, -2, ... (VerifyFiles sorts these after the plain name).
 	for n := 0; n < 1000 && !renamed; n++ {
 		target := rotatedName(stem, ts, n)
-		_, err := l.root.Lstat(target)
+		_, err := os.Lstat(filepath.Join(l.dir, target))
 		if err == nil {
 			continue
 		}
@@ -258,7 +291,7 @@ func (l *Logger) rotate() error {
 		}
 		// roverd is the only writer (it holds the pid-file lock), so nothing
 		// can create target between the Lstat and the Rename.
-		if err := l.root.Rename(l.name, target); err != nil {
+		if err := os.Rename(filepath.Join(l.dir, l.name), filepath.Join(l.dir, target)); err != nil {
 			return err
 		}
 		renamed = true
@@ -269,7 +302,7 @@ func (l *Logger) rotate() error {
 
 	// O_EXCL: we just renamed the old file away; if something is there now,
 	// it is not ours.
-	f, err := l.root.OpenFile(l.name, os.O_CREATE|os.O_EXCL|os.O_RDWR|os.O_APPEND, 0o600)
+	f, err := openInDir(l.dir, l.name, os.O_CREATE|os.O_EXCL|os.O_RDWR|os.O_APPEND)
 	if err != nil {
 		return err
 	}
@@ -289,12 +322,6 @@ func (l *Logger) Close() error {
 	if l.f != nil {
 		err = l.f.Close()
 		l.f = nil
-	}
-	if l.root != nil {
-		if e := l.root.Close(); err == nil {
-			err = e
-		}
-		l.root = nil
 	}
 	if l.err == nil && l.name != "" { // a logger from New stays usable, as before
 		l.err = errors.New("audit log is closed")

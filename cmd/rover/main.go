@@ -520,14 +520,18 @@ func verifyLog(logPath string) int {
 // verifyFile checks one log file. A single file cannot prove nothing came
 // before its first entry; VerifyFiles (no --log) checks across files.
 func verifyFile(path string) (int, error) {
-	// os.Root confines the open to the named directory (no ".." or symlink
-	// escapes), which is also what keeps gosec's G304 satisfied.
-	root, err := os.OpenRoot(filepath.Dir(path))
+	// The path is the user's own --log choice. Refuse a symlink so the file
+	// we verify is the file they named, not whatever it points at. (The os
+	// package's Root type would confine this further, but its methods carry
+	// GO-2026-6604 on Windows, so we keep to plain calls; see audit.openInDir.)
+	fi, err := os.Lstat(path)
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = root.Close() }()
-	f, err := root.Open(filepath.Base(path))
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return 0, fmt.Errorf("%s is a symlink; refusing to verify it (name the real file)", path)
+	}
+	f, err := os.Open(path) //nolint:gosec // G304: the user's own --log path, checked above not to be a symlink
 	if err != nil {
 		return 0, err
 	}
