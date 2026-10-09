@@ -180,7 +180,7 @@ func (c compiler) target(n *yaml.Node, allow bool) (server, tool string, err err
 	}
 	server, tool, ok := strings.Cut(s, ".")
 	if !ok || !serverRE.MatchString(server) || !toolRE.MatchString(tool) || tool == "*" {
-		return "", "", c.errAt(n, "%q is not <server>.<tool> (server: letters, digits, _ and -; tool: also .)", s)
+		return "", "", c.errAt(n, "%q is not <server>.<tool> (server: letters, digits, _ and -, starting with a letter, digit or _; tool: also .)", s)
 	}
 	return server, tool, nil
 }

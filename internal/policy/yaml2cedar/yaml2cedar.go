@@ -142,7 +142,11 @@ func (c compiler) parse(src []byte) (*yaml.Node, error) {
 	}
 	var extra yaml.Node
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, c.errLine(extra.Line, "the file must contain exactly one YAML document")
+		line := extra.Line
+		if line == 0 { // the second document did not parse, so it has no node
+			line = separatorLine(src, doc.Line)
+		}
+		return nil, c.errLine(line, "the file must contain exactly one YAML document")
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {
 		return nil, c.errLine(1, "file is empty")
@@ -152,6 +156,22 @@ func (c compiler) parse(src []byte) (*yaml.Node, error) {
 		return nil, err
 	}
 	return root, nil
+}
+
+// separatorLine returns the line of the first document marker ("---" or
+// "...") after line after (where the first document starts), so an error in a
+// second document still names a line. Without one it returns the last line.
+func separatorLine(src []byte, after int) int {
+	lines := bytes.Split(src, []byte("\n"))
+	for i := after; i < len(lines); i++ { // lines[i] is line i+1
+		l := bytes.TrimRight(lines[i], "\r")
+		for _, m := range [][]byte{[]byte("---"), []byte("...")} {
+			if bytes.HasPrefix(l, m) && (len(l) == 3 || l[3] == ' ' || l[3] == '\t') {
+				return i + 1
+			}
+		}
+	}
+	return max(len(lines), 1)
 }
 
 // plain refuses anchors, aliases and excessive depth anywhere in the tree.

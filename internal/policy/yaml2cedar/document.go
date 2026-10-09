@@ -13,8 +13,9 @@ import (
 var (
 	// ruleIDRE: a rule id becomes @id("<id>").
 	ruleIDRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
-	// serverRE: the part before the first "." of server.tool.
-	serverRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	// serverRE: the part before the first "." of server.tool. It starts like
+	// a rule id, because the implied "<server>-list-tools" id must be one.
+	serverRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$`)
 	// toolRE: a tool name (may contain dots).
 	toolRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 	// rootRE: a root name becomes the attribute under_<root>.
@@ -139,7 +140,7 @@ func (c compiler) servers(n *yaml.Node) (map[string]map[string][]string, error) 
 	}
 	for _, s := range servers {
 		if !serverRE.MatchString(s.key.Value) {
-			return nil, c.errAt(s.key, "server name %q: only letters, digits, _ and - are allowed", s.key.Value)
+			return nil, c.errAt(s.key, "server name %q: only letters, digits, _ and - are allowed, and it must start with a letter, digit or _", s.key.Value)
 		}
 		inner, err := c.mapping(s.val, "servers."+s.key.Value, "labels")
 		if err != nil {

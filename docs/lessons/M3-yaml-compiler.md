@@ -154,8 +154,15 @@ and nothing is. Rover now checks every `has` itself
 (`internal/policy/hascheck.go`) and refuses the policy:
 
 ```
-error: policy load failed: compiled.cedar: policy "echo-read-lab" (line 12): `has under_lab` tests an attribute the schema does not declare there, so it is always false and the policy can never match (is a root or argument missing from the config?)
+error: policy load failed: compiled.cedar: policy "echo-read-lab" (line 12): `has under_lab` tests an attribute the schema does not declare there, so it is always false and the policy can never match (is a root or argument missing from the config, or does the action scope include an entity type without it?)
 ```
+
+The check reads `principal` and `resource` by the entity types the policy's
+scope allows for its action: `resource has pinned` is fine on `list_tools`
+(a Server has `pinned`) but refused on `call_tool` (a Tool does not), a policy
+for every action may only test what every type has, and a `has` whose left
+side is not a plain path like `context.norm.path` is refused because Rover
+cannot check it.
 
 ### 8. `policy.cedar` wins over `policy.yaml`
 
