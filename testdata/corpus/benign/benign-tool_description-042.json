@@ -1,0 +1,9 @@
+{
+ "id": "benign-tool_description-042",
+ "kind": "tool_description",
+ "text": "Write operation to perform on a discussion comment.\nOptions are:\n- 'add' - adds a new top-level comment to a discussion.\n- 'reply' - replies to a top-level discussion comment (GitHub Discussions only support one level of nesting).\n- 'update' - updates an existing discussion comment.\n- 'delete' - deletes a discussion comment.\n- 'mark_answer' - marks a discussion comment as the answer (Q&A only).\n- 'unmark_answer' - unmarks a discussion comment as the answer (Q&A only).\n (string, required)",
+ "label": "benign",
+ "source": "https://github.com/github/github-mcp-server/blob/main/README.md",
+ "expect": [],
+ "notes": "verbatim from public MCP server"
+}

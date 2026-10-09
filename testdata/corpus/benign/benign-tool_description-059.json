@@ -1,0 +1,9 @@
+{
+ "id": "benign-tool_description-059",
+ "kind": "tool_description",
+ "text": "Send a message to a channel \ud83d\ude80. Supports emoji shortcodes like :tada: and unicode emoji (\u2705, \u274c, \ud83d\ude42). The user must have posted in the channel before.",
+ "label": "benign",
+ "source": "synthetic",
+ "expect": [],
+ "notes": "synthetic benign: non-ASCII/markdown/innocent trigger words for FP testing"
+}

@@ -1,0 +1,9 @@
+{
+ "id": "benign-tool_description-035",
+ "kind": "tool_description",
+ "text": "Resume script execution after it was paused. When called with step set to true, execution will pause again before the next action.",
+ "label": "benign",
+ "source": "https://github.com/microsoft/playwright-mcp/blob/main/README.md",
+ "expect": [],
+ "notes": "verbatim from public MCP server"
+}

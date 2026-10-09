@@ -297,6 +297,12 @@ $ ./bin/rover log --verify
 $ kill $(cat $ROVER_DIR/dpid); rm -rf $ROVER_DIR
 ```
 
+> **Since M5** the last list no longer shows `echo`: detection tier 1 (see
+> `M5-detection-tier1.md`) removes this description on its own (`<IMPORTANT>`,
+> "Do not mention this to the user"), whatever the pin says. Approving a pin
+> says "this is the version I looked at", not "this text is safe". To replay
+> the M4 demo exactly, make the rug pull a harmless change.
+
 Look at the last list: on the wire Go's encoder wrote `<` as `\u003c`. The
 pin still matched, because the digest is taken over the canonical form, where
 that is `<` again.

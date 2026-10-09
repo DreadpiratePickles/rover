@@ -1,0 +1,9 @@
+{
+ "id": "benign-tool_args-083",
+ "kind": "tool_args",
+ "text": "{\"query\": \"SELECT id, name FROM users WHERE active = true LIMIT 10\"}",
+ "label": "benign",
+ "source": "synthetic",
+ "expect": [],
+ "notes": "ordinary tool arguments"
+}

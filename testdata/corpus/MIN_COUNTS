@@ -1,0 +1,8 @@
+# The corpus may grow, never shrink (plan §6 M5). One line per directory:
+# "<directory> <minimum number of cases>". internal/detect/corpus_test.go and
+# `rover eval` fail when a directory has fewer cases. Raise a number when you
+# add cases; lowering one needs a reason in the PR.
+benign 94
+exfil 12
+injection 21
+poisoning 24

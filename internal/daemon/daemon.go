@@ -12,8 +12,6 @@ package daemon
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -79,6 +77,7 @@ type Server struct {
 
 	pins           *pin.Checker
 	notes          *pin.Coalescer
+	det            detectState // detection's memory (detect.go)
 	pol            atomic.Pointer[loaded]
 	noPolicyWarned atomic.Int64 // unix nanos of the last "no policy" warning
 }
@@ -333,7 +332,10 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
 	}
-	entries := append(pinEntries(e, j.pinEvents), e)
+	if s.o.LogBodies && j.bodyOut != nil {
+		e.Body = j.bodyOut // a rewritten result is logged as forwarded
+	}
+	entries := append(append(pinEntries(e, j.pinEvents), poisonEntries(e, j.poisoned)...), e)
 	if j.action == ipc.ActionBlock && m.Kind == jsonrpc.KindRequest {
 		sess.forget(server, f.Dir, m.ID)
 	}
@@ -348,46 +350,15 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 		return ipc.Frame{Type: ipc.TypeVerdict, Seq: f.Seq, Action: ipc.ActionBlock, Reason: "audit log unavailable: " + err.Error()}
 	}
 	s.notifyPins(j.pinEvents)
+	s.notifyPoison(j.poisoned)
 	if j.call {
 		sess.noteForwardedCall(j.callLabels)
+	}
+	if j.untrusted {
+		sess.noteUntrusted()
 	}
 	return ipc.Frame{
 		Type: ipc.TypeVerdict, Seq: f.Seq, Action: j.action, Reason: j.reason, RuleIDs: j.ruleIDs,
 		ResponseRaw: j.responseRaw, ReplacementRaw: j.replacement,
 	}
-}
-
-// join finds or creates the session for clientPID and attaches a wrapper to
-// it, atomically with release, so a wrapper arriving while the last one
-// leaves never lands on a session that is about to be deleted.
-func (s *Server) join(clientPID int, server string) *Session {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[clientPID]
-	if !ok {
-		sess = newSession(newID(), clientPID, s.o.Now())
-		s.sessions[clientPID] = sess
-	}
-	sess.join(server)
-	return sess
-}
-
-func (s *Server) release(sess *Session, server string) {
-	s.mu.Lock()
-	last := sess.leave(server)
-	if last {
-		if cur, ok := s.sessions[sess.ClientPID]; ok && cur == sess {
-			delete(s.sessions, sess.ClientPID)
-		}
-	}
-	s.mu.Unlock()
-	if last {
-		s.o.Logf("session %s: closed", sess.ID)
-	}
-}
-
-func newID() string {
-	b := make([]byte, 6)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

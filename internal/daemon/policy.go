@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/config"
+	"github.com/DreadpiratePickles/rover/internal/detect"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 	"github.com/DreadpiratePickles/rover/internal/pin"
@@ -103,7 +104,10 @@ type judgment struct {
 	replacement []byte   // replace: the line forwarded instead
 	callLabels  []string // a forwarded tools/call: its labels, for the session flags
 	call        bool
-	pinEvents   []pin.Event // audited before the message itself, mismatches notified
+	pinEvents   []pin.Event   // audited before the message itself, mismatches notified
+	poisoned    []poisonEvent // tools detection removed: audited and notified the same way
+	untrusted   bool          // a result with a detection finding: the session saw untrusted data
+	bodyOut     []byte        // the line as forwarded, for the audit body when it was rewritten
 }
 
 var forwardJ = judgment{action: ipc.ActionForward, audit: ipc.ActionForward}
@@ -127,10 +131,18 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	if dir == policy.DirS2C && m.Kind == jsonrpc.KindResult && (replyTo == "tools/list" || replyTo == "") {
 		return s.filterList(st, server, m, replyTo == "", cursor)
 	}
+	// Tool and resource results are scanned for injection (M5), in every mode.
+	if dir == policy.DirS2C && m.Kind == jsonrpc.KindResult && (replyTo == "tools/call" || replyTo == "resources/read") {
+		return s.detectResult(m, replyTo)
+	}
 	// Pins come before policy and apply in every mode (D6): a tool that
-	// changed under the agent is refused even while learning.
+	// changed under the agent is refused even while learning. So is a tool
+	// detection removed from the list.
 	if dir == policy.DirC2S && m.Kind == jsonrpc.KindRequest && m.Method == "tools/call" {
 		if j, refused := s.pinCall(server, m); refused {
+			return j
+		}
+		if j, refused := s.poisonedCall(server, m); refused {
 			return j
 		}
 	}
@@ -138,29 +150,40 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	if dir == policy.DirS2C && m.Kind == jsonrpc.KindNotification && m.Method == MethodToolsListChanged {
 		pinEvents = s.pinRecheck(server)
 	}
-	j := s.judgePolicy(st, sess, server, transport, dir, m, now)
+	var det detect.Summary
+	if m.Kind == jsonrpc.KindRequest {
+		var blocked *judgment
+		if det, blocked = s.detectRequest(dir, m); blocked != nil {
+			return *blocked // high: blocked in every mode (D6)
+		}
+	}
+	j := s.judgePolicy(st, sess, server, transport, dir, m, now, det)
 	j.pinEvents = pinEvents
 	return j
 }
 
 // judgePolicy is the Cedar half of judge.
-func (s *Server) judgePolicy(st *loaded, sess *Session, server, transport, dir string, m jsonrpc.Message, now time.Time) judgment {
+// det is the detection summary of the message (context.detection).
+func (s *Server) judgePolicy(st *loaded, sess *Session, server, transport, dir string, m jsonrpc.Message, now time.Time, det detect.Summary) judgment {
 	if st.pol == nil {
 		if !policy.Policed(dir, m) {
 			return forwardJ
 		}
 		s.warnNoPolicy(now)
-		return blockJ(m, ReasonNoPolicy, nil, nil)
+		return blockJ(m, ReasonNoPolicy, nil, det.IDs)
 	}
 	name, ver := sess.Client()
-	o := st.pol.Decide(InputFor(st.cfg, server, transport, dir, m, name, ver, sess.Flags(), now))
-	j := judgment{action: o.Action, audit: o.Action, reason: o.Reason, ruleIDs: o.RuleIDs, findings: o.Findings}
+	in := InputFor(st.cfg, server, transport, dir, m, name, ver, sess.Flags(), now)
+	in.Detection = policy.DetectionCtx{MaxScore: det.MaxScore, Findings: det.IDs}
+	o := st.pol.Decide(in)
+	findings := sortedUnique(append(append([]string(nil), det.IDs...), o.Findings...))
+	j := judgment{action: o.Action, audit: o.Action, reason: o.Reason, ruleIDs: o.RuleIDs, findings: findings}
 	switch {
 	case o.Action == ipc.ActionBlock:
 		j.responseRaw = o.Response
 	case o.Action != ipc.ActionForward:
 		// TODO(M9): hold. Until approvals exist, anything else blocks.
-		return blockJ(m, "unsupported decision "+o.Action, o.RuleIDs, o.Findings)
+		return blockJ(m, "unsupported decision "+o.Action, o.RuleIDs, findings)
 	case o.WouldDeny:
 		j.audit = AuditWouldDeny
 	}
@@ -203,11 +226,13 @@ func blockJ(m jsonrpc.Message, reason string, ids, findings []string) judgment {
 // second, unfiltered list).
 func (s *Server) filterList(st *loaded, server string, m jsonrpc.Message, uncorrelated bool, cursor string) judgment {
 	line, result := m.Raw, m.Result
-	var reasons []string
+	var reasons, found []string
+	var removed []poisonEvent
 	filtered, pinChanged, events, err := s.pins.CheckPage(server, m.Result, cursor)
+	notList := errors.Is(err, pin.ErrNotToolsList) && uncorrelated
 	switch {
-	case errors.Is(err, pin.ErrNotToolsList) && uncorrelated:
-		// not a tool list: nothing to pin
+	case notList:
+		// not a tool list: nothing to pin; scanned as a result below
 	case err != nil:
 		return rejectList(m, err)
 	case pinChanged:
@@ -216,6 +241,20 @@ func (s *Server) filterList(st *loaded, server string, m jsonrpc.Message, uncorr
 		}
 		result = filtered
 		reasons = append(reasons, ReasonPinMismatch+": "+strings.Join(mismatched(events), ", "))
+	}
+	// Detection (M5): after pins, before the policy hides tools.
+	if !notList {
+		var rep []byte
+		if rep, removed, found, err = s.detectList(server, result); err != nil {
+			return rejectList(m, err)
+		}
+		if len(removed) > 0 {
+			if line, err = spliceResult(line, rep); err != nil {
+				return rejectList(m, err)
+			}
+			result = rep
+			reasons = append(reasons, ReasonToolPoisoning+": "+strings.Join(poisonedNames(removed), ", "))
+		}
 	}
 	if st.pol != nil { // without a policy nothing is hidden
 		rep, hidden, changed, err := st.pol.FilterToolsList(server, result)
@@ -227,10 +266,14 @@ func (s *Server) filterList(st *loaded, server string, m jsonrpc.Message, uncorr
 			return rejectList(m, err)
 		}
 	}
-	if len(reasons) == 0 {
-		return judgment{action: ipc.ActionForward, audit: ipc.ActionForward, pinEvents: events}
+	if notList {
+		return s.detectResult(m, "")
 	}
-	return judgment{action: ipc.ActionReplace, audit: ipc.ActionReplace, reason: strings.Join(reasons, "; "), replacement: line, pinEvents: events}
+	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, pinEvents: events, poisoned: removed, findings: found}
+	if len(reasons) > 0 {
+		j.action, j.audit, j.reason, j.replacement = ipc.ActionReplace, ipc.ActionReplace, strings.Join(reasons, "; "), line
+	}
+	return j
 }
 
 // rejectList replaces a tools/list result that could not be checked or

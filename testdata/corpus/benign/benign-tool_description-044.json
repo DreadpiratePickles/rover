@@ -1,0 +1,9 @@
+{
+ "id": "benign-tool_description-044",
+ "kind": "tool_description",
+ "text": "The level at which custom properties are managed:\n- 'repository': The custom property VALUES assigned to a repository (requires 'owner' and 'repo').\n- 'organization': The custom property DEFINITIONS (schema) for an organization (requires 'org').\n- 'enterprise': The custom property DEFINITIONS (schema) for an enterprise (requires 'enterprise'). (string, required)",
+ "label": "benign",
+ "source": "https://github.com/github/github-mcp-server/blob/main/README.md",
+ "expect": [],
+ "notes": "verbatim from public MCP server"
+}

@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"time"
@@ -158,6 +160,14 @@ func (s *Session) noteForwardedCall(labels []string) {
 	s.mu.Unlock()
 }
 
+// noteUntrusted records that a result with a detection finding reached the
+// agent (plan M8: saw_untrusted is also set by any detection finding).
+func (s *Session) noteUntrusted() {
+	s.mu.Lock()
+	s.flags.SawUntrusted = true
+	s.mu.Unlock()
+}
+
 // NextFlags is context.session after one more forwarded tools/call of a tool
 // with these labels. `rover policy test` replays sessions with it.
 func NextFlags(f policy.SessionCtx, labels []string) policy.SessionCtx {
@@ -190,4 +200,39 @@ func (s *Session) take(server, dir string, id []byte) bool {
 	_, ok := s.pending[key]
 	delete(s.pending, key)
 	return ok
+}
+
+// join finds or creates the session for clientPID and attaches a wrapper to
+// it, atomically with release, so a wrapper arriving while the last one
+// leaves never lands on a session that is about to be deleted.
+func (s *Server) join(clientPID int, server string) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[clientPID]
+	if !ok {
+		sess = newSession(newID(), clientPID, s.o.Now())
+		s.sessions[clientPID] = sess
+	}
+	sess.join(server)
+	return sess
+}
+
+func (s *Server) release(sess *Session, server string) {
+	s.mu.Lock()
+	last := sess.leave(server)
+	if last {
+		if cur, ok := s.sessions[sess.ClientPID]; ok && cur == sess {
+			delete(s.sessions, sess.ClientPID)
+		}
+	}
+	s.mu.Unlock()
+	if last {
+		s.o.Logf("session %s: closed", sess.ID)
+	}
+}
+
+func newID() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

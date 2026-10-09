@@ -1,0 +1,9 @@
+{
+ "id": "benign-tool_args-086",
+ "kind": "tool_args",
+ "text": "{\"timezone\": \"Europe/London\",\"time\": \"16:30\",\"target_timezone\": \"Asia/Tokyo\"}",
+ "label": "benign",
+ "source": "synthetic",
+ "expect": [],
+ "notes": "ordinary tool arguments"
+}

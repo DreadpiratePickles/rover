@@ -146,14 +146,16 @@ func TestRugPullEndToEnd(t *testing.T) {
 	if out, err := run(dir, "pin", "approve", "rugpull", "echo", m1[1]); err != nil || !strings.Contains(out, "approved rugpull/echo") {
 		t.Fatalf("approve: %v\n%s", err, out)
 	}
-	if got := toolNames(t, m.request(`{"jsonrpc":"2.0","id":6,"method":"tools/list"}`, 6)); strings.Join(got, ",") != "echo,reverse" {
-		t.Fatalf("after approve: %v", got)
+	// The pin now matches, but the approved description is still poisoned:
+	// detection (M5) is independent of pins and removes it on its own.
+	if got := toolNames(t, m.request(`{"jsonrpc":"2.0","id":6,"method":"tools/list"}`, 6)); strings.Join(got, ",") != "reverse" {
+		t.Fatalf("after approve, detection must still remove the poisoned echo: %v", got)
 	}
 	if out, _ := run(dir, "pin", "list", "rugpull"); strings.Contains(out, "MISMATCH") || !strings.Contains(out, "cli") {
 		t.Fatalf("pin list after approve:\n%s", out)
 	}
 	logOut, _ := run(dir, "log")
-	for _, want := range []string{"pinned", "pin_mismatch:echo", "recheck", "pin_approved"} {
+	for _, want := range []string{"pinned", "pin_mismatch:echo", "recheck", "pin_approved", "tool_poisoning:echo"} {
 		if !strings.Contains(logOut, want) {
 			t.Errorf("rover log lacks %q:\n%s", want, logOut)
 		}

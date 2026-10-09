@@ -57,6 +57,10 @@ jobs:
           go vet -tags lab ./testdata/servers/...
       - name: go test -race
         run: go test -race ./...
+      # The detection gates (plan §6 M5), same as `make eval`: exits 1 if
+      # recall, false positives or the corpus size fall below the gates.
+      - name: rover eval (detection gates)
+        run: go run ./cmd/rover eval --corpus testdata/corpus
 
   fuzz:
     runs-on: ubuntu-latest
@@ -91,6 +95,10 @@ jobs:
         run: go test ./internal/policy/yaml2cedar -run='^$' -fuzz=FuzzCompile -fuzztime=30s
       - name: fuzz pin.Canonical (30s)
         run: go test ./internal/pin -run='^$' -fuzz=FuzzCanonical -fuzztime=30s
+      - name: fuzz detect.Scan (30s)
+        run: go test ./internal/detect -run='^$' -fuzz=FuzzScan -fuzztime=30s
+      - name: fuzz roverd result rewriting (30s)
+        run: go test ./internal/daemon -run='^$' -fuzz=FuzzScanResult -fuzztime=30s
       # On a crash, keep the failing input so it can be reproduced locally
       # (copy it into internal/jsonrpc/testdata/fuzz/FuzzParse/ and run go test).
       - name: upload crashing input
@@ -108,6 +116,8 @@ jobs:
             internal/policy/normalize/testdata/fuzz/
             internal/policy/yaml2cedar/testdata/fuzz/
             internal/pin/testdata/fuzz/
+            internal/detect/testdata/fuzz/
+            internal/daemon/testdata/fuzz/
           if-no-files-found: ignore
 
   govulncheck:
