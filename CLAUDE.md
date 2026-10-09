@@ -11,6 +11,9 @@ Rover is an open-source (Apache-2.0) security layer for developers using AI agen
 - Every milestone ends with `docs/lessons/<milestone>.md`, written for a security beginner. The format is in plan §0.4.
 - 🔍 marks unverified facts. Check them against official docs or source before building on them, and use the stated fallback if they're false. If the plan says "stop and ask", stop.
 - Never change a locked decision (§2) on your own. Raise it instead.
+- Rover is meant to be a legitimate competitor to Gopher Security (plan §1), so build to production quality, not demo quality.
+- Anything a human looks at follows plan §4.7: it looks exactly like cwm from OpenBSD.
+- Work in this local checkout. Don't hand milestones to cloud sessions.
 
 ## Security engineering rules (non-negotiable)
 - **Fail closed.** An error on any decision path means deny, block or stop.

@@ -44,6 +44,18 @@ Rover is an **open-source (Apache-2.0) security layer for developers who use AI 
 - **rover-gate** sits between agent apps (Claude Code, Cursor, Claude Desktop and others) and every MCP server they use, local or remote. It records, inspects, applies policy to and, when needed, asks a human about every message.
 - **rover-net** manages a Tailscale or Headscale tailnet as code. It handles policy in git, just-in-time access, device posture and quarantine, and feeds device health into rover-gate's decisions.
 
+**Positioning (Bobby, 2026-10-09).** Rover is built to be a world-class, open-source competitor to Gopher Security's product line, not a learning-only MCP proxy. Gopher sells one platform with two halves, and Rover maps onto both:
+
+| Gopher | What it claims | Rover |
+| --- | --- | --- |
+| Gopher MCP: deep inspection and threat detection | Inspects every tool call; blocks tool poisoning, puppet attacks and hostile external resources | rover-gate: pinning (M4), detection tiers 1 to 3 (M5, M12), session context (M8) |
+| Gopher MCP: context-aware access control | Permissions adjust to model context, environment and device posture | rover-gate policy (M2, M3) plus device posture from rover-net (N3, N5) |
+| Gopher MCP: granular policy enforcement | Tool-level and parameter-level rules | Cedar with typed arguments and normalisers (§5) |
+| Gopher P2P / WAN / SASE: post-quantum end-to-end encryption | Quantum-resistant peer-to-peer connections, no central choke point | rover-net on WireGuard with Rosenpass (§7 labs, N1 to N6); roverd's TLS post-quantum check in `rover doctor` (M7) |
+| Gopher PAM / JITA / Private | Just-in-time privileged access, quarantine, private app access | rover-net grants and quarantine (N4), posture gates (N3) |
+
+The bar for every milestone is therefore "would a security engineer choose this over Gopher for a developer laptop or a small team", not "does it demonstrate the concept". The curriculum pace (one milestone at a time, lesson notes) stays, because Bobby is learning as it's built; the quality bar does not drop for it. The v1 non-goals below still hold: Rover competes first on the developer machine and the tailnet, not as a hosted enterprise control plane (v2, §10).
+
 **Non-goals for v1:**
 - Windows.
 - A hosted service or team gateway (that's v2).
@@ -196,6 +208,30 @@ Store a schema version and migrate on start.
 - JSONL with a hash chain: `entry.prev = previous entry.hash`, `entry.hash = SHA-256(canonical JSON of the entry without the hash field)`. The first entry of each file links to the last hash of the previous file.
 - `rover log --verify` walks the chain and reports the first break.
 - Rotate at 50 MB.
+
+### 4.7 User interface: cwm
+
+Bobby's instruction (2026-10-09): every Rover surface looks exactly like **cwm**, the calm window manager shipped with OpenBSD. This applies to the CLI output, the `rover top` terminal UI (M13), the approval details page (M9) and anything else a human looks at. cwm's values below come from `app/cwm/conf.c` and `menu.c` in OpenBSD xenocara; re-check them against the source before building a surface.
+
+**What cwm looks like**
+
+- No title bars, panels, icons, shadows, gradients or rounded corners. A window is content with a 1-pixel border (`borderwidth 1`).
+- Border colours carry state: active `#CCCCCC`, inactive `#666666`, urgent `#FC8814`, grouping `blue`, ungrouping `red`. That is the whole palette.
+- Menus are black text on a white box (`menubg white`, `menufg black`, font colour black), one entry per line, no padding, the box exactly as wide as its widest line, a 1-pixel black border, drawn at the pointer. The selected entry is inverted: white text on a black row.
+- Font: `sans-serif:pixelsize=14:bold`. One face, one size, bold. Terminals use their own monospace face but keep everything else.
+- Every menu is a search: the first line is `prompt»typed text«` (U+00BB and U+00AB), the list filters as you type, Tab completes the common prefix, Return runs the selection, Escape cancels, and with no match the typed text itself is the entry. The prompts are `exec`, `window`, `ssh`, `application`, `group` and `wm`.
+- Keyboard first. The defaults that matter here: `M-?` exec menu, `M-/` window search, `M-.` ssh menu, `C-/` command menu, `M-Tab` cycle, `CM-x` close, `CM-n` label a window, `CMS-q` quit. No key does anything unless it's bound.
+
+**How that maps onto Rover**
+
+| Surface | Rule |
+| --- | --- |
+| CLI (`rover log`, `rover doctor`, errors on stderr) | Plain lines, fixed-width columns, no emoji, no spinners, no boxes. Colour only when stderr is a TTY and only the five cwm border colours: `#FC8814` for blocks, holds and tamper warnings, `#CCCCCC` for the current session, `#666666` for everything else. |
+| `rover top` (M13) | A white screen with black text (not the terminal theme) and a 1-cell black border. Each pane is a cwm menu: a `prompt»filter«` line, then one entry per row, the selected row inverted. Panes are `calls`, `holds`, `sessions`, `detections`. `/` opens the filter, `Tab` completes, `Enter` opens an entry, `Esc` backs out, `q` quits. Held calls are drawn in `#FC8814`. No mouse, no scrollbars, no help bar; `?` shows the key list as another menu. |
+| Approval details page (M9) | A single static HTML file, no JavaScript, no framework, no external fonts. `body { background:#fff; color:#000; font: bold 14px sans-serif; margin:0 }`. The content sits in one box with `border:1px solid #000`, the heading is `approval»<id>«`, and each row is a cwm menu entry. The state line is `#FC8814` while the approval is pending. The page still cannot approve anything (D9). |
+| Desktop notifications and the OS dialog | Platform-native; cwm styling does not apply. Keep the text in the same voice: one line, lower case, no exclamation marks. |
+
+Acceptance for any UI milestone includes a side-by-side screenshot with cwm (an `xterm` under cwm, or the cwm man page images) in the PR, and the lesson explains what was copied and why cwm's restraint is a security property: nothing to misread, nothing to click by accident, and nothing an agent can forge convincingly.
 
 ---
 
@@ -467,7 +503,7 @@ Phases group milestones into releases. Each milestone below lists **Build**, **A
     3. Send a desktop notification:
        - macOS: 🔍 an `osascript` notification or `UNUserNotificationCenter` via the helper.
        - Linux: `notify-send` or D-Bus.
-       It links to the **read-only** details page on `127.0.0.1:<random port>/approval/<id>?t=<128-bit token>`. The page shows the details and **cannot approve**.
+       It links to the **read-only** details page on `127.0.0.1:<random port>/approval/<id>?t=<128-bit token>`. The page shows the details and **cannot approve**. It's styled per §4.7 (cwm).
     4. Show the OS auth dialog with the reason text: `Rover: allow <client> to run <server>.<tool> (<short summary>)?` Success means release with forward; cancel or failure means deny.
     5. The timeout defaults to 120 s and means deny.
   - **Gate these on OS auth too:** `rover policy apply`, `rover pin approve`, `rover net grant/quarantine` (N4), and switching `mode` from enforce to observe.
@@ -540,10 +576,10 @@ Phases group milestones into releases. Each milestone below lists **Build**, **A
 
 #### M13: Observability
 - **Build:**
-  - `rover top`, a Bubble Tea terminal UI showing live calls, blocks, holds, sessions and detections.
+  - `rover top`, a Bubble Tea terminal UI showing live calls, blocks, holds, sessions and detections, drawn as cwm menus per §4.7.
   - Optional OpenTelemetry export (off by default).
   - Prometheus-style counters available through `rover doctor --metrics`.
-- **Accept:** the terminal UI renders from a recorded session fixture; OpenTelemetry is off by default (a test).
+- **Accept:** the terminal UI renders from a recorded session fixture and matches §4.7 (screenshot beside cwm in the PR); OpenTelemetry is off by default (a test).
 - **Lesson focus:** what to log, what not to log, and alert fatigue.
 
 **Release v0.3.0.**
