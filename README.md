@@ -1,12 +1,20 @@
 # Rover
 
-A security-engineering learning project with two tracks:
+An open-source security layer for developers who use AI agents, built to stand
+beside commercial products such as Gopher Security rather than demonstrate a
+concept. Two tracks:
 
-- **rover-gate** is an MCP security gateway, run with the `rover` binary. It sits between AI agents and their MCP servers, and logs, inspects and polices every tool call.
-- **rover-net** is a zero-trust network layer: policy as code for Tailscale, then Headscale, WireGuard and Rosenpass.
+- **rover-gate** is an MCP security gateway, run with the `rover` binary. A thin
+  wrapper sits between an AI agent and each MCP server it uses; a local daemon,
+  `roverd`, sees every message, records it in a tamper-evident log, and (from M2)
+  applies policy, pins tool definitions, detects attacks and asks a human before
+  dangerous calls.
+- **rover-net** is a zero-trust network layer: policy as code for Tailscale, then
+  Headscale, WireGuard and Rosenpass.
 
-The full curriculum, with modules, labs and the Gopher parity map, is in the
-"Rover: Security Engineering Curriculum" doc.
+The plan, threat model, architecture and milestones are in
+[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md). Every milestone ends
+with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 
 ## Status
 
@@ -15,6 +23,8 @@ The full curriculum, with modules, labs and the Gopher parity map, is in the
 | A0 | Hand-written MCP server (`examples/echo-server`) | done |
 | A1 | `rover wrap`: transparent stdio proxy + JSONL audit log | done |
 | M0 | Repo hygiene: module rename, lint, CI, govulncheck | done |
+| M1 | `roverd` daemon, thin wrappers, peer-checked Unix socket, hash-chained audit log, auto-start | done |
+| M2 | Cedar policy engine | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -22,32 +32,61 @@ The full curriculum, with modules, labs and the Gopher parity map, is in the
 ```bash
 make build          # -> bin/rover, bin/echo-server  (Go 1.25+)
 make test           # unit + end-to-end tests with the race detector
-make fuzz           # fuzz the JSON-RPC parser for 30s
+make fuzz           # fuzz the JSON-RPC and IPC parsers for 30s each
 
-# wrap any stdio MCP server
-./bin/rover wrap -- npx -y @modelcontextprotocol/server-filesystem ~/lab
-./bin/rover log
+# wrap any stdio MCP server; roverd starts itself the first time
+./bin/rover wrap --name filesystem -- npx -y @modelcontextprotocol/server-filesystem ~/lab
+./bin/rover log              # timeline of every message
+./bin/rover log --verify     # check the hash chain, report the first break
+./bin/rover daemon           # run roverd by hand to watch its log
 ```
 
-Audit log: `~/.rover/audit.jsonl` (override with `--log` or `ROVER_LOG`), created with mode `0600`.
+In an agent's MCP config, change
+
+```json
+"filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/lab"] }
+```
+
+to
+
+```json
+"filesystem": { "command": "/path/to/rover", "args": ["wrap", "--name", "filesystem", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/you/lab"] }
+```
+
+## Where files live
+
+| | macOS | Linux |
+| --- | --- | --- |
+| Config | `~/Library/Application Support/Rover/` | `$XDG_CONFIG_HOME/rover/` |
+| State: `state.db`, `audit.jsonl`, `roverd.log` | `~/Library/Application Support/Rover/state/` | `$XDG_STATE_HOME/rover/` |
+| Socket, lock and pid files | `~/Library/Application Support/Rover/run/` | `$XDG_RUNTIME_DIR/rover/` |
+
+`ROVER_DIR=/some/path` puts all three under one directory, which is how the
+tests and the lessons keep a lab separate from real use. Directories are `0700`
+and files `0600`; Rover refuses to run if it finds them looser. Message bodies
+are not logged until M10 adds redaction (`rover daemon --log-bodies` turns them
+on for a lab).
 
 ## Layout
 
 ```
-cmd/rover/             CLI: wrap, log
+cmd/rover/             CLI: wrap, daemon, log
+internal/proxy/        the wrapper's pump: read, ask roverd, apply the verdict, forward the original bytes
+internal/daemon/       roverd: accept loop, peer check, sessions, the decision path
+internal/ipc/          wrapper <-> roverd protocol (fuzzed) and peer credentials
+internal/audit/        hash-chained JSONL audit log and its verifier
+internal/state/        bbolt database (pins, approvals, ... from later milestones)
+internal/paths/        where files go, and the permission checks
+internal/framing/      newline-delimited reading with a hard size limit
 internal/jsonrpc/      classify JSON-RPC messages (fuzzed)
-internal/proxy/        the pump: log-then-forward, byte-exact, size-limited
-internal/audit/        JSONL audit writer
 examples/echo-server/  A0: MCP server with no SDK (read_file is unsafe on purpose)
 docs/lessons/          one lesson per module
 ```
 
-Each milestone ends with a beginner-friendly lesson in `docs/lessons/`.
-
 ## Development
 
 ```bash
-make ci             # everything CI runs: vet, lint, race tests, 30s fuzz, govulncheck
+make ci             # everything CI runs: vet, lint, race tests, 30s fuzz per parser, govulncheck
 make lint           # golangci-lint only
 make vuln           # govulncheck only
 make tools          # install the pinned govulncheck

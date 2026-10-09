@@ -1,0 +1,104 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/daemon"
+	"github.com/DreadpiratePickles/rover/internal/ipc"
+	"github.com/DreadpiratePickles/rover/internal/paths"
+	"github.com/DreadpiratePickles/rover/internal/state"
+)
+
+// runDaemon is roverd. It is normally started by the first wrapper that
+// finds no daemon, but can be run by hand for a visible log.
+func runDaemon(args []string) int {
+	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
+	logBodies := fs.Bool("log-bodies", false, "record full message bodies in the audit log (off until M10 adds redaction)")
+	_ = fs.Parse(args)
+
+	logf := func(format string, a ...any) {
+		fmt.Fprintf(os.Stderr, time.Now().UTC().Format("2006-01-02T15:04:05.000Z")+" roverd "+format+"\n", a...)
+	}
+
+	// Everything roverd creates is owner-only, whatever the inherited umask.
+	syscall.Umask(0o077)
+
+	dirs, err := paths.Resolve()
+	if err == nil {
+		err = paths.Ensure(dirs)
+	}
+	if err != nil {
+		logf("%v", err)
+		return 1
+	}
+	// Files that already exist must still be owner-only (§4.2).
+	for _, f := range []string{filepath.Join(dirs.State, "audit.jsonl"), filepath.Join(dirs.State, "state.db"), filepath.Join(dirs.State, "roverd.log")} {
+		if perr := paths.CheckPrivate(f, 0o600); perr != nil && !errors.Is(perr, os.ErrNotExist) {
+			logf("%v", perr)
+			return 1
+		}
+	}
+	db, err := state.Open(filepath.Join(dirs.State, "state.db"))
+	if errors.Is(err, state.ErrLocked) {
+		logf("another roverd holds the state database; exiting")
+		return 0
+	}
+	if err != nil {
+		logf("%v", err)
+		return 1
+	}
+	defer func() { _ = db.Close() }()
+
+	logPath := filepath.Join(dirs.State, "audit.jsonl")
+	log, err := audit.Open(logPath)
+	if err != nil {
+		logf("audit log: %v", err)
+		return 1
+	}
+	defer func() { _ = log.Close() }()
+	log.AnchorPath = anchorPath(logPath)
+
+	sock, err := paths.SocketPath(dirs)
+	if err != nil {
+		logf("%v", err)
+		return 1
+	}
+	srv := daemon.New(daemon.Options{
+		SocketPath: sock,
+		Audit:      log,
+		LogBodies:  *logBodies,
+		SelfUID:    uint32(os.Getuid()), //nolint:gosec // G115: uid fits in uint32 on all supported platforms
+		PeerCreds:  ipc.PeerCreds,
+		ParentPID:  ipc.ParentPID,
+		Logf:       logf,
+	})
+	if err := srv.Listen(); err != nil {
+		logf("%v", err)
+		return 1
+	}
+	pidPath := filepath.Join(dirs.Run, "roverd.pid")
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		logf("write pid file: %v", err)
+	}
+	defer func() { _ = os.Remove(pidPath) }()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	logf("listening on %s (pid %d, bodies=%v)", sock, os.Getpid(), *logBodies)
+	if err := srv.Serve(ctx); err != nil {
+		logf("serve: %v", err)
+		return 1
+	}
+	logf("stopped")
+	return 0
+}
