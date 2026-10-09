@@ -1,11 +1,8 @@
 package daemon
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -32,6 +29,9 @@ const (
 	// ReasonToolsListRejected replaces a tools/list result that could not be
 	// filtered: forwarding it might show the agent a hidden tool.
 	ReasonToolsListRejected = "tools_list_rejected"
+	// ReasonInvalidJSONRPC blocks a line jsonrpc.Parse could not classify
+	// unambiguously (followed by ": " and jsonrpc.Message.Invalid).
+	ReasonInvalidJSONRPC = policy.ReasonInvalidJSONRPC
 )
 
 // noPolicyLogEvery rate-limits the "no policy" warning.
@@ -44,11 +44,31 @@ type loaded struct {
 	cfg config.Config
 }
 
+// ErrModeDowngrade refuses a reload that would switch an enforcing daemon
+// to observe mode.
+var ErrModeDowngrade = errors.New("refused: switching enforce -> observe needs OS authentication (M9)")
+
 // Reload atomically replaces the policy and config. Decisions already in
 // flight finish with the previous pair. Pass a nil interface (not a typed nil
 // pointer) for p to run with no policy, which blocks every policed message.
-func (s *Server) Reload(p Policy, cfg config.Config) {
-	s.pol.Store(&loaded{pol: p, cfg: cfg})
+//
+// A reload may not switch from enforce to observe: anything that can edit or
+// delete config.yaml (an agent with file access, say) could otherwise turn
+// enforcement off with one `rover policy apply` (review M2). That switch will
+// need OS authentication (M9); until then it returns ErrModeDowngrade and
+// the previous policy and mode stay in force. At startup a missing
+// config.yaml still means observe (D6).
+func (s *Server) Reload(p Policy, cfg config.Config) error {
+	next := &loaded{pol: p, cfg: cfg}
+	for {
+		cur := s.pol.Load()
+		if cur != nil && cur.cfg.Mode == policy.ModeEnforce && cfg.Mode != policy.ModeEnforce {
+			return ErrModeDowngrade
+		}
+		if s.pol.CompareAndSwap(cur, next) {
+			return nil
+		}
+	}
 }
 
 // InputFor builds the policy input for one message. `rover policy test`
@@ -90,6 +110,12 @@ var forwardJ = judgment{action: ipc.ActionForward, audit: ipc.ActionForward}
 // path ends in block (or, for a server response, a replacement error).
 func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.Message, replyTo string, now time.Time) judgment {
 	st := s.pol.Load()
+	// A line that is not unambiguous JSON-RPC is blocked in both directions,
+	// in every mode and with or without a policy: whatever Rover would judge
+	// it as, the receiver may read it as something else (review C1).
+	if m.Kind == jsonrpc.KindInvalid {
+		return invalidJ(m)
+	}
 	// A result answering tools/list, or answering nothing we know of (a
 	// server could otherwise send a second, unfiltered reply), is filtered.
 	if dir == policy.DirS2C && m.Kind == jsonrpc.KindResult && (replyTo == "tools/list" || replyTo == "") {
@@ -119,6 +145,12 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 		j.callLabels = st.cfg.ToolLabels(server, m.ToolName())
 	}
 	return j
+}
+
+// invalidJ blocks an invalid line (see policy.InvalidOutcome).
+func invalidJ(m jsonrpc.Message) judgment {
+	o := policy.InvalidOutcome(m)
+	return judgment{action: o.Action, audit: o.Action, reason: o.Reason, responseRaw: o.Response}
 }
 
 func blockJ(m jsonrpc.Message, reason string, ids, findings []string) judgment {
@@ -153,50 +185,25 @@ func filterList(st *loaded, server string, m jsonrpc.Message) judgment {
 }
 
 // spliceResult returns raw with the value of its top-level "result" member
-// replaced by rep. A message with a duplicate top-level key is refused: the
-// client might read the copy we did not filter.
+// replaced by rep. The member is found with the strict reader, by its exact
+// key and byte offsets, so a message with a duplicate or case-colliding key
+// ("result" and "Result") is refused: the client might read the copy we did
+// not filter.
 func spliceResult(raw, rep []byte) ([]byte, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
-		return nil, errors.New("response is not a JSON object")
+	fields, err := jsonrpc.Object(raw)
+	if err != nil {
+		return nil, fmt.Errorf("response: %w", err)
 	}
-	seen := map[string]bool{}
-	start, end := -1, -1
-	for dec.More() {
-		t, err := dec.Token()
-		if err != nil {
-			return nil, err
+	for _, f := range fields {
+		if f.Key != "result" {
+			continue
 		}
-		key, ok := t.(string)
-		if !ok {
-			return nil, errors.New("object key is not a string")
-		}
-		if seen[key] {
-			return nil, fmt.Errorf("duplicate member %q", key)
-		}
-		seen[key] = true
-		var v json.RawMessage
-		if err := dec.Decode(&v); err != nil {
-			return nil, err
-		}
-		if key == "result" {
-			end = int(dec.InputOffset())
-			start = end - len(v)
-		}
+		out := make([]byte, 0, len(raw)-(f.End-f.Start)+len(rep))
+		out = append(out, raw[:f.Start]...)
+		out = append(out, rep...)
+		return append(out, raw[f.End:]...), nil
 	}
-	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
-		return nil, errors.New("response object is not closed")
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("trailing data after the response")
-	}
-	if start < 0 {
-		return nil, errors.New("no result member")
-	}
-	out := make([]byte, 0, len(raw)-(end-start)+len(rep))
-	out = append(out, raw[:start]...)
-	out = append(out, rep...)
-	return append(out, raw[end:]...), nil
+	return nil, errors.New("no result member")
 }
 
 // warnNoPolicy logs at most once per noPolicyLogEvery.

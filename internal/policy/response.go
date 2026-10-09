@@ -98,3 +98,23 @@ func ErrorResponse(id []byte, reason string) []byte {
 	}
 	return blockResponse(jsonrpc.Message{Kind: jsonrpc.KindRequest, ID: id, Method: "rover/blocked"}, reason, nil)
 }
+
+// CodeInvalidRequest is JSON-RPC's "Invalid Request" error code.
+const CodeInvalidRequest = -32600
+
+// InvalidRequestResponse is the JSON-RPC error -32600 reply to a request
+// roverd refused as invalid JSON-RPC (an ambiguous line), carrying id
+// (original bytes, which must be a valid JSON id) and the reason.
+func InvalidRequestResponse(id []byte, reason string) []byte {
+	enc, err := json.Marshal(rpcError{Code: CodeInvalidRequest, Message: "Invalid Request: " + reason})
+	if err != nil {
+		enc = []byte(`{"code":-32600,"message":"Invalid Request"}`) // unreachable: strings and an int
+	}
+	var buf bytes.Buffer
+	buf.WriteString(`{"jsonrpc":"2.0","id":`)
+	buf.Write(id)
+	buf.WriteString(`,"error":`)
+	buf.Write(enc)
+	buf.WriteByte('}')
+	return buf.Bytes()
+}

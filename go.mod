@@ -8,7 +8,7 @@ require (
 	github.com/cedar-policy/cedar-go v1.8.0
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/text v0.30.0
+	golang.org/x/text v0.41.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

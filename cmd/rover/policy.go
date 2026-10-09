@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,6 +11,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -28,7 +30,7 @@ import (
 
 const policyUsage = `usage:
   rover policy init [--force]          write policy.cedar, config.yaml, the schema and templates
-  rover policy validate [--policy FILE] load and type-check a policy
+  rover policy validate [--policy FILE] load and type-check a policy (and run ` + "`cedar validate`" + ` if installed)
   rover policy test <audit.jsonl>       replay logged messages through the current policy
   rover policy apply                    ask roverd to reload config.yaml and policy.cedar`
 
@@ -155,6 +157,11 @@ func policyValidate(args []string) int {
 	file := fset.String("policy", filepath.Join(dirs.Config, policyFile), "policy file to validate")
 	_ = fset.Parse(args)
 
+	// The same owner-only checks roverd applies, so validate and roverd agree.
+	if _, err = loadConfig(dirs.Config, *file); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
 	eng, schemaName, err := loadEngine(*file, dirs.Config)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -165,10 +172,50 @@ func policyValidate(args []string) int {
 		fmt.Printf("%s  %s\n", p.ID, p.Effect)
 	}
 	fmt.Printf("ok: %d policies (schema: %s)\n", len(infos), schemaName)
-	if _, err := config.Load(dirs.Config); err != nil {
+	schema, _, err := readSchema(dirs.Config)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	return cedarValidate(*file, schema)
+}
+
+// cedarTimeout bounds the official Cedar CLI run.
+const cedarTimeout = 30 * time.Second
+
+// cedarValidate runs the official `cedar validate` against the schema roverd
+// uses (plan §5.1), when the cedar CLI is on PATH, and returns the exit code
+// for validate. The schema is written to a private temporary directory
+// because the effective schema may be the one built into the binary.
+func cedarValidate(policyPath string, schema []byte) int {
+	bin, err := exec.LookPath("cedar")
+	if err != nil {
+		fmt.Println("cedar CLI not installed; skipped")
+		return 0
+	}
+	tmp, err := os.MkdirTemp("", "rover-cedar-")
+	if err == nil {
+		defer func() { _ = os.RemoveAll(tmp) }()
+		err = writeNew(filepath.Join(tmp, schemaFile), schema)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: cedar validate: schema temp file:", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cedarTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "validate", "--schema", filepath.Join(tmp, schemaFile), "--policies", policyPath).CombinedOutput() //nolint:gosec // G204: the user's own cedar CLI, fixed arguments
+	if len(out) > 0 {
+		fmt.Print(string(out))
+		if out[len(out)-1] != '\n' {
+			fmt.Println()
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cedar validate: failed (%s): %v\n", bin, err)
+		return 1
+	}
+	fmt.Printf("cedar validate: ok (%s)\n", bin)
 	return 0
 }
 
@@ -244,12 +291,7 @@ func replayEntry(eng *policy.Engine, cfg config.Config, e audit.Entry, sessions 
 	}
 	m := jsonrpc.Parse(e.Body)
 	if e.Dir == policy.DirC2S && m.Kind == jsonrpc.KindRequest && m.Method == "initialize" {
-		var p struct {
-			ClientInfo struct{ Name, Version string } `json:"clientInfo"`
-		}
-		if json.Unmarshal(m.Params, &p) == nil {
-			st.client, st.version = p.ClientInfo.Name, p.ClientInfo.Version
-		}
+		st.client, st.version = m.ClientInfo() // strict, like roverd
 	}
 	if !policy.Policed(e.Dir, m) {
 		n.unpoliced++
@@ -313,6 +355,8 @@ func policyApply(args []string) int {
 		return 1
 	}
 	fmt.Printf("reload requested (pid %d); roverd.log says whether it succeeded\n", pid)
+	fmt.Println("note: a running enforce daemon refuses to switch to observe; roverd.log then says")
+	fmt.Println("  \"refused: switching enforce -> observe needs OS authentication (M9)\" (restart roverd to change it)")
 	fmt.Println("TODO(M9): this is not yet protected by OS authentication")
 	return 0
 }

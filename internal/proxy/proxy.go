@@ -134,8 +134,8 @@ func (w *Wrapper) apply(v ipc.Frame, line []byte, dst, back io.Writer) error {
 	case ipc.ActionBlock:
 		m := jsonrpc.Parse(line)
 		w.Errf("blocked %s %s: %s", m.Kind, m.Method, v.Reason)
-		if m.Kind != jsonrpc.KindRequest {
-			return nil // notifications and responses are simply dropped
+		if m.Kind != jsonrpc.KindRequest && !m.InvalidRequest() {
+			return nil // notifications, responses and other invalid lines are simply dropped
 		}
 		var resp []byte
 		if len(v.ResponseRaw) > 0 {

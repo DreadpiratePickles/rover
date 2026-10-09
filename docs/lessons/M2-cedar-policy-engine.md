@@ -274,7 +274,8 @@ Proof: `TestArgsDeniesBadInput` and `TestArgsLimitBoundaries`
 (`internal/policy/convert/convert_test.go`) check each rule at its boundary.
 `TestConversionFailuresBlockEvenInObserveMode` and
 `TestDuplicateToolNameInEnvelopeBlocks` (`internal/policy/decide_test.go`)
-check observe mode and the envelope. `TestDepthSixteenArgumentsAreAllowed`
+check observe mode and the envelope (since the review, a duplicate in
+`params` is caught even earlier, as `invalid_jsonrpc`). `TestDepthSixteenArgumentsAreAllowed`
 pins the exact limit. `FuzzArgs` fuzzes the converter and `FuzzDecide` the
 whole decision.
 
@@ -420,7 +421,10 @@ manipulated agent with a shell tool runs as you. It can edit `policy.cedar`
 (the file is `0600`, owned by you, and so is the agent), run `rover policy
 apply` or just `kill -HUP $(cat $ROVER_DIR/run/roverd.pid)`, and the policy it
 wrote is live. It can also flip `mode` from `enforce` to `observe` the same
-way. The permission checks in `loadAll` stop *other* users, not *you*. This is
+way, or rather it could: since the independent review, a running roverd
+refuses a reload from enforce to observe (see "What the independent review
+changed" below), though it can still rewrite the policy itself. The permission
+checks in `loadAll` stop *other* users, not *you*. This is
 the "manipulated agent attacking Rover through its shell tool" row of the
 threat model: partially in scope, and M2 does not close it.
 
@@ -467,6 +471,88 @@ shows that the plumbing works.
 Proof: `TestLabelsAndSessionReachThePolicy` (`internal/policy/decide_test.go`)
 and `TestReadsPrivateToolSetsTouchedPrivateForTheNextDecision`
 (`internal/daemon/policy_test.go`).
+
+### What the independent review changed
+
+After M2 was written, a separate reviewer attacked it. Four findings changed
+the code; each now has a test that failed before the fix and passes after.
+
+**C1: keys that differ only in case (a parser differential, a third time).**
+Go's `encoding/json` matches JSON keys to struct fields *ignoring case*, and if
+two keys match the same field the **last** one wins. Rover's message
+classifier (`jsonrpc.Parse`) and the tools/list filter used it. Cedar, the
+argument converter and most MCP servers match keys **exactly**. Two lines from
+the review show what that meant:
+
+```
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","Name":"read_file","arguments":{}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","Method":"ping","params":{"name":"read_file","arguments":{}}}
+```
+
+In the first, the policy was asked about `echo` and permitted it, but a server
+that decodes with `encoding/json` reads the last match, `Name`, and runs
+`read_file`. In the second, Rover's classifier read the last match, `Method`,
+saw a harmless `ping`, and never asked the policy at all, while the server read
+`method` and ran `tools/call`. The same trick on a server reply
+(`"result"` plus `"Result"`) slipped a hidden tool past the tools/list filter.
+
+The fix is a strict object reader, `jsonrpc.Object`. It keeps every key
+exactly as written and refuses an object with a duplicate key, or with two keys
+that are equal ignoring case (`name`/`Name`, and even `k` and the Kelvin sign
+`K`). `Parse` uses it for the envelope and for `params`, accepts only the six
+member names JSON-RPC defines, and marks anything else `invalid` with a reason.
+roverd blocks an invalid line in both directions, in every mode, with or
+without a policy, with reason `invalid_jsonrpc: ...`. If the line still has a
+usable `id` and `method`, the sender gets JSON-RPC error `-32600 Invalid
+Request` instead of waiting forever; anything else is dropped. The tools/list
+filter and the splice that rebuilds the reply use the same reader, and the
+argument converter now treats case-colliding keys as duplicates too. The lesson
+is the one from A1 and decision 4, sharpened: refusing duplicates is not
+enough when the parsers disagree about what counts as "the same key".
+
+Proof: `TestParseRejectsKeyDifferentials` and `TestObjectRejectsAmbiguousOrBadInput`
+(`internal/jsonrpc/strict_test.go`), `FuzzParse` (now also checks that a valid
+line re-parses to the same kind, method, id and tool),
+`TestKeyDifferentialsAreBlockedAsInvalid` (`internal/daemon/invalid_test.go`,
+through the real socket, in enforce, observe and no-policy modes),
+`TestUnfilterableToolsListIsReplacedWithError`,
+`TestFilterToolsListRejectsAmbiguousResults`, `TestInvalidLinesBlockInEveryMode`
+and the new rows of `TestArgsDeniesBadInput`.
+
+**H1: `~` in a path.** A relative path is joined onto the first root, so
+`~/.ssh/id_rsa` became `<projects>/~/.ssh/id_rsa`, which is "under projects".
+But many servers expand a leading `~` to your home directory, and `~bob` to
+Bob's. `~/projects/../.ssh` is then simply `~/.ssh`. Rover cannot know what a
+server does with `~`, so a path starting with `~` is now refused outright
+(`norm_reject`, with `path_tilde` in the error). Proof: the two new rows of
+`TestPathEscapeMatrix`, `TestPathTildeIsRejected` and
+`TestTildePathIsDeniedUnderProjectsPermit`.
+
+**H2: a known bug in a dependency.** `golang.org/x/text` v0.30.0, which the
+path normaliser uses for Unicode normalisation (NFC), has GO-2026-5970: some
+invalid input makes it loop forever. An attacker controls the paths, so that
+is a denial of service against roverd. It is upgraded to v0.41.0, the newest
+release that still builds with Go 1.25. Proof: `make vuln` (govulncheck)
+reported the call path from `normPath` before and is clean after.
+
+**M2: deleting config.yaml switched enforcement off.** With no `config.yaml`,
+Rover uses observe mode (D6, learn first). So `rm config.yaml && rover policy
+apply` quietly turned an enforcing roverd into one that only logs. Now a
+*reload* may never move from enforce to observe: roverd keeps the previous
+policy and mode and logs `refused: switching enforce -> observe needs OS
+authentication (M9)`, and `rover policy apply` prints that rule because it
+cannot see roverd's answer. Starting roverd with no `config.yaml` still means
+observe. Proof: `TestReloadRefusesEnforceToObserve` and
+`TestReloadAllowsObserveToEnforce` (`internal/daemon/policy_test.go`).
+
+Smaller fixes from the same review: `rover policy validate` now runs the
+official `cedar validate` when the Cedar CLI is installed and says
+`cedar CLI not installed; skipped` otherwise (`TestPolicyValidateRunsCedarCLI`
+and friends); it refuses the same too-open files roverd refuses, including the
+normalizers file `config.yaml` names
+(`TestPolicyValidateAndDaemonCheckFilePermissions`); and server names may only
+use `A-Za-z0-9_.-`, so a name like `evil/echo` cannot blur the
+`<server>/<tool>` id (`TestServerNames`, `TestWrapRejectsBadServerName`).
 
 ### A note on speed
 
@@ -652,6 +738,8 @@ Add a comment line to `policy.cedar`, then:
 
 ```
 reload requested (pid NNN); roverd.log says whether it succeeded
+note: a running enforce daemon refuses to switch to observe; roverd.log then says
+  "refused: switching enforce -> observe needs OS authentication (M9)" (restart roverd to change it)
 TODO(M9): this is not yet protected by OS authentication
 ```
 
@@ -668,7 +756,11 @@ sed -i '' 's/^mode: enforce/mode: observe/' "$ROVER_DIR/config/config.yaml"
 ./bin/rover policy apply
 ```
 
-Terminal 1: `policy reloaded (mode observe)`. Start a new wrapper in terminal 2
+Terminal 1 refuses: `policy reload refused: switching enforce -> observe needs
+OS authentication (M9); keeping the previous policy and mode`. A reload may
+tighten the mode, never loosen it (see "What the independent review changed").
+You are the human here, so restart roverd instead: Ctrl-C in terminal 1, then
+`./bin/rover daemon` again. It prints `policy loaded (mode observe)`. Start a new wrapper in terminal 2
 and send `initialize` and the `read_file` line again:
 
 ```bash
@@ -812,11 +904,11 @@ you found a bug, and `FuzzPath` missed it.
 
 ### Attack 2: duplicate keys and depth 17, in observe mode
 
-Switch to observe and apply:
+Switch to observe. A reload cannot do that any more, so restart roverd
+(Ctrl-C in terminal 1, then `./bin/rover daemon`):
 
 ```bash
 sed -i '' 's/^mode: enforce/mode: observe/' "$ROVER_DIR/config/config.yaml"
-./bin/rover policy apply
 ```
 
 Send a plain escape first as a control. It is forwarded as `would_deny`:
@@ -850,7 +942,10 @@ first `path` have shown the policy? A parser that keeps the last? Which one
 does Python's `json.loads` use? Which does Go's `encoding/json`? Why does
 Rover not need to know? Then try a duplicate in a place that is not
 `arguments`: put `"name":"read_file","name":"echo"` inside `params`. It
-is still refused, and `TestDuplicateToolNameInEnvelopeBlocks` is the test.
+is still refused, now as `invalid_jsonrpc` with error `-32600`, and
+`TestDuplicateToolNameInEnvelopeBlocks` is the test. Then try the review's
+version: `"name":"echo","Name":"read_file"`. Before the review this one got
+through.
 
 ### Attack 3: call the hidden tool, then rewrite the policy
 

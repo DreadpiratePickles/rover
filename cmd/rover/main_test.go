@@ -275,3 +275,29 @@ func mode(t *testing.T, path string) os.FileMode {
 	}
 	return fi.Mode().Perm()
 }
+
+// Review L4: a server name with "/" would make "<server>/<tool>" ambiguous,
+// so `rover wrap --name` refuses it before contacting roverd or starting
+// the server.
+func TestWrapRejectsBadServerName(t *testing.T) {
+	dir := roverDir(t)
+	marker := filepath.Join(dir, "server-ran")
+	script := filepath.Join(dir, "server.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \""+marker+"\"\ncat\n"), 0o700); err != nil { //nolint:gosec // G306: test script must be executable
+		t.Fatal(err)
+	}
+	for _, name := range []string{"evil/echo", "has space"} {
+		cmd := exec.Command(bins.rover, "wrap", "--name", name, "--", script) //nolint:gosec // G204: test runs its own script
+		cmd.Env = env(dir)
+		out, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "invalid --name") || !strings.Contains(string(out), "A-Za-z0-9_.-") {
+			t.Fatalf("--name %q: want an early error, got %v:\n%s", name, err, out)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("the MCP server was started despite a bad --name")
+		}
+		if _, err := os.Stat(filepath.Join(dir, "run", "roverd.pid")); err == nil {
+			t.Fatal("roverd was auto-started despite a bad --name")
+		}
+	}
+}

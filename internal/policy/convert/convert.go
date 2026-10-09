@@ -33,6 +33,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/cedar-policy/cedar-go/types"
+
+	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 )
 
 // Limits bounds how complex an arguments document may be.
@@ -70,7 +72,9 @@ var (
 	// /safe while the MCP server saw /etc/shadow, the policy would approve a
 	// call that actually does something else. Rejecting duplicates removes the
 	// disagreement entirely. Keys are compared after escapes are decoded, so
-	// "a" and "a" count as the same key.
+	// "a" and "a" count as the same key, and keys equal ignoring case
+	// ("path" and "Path", strings.EqualFold) count as duplicates too, because
+	// Go's encoding/json matches struct fields case-insensitively.
 	ErrDuplicateKeys = errors.New("args_duplicate_keys")
 
 	// ErrNotObject means the top-level JSON value was valid but was not an
@@ -186,16 +190,19 @@ func (c *converter) object(depth int) (types.Record, error) {
 		return types.Record{}, err
 	}
 	m := types.RecordMap{}
-	seen := map[string]struct{}{}
+	seen := map[string]string{} // folded key -> first key
 	for c.dec.More() {
 		key, err := c.key()
 		if err != nil {
 			return types.Record{}, err
 		}
-		if _, dup := seen[key]; dup {
-			return types.Record{}, fmt.Errorf("%w: key %q repeated", ErrDuplicateKeys, key)
+		// Keys equal ignoring case count as duplicates too: a server that
+		// decodes with encoding/json reads "Path" into its path field.
+		fk := jsonrpc.FoldKey(key)
+		if first, dup := seen[fk]; dup {
+			return types.Record{}, fmt.Errorf("%w: key %q repeated as %q", ErrDuplicateKeys, first, key)
 		}
-		seen[key] = struct{}{}
+		seen[fk] = key
 		v, present, err := c.value(depth)
 		if err != nil {
 			return types.Record{}, err

@@ -84,7 +84,7 @@ func New(o Options) *Server {
 		o.Logf = func(string, ...any) {}
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{}}
-	s.Reload(o.Policy, o.Config)
+	s.pol.Store(&loaded{pol: o.Policy, cfg: o.Config}) // startup: any mode (D6)
 	return s
 }
 

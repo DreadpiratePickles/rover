@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
+
+	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 )
 
 // ErrToolsList wraps every FilterToolsList parse failure. On this error the
@@ -37,21 +38,22 @@ func (e *Engine) HiddenTools(server string) []string {
 // original bytes of every other member and every remaining tool, so nothing
 // but the hidden entries changes (nextCursor and unknown keys included).
 //
-// The result comes from the server, so it is parsed strictly: duplicate keys
-// at the top level or in a tool's "name" are an error, because a client that
-// read a different duplicate could see a hidden tool.
+// The result comes from the server, so it is parsed strictly with
+// jsonrpc.Object: duplicate or case-colliding keys ("tools" and "Tools") at
+// the top level or in a tool object are an error, because a client that read
+// the other copy could see a hidden tool.
 func (e *Engine) FilterToolsList(server string, resultRaw []byte) (replacement []byte, hidden []string, changed bool, err error) {
 	h := e.hidden[server]
 	if len(h) == 0 {
 		return resultRaw, nil, false, nil
 	}
-	members, err := objectMembers(resultRaw)
+	members, err := jsonrpc.Object(resultRaw)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("%w: %w", ErrToolsList, err)
 	}
 	toolsAt := -1
 	for i, m := range members {
-		if m.key == "tools" {
+		if m.Key == "tools" {
 			toolsAt = i
 		}
 	}
@@ -59,7 +61,7 @@ func (e *Engine) FilterToolsList(server string, resultRaw []byte) (replacement [
 		return nil, nil, false, fmt.Errorf("%w: no tools array", ErrToolsList)
 	}
 	var tools []json.RawMessage
-	if err := json.Unmarshal(members[toolsAt].value, &tools); err != nil {
+	if err := json.Unmarshal(members[toolsAt].Value, &tools); err != nil {
 		return nil, nil, false, fmt.Errorf("%w: tools: %w", ErrToolsList, err)
 	}
 	kept := make([]json.RawMessage, 0, len(tools))
@@ -77,68 +79,24 @@ func (e *Engine) FilterToolsList(server string, resultRaw []byte) (replacement [
 	if len(hidden) == 0 {
 		return resultRaw, nil, false, nil
 	}
-	members[toolsAt].value = joinArray(kept)
-	return encodeObject(members), hidden, true, nil
+	return spliceValue(resultRaw, members[toolsAt], joinArray(kept)), hidden, true, nil
 }
 
-type member struct {
-	key   string
-	value json.RawMessage
-}
-
-// objectMembers splits a JSON object into its members, in order, keeping
-// each value's original bytes. Duplicate keys are an error.
-func objectMembers(raw []byte) ([]member, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return nil, errors.New("not a JSON object")
-	}
-	var out []member
-	seen := map[string]bool{}
-	for dec.More() {
-		tok, err := dec.Token()
-		if err != nil {
-			return nil, err
-		}
-		key, ok := tok.(string)
-		if !ok {
-			return nil, errors.New("object key is not a string")
-		}
-		if seen[key] {
-			return nil, fmt.Errorf("duplicate key %q", key)
-		}
-		seen[key] = true
-		var v json.RawMessage
-		if err := dec.Decode(&v); err != nil {
-			return nil, err
-		}
-		out = append(out, member{key: key, value: v})
-	}
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
-		return nil, errors.New("unterminated object")
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("trailing data after object")
-	}
-	return out, nil
-}
-
-// toolName returns the "name" string of one tool object.
+// toolName returns the exact "name" string of one tool object, read strictly.
 func toolName(raw json.RawMessage) (string, error) {
-	members, err := objectMembers(raw)
+	fields, err := jsonrpc.Object(raw)
 	if err != nil {
 		return "", err
 	}
-	for _, m := range members {
-		if m.key == "name" {
-			var name string
-			if err := json.Unmarshal(m.value, &name); err != nil {
-				return "", errors.New("name is not a string")
-			}
-			return name, nil
-		}
+	v, ok := fields.Get("name")
+	if !ok {
+		return "", errors.New("tool has no name")
 	}
-	return "", errors.New("tool has no name")
+	var name string
+	if err := json.Unmarshal(v, &name); err != nil {
+		return "", errors.New("name is not a string")
+	}
+	return name, nil
 }
 
 func joinArray(items []json.RawMessage) json.RawMessage {
@@ -154,18 +112,10 @@ func joinArray(items []json.RawMessage) json.RawMessage {
 	return buf.Bytes()
 }
 
-func encodeObject(members []member) []byte {
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	for i, m := range members {
-		if i > 0 {
-			buf.WriteByte(',')
-		}
-		k, _ := json.Marshal(m.key) // marshalling a string cannot fail
-		buf.Write(k)
-		buf.WriteByte(':')
-		buf.Write(m.value)
-	}
-	buf.WriteByte('}')
-	return buf.Bytes()
+// spliceValue returns raw with the bytes of member f replaced by v.
+func spliceValue(raw []byte, f jsonrpc.Field, v []byte) []byte {
+	out := make([]byte, 0, len(raw)-(f.End-f.Start)+len(v))
+	out = append(out, raw[:f.Start]...)
+	out = append(out, v...)
+	return append(out, raw[f.End:]...)
 }

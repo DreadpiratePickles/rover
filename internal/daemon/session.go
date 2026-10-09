@@ -87,15 +87,9 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 	case jsonrpc.KindRequest:
 		s.pending[server+":"+dir+":"+string(m.ID)] = pendingReq{m.Method, e.Tool, now}
 		if dir == "c2s" && m.Method == "initialize" {
-			var p struct {
-				ClientInfo struct {
-					Name    string `json:"name"`
-					Version string `json:"version"`
-				} `json:"clientInfo"`
-			}
-			if json.Unmarshal(m.Params, &p) == nil {
-				s.clientName, s.clientVer = p.ClientInfo.Name, p.ClientInfo.Version
-			}
+			// Read strictly (exact keys); Parse already refused an
+			// ambiguous clientInfo as invalid.
+			s.clientName, s.clientVer = m.ClientInfo()
 		}
 	case jsonrpc.KindResult, jsonrpc.KindError:
 		// A response travels the opposite way to its request, so look it up

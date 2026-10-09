@@ -120,7 +120,8 @@ func runDaemon(args []string) int {
 }
 
 // reloadOnHUP reloads config.yaml and policy.cedar on every SIGHUP. A
-// failed reload keeps whatever was running before (a policy, or none).
+// failed reload keeps whatever was running before (a policy, or none), and
+// so does a reload that would switch enforce to observe (daemon.ErrModeDowngrade).
 // TODO(M9): policy changes must be confirmed with OS authentication.
 func reloadOnHUP(hup <-chan os.Signal, dirs paths.Dirs, srv *daemon.Server, logf func(string, ...any)) {
 	for range hup {
@@ -129,7 +130,10 @@ func reloadOnHUP(hup <-chan os.Signal, dirs paths.Dirs, srv *daemon.Server, logf
 			logf("policy reload FAILED, keeping the previous policy: %v", err)
 			continue
 		}
-		srv.Reload(pol, cfg)
+		if err := srv.Reload(pol, cfg); err != nil {
+			logf("policy reload %v; keeping the previous policy and mode", err)
+			continue
+		}
 		logf("policy reloaded (mode %s)", cfg.Mode)
 	}
 }

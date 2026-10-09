@@ -38,10 +38,11 @@ make fuzz           # fuzz every parser of attacker input for 30s each
 # write a starter policy (it permits nothing) and config.yaml (observe mode)
 ./bin/rover policy init
 $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where files live"
-./bin/rover policy validate  # type-check it against the schema
-./bin/rover policy apply     # ask a running roverd to reload it
+./bin/rover policy validate  # type-check it against the schema (and run `cedar validate` if installed)
+./bin/rover policy apply     # ask a running roverd to reload it (enforce -> observe is refused until M9)
 
 # wrap any stdio MCP server; roverd starts itself the first time
+# (--name may only use A-Za-z0-9_.-)
 ./bin/rover wrap --name filesystem -- npx -y @modelcontextprotocol/server-filesystem ~/lab
 ./bin/rover log              # timeline of every message
 ./bin/rover log --verify     # check the hash chain, report the first break
@@ -53,7 +54,11 @@ Rover denies by default: with no `policy.cedar`, roverd blocks every
 `tools/call`, `tools/list`, `resources/read`, sampling and elicitation request
 (reason `no_policy`). `config.yaml` starts in `mode: observe`, where a denied
 message is still forwarded and logged as `would_deny`; switch to
-`mode: enforce` once `rover log` shows no surprises. Every server you permit
+`mode: enforce` once `rover log` shows no surprises. A running roverd refuses
+to reload from enforce back to observe (that will need OS authentication, M9).
+Lines that are not unambiguous JSON-RPC (unknown members, duplicate keys or
+keys that differ only in case, such as `name` and `Name`) are blocked as
+`invalid_jsonrpc` in every mode. Every server you permit
 also needs a `list_tools` permit, or the agent never sees its tools.
 
 Schema limitation until M3: a root you add under `roots:` in `config.yaml`

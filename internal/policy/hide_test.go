@@ -55,12 +55,15 @@ func TestFilterToolsListRejectsAmbiguousResults(t *testing.T) {
 	// Arrange
 	e := mustLoad(t, hideReadFile)
 	cases := map[string]string{
-		"duplicate tool name": `{"tools":[{"name":"echo","name":"read_file"}]}`,
-		"duplicate tools key": `{"tools":[],"tools":[{"name":"read_file"}]}`,
-		"name not a string":   `{"tools":[{"name":1}]}`,
-		"no tools":            `{"nextCursor":"x"}`,
-		"not an object":       `[1]`,
-		"trailing data":       `{"tools":[]} {}`,
+		"duplicate tool name":  `{"tools":[{"name":"echo","name":"read_file"}]}`,
+		"duplicate tools key":  `{"tools":[],"tools":[{"name":"read_file"}]}`,
+		"Tools beside tools":   `{"tools":[{"name":"read_file"}],"Tools":[]}`,
+		"Name beside name":     `{"tools":[{"name":"echo","Name":"read_file"}]}`,
+		"NextCursor collision": `{"tools":[{"name":"read_file"}],"nextCursor":"a","NEXTCURSOR":"b"}`,
+		"name not a string":    `{"tools":[{"name":1}]}`,
+		"no tools":             `{"nextCursor":"x"}`,
+		"not an object":        `[1]`,
+		"trailing data":        `{"tools":[]} {}`,
 	}
 	for name, result := range cases {
 		// Act

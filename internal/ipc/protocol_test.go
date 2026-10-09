@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,11 @@ func TestValidateRejectsBadFrames(t *testing.T) {
 		"replace no body":   {Type: TypeVerdict, Seq: 1, Action: ActionReplace},
 		"release hold":      {Type: TypeRelease, Seq: 1, Action: ActionHold},
 		"response on fwd":   {Type: TypeVerdict, Seq: 1, Action: ActionForward, ResponseRaw: []byte("{}")},
+		// Tool ids are "<server>/<tool>", split at the first "/" (review L4).
+		"slash in server":   {Type: TypeHello, Version: Version, WrapperPID: 1, ClientPID: 1, ServerName: "evil/echo", Transport: "stdio"},
+		"space in server":   {Type: TypeHello, Version: Version, WrapperPID: 1, ClientPID: 1, ServerName: "my server", Transport: "stdio"},
+		"unicode in server": {Type: TypeHello, Version: Version, WrapperPID: 1, ClientPID: 1, ServerName: "ech\u043e", Transport: "stdio"},
+		"quote in server":   {Type: TypeHello, Version: Version, WrapperPID: 1, ClientPID: 1, ServerName: `a"b`, Transport: "stdio"},
 	}
 	for name, f := range cases {
 		if err := f.Validate(); !errors.Is(err, ErrBadFrame) {
@@ -82,4 +88,31 @@ func FuzzParse(f *testing.F) {
 			t.Fatalf("re-parse: %v", err)
 		}
 	})
+}
+
+func TestServerNames(t *testing.T) {
+	for _, ok := range []string{"echo", "echo-server", "fs_2", "server.v1", "A-Z.a_z-0"} {
+		if err := ValidServerName(ok); err != nil {
+			t.Errorf("ValidServerName(%q) = %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "a/b", "a b", "a:b", "a\\b", strings.Repeat("x", 129)} {
+		if err := ValidServerName(bad); err == nil {
+			t.Errorf("ValidServerName(%q) accepted", bad)
+		}
+	}
+	cases := map[string]string{
+		"echo-server":            "echo-server",
+		"my server.sh":           "my_server.sh",
+		"npx@1":                  "npx_1",
+		"caf\u00e9":              "caf__", // two bytes, two underscores
+		"":                       "_",
+		strings.Repeat("y", 200): strings.Repeat("y", 128),
+	}
+	for in, want := range cases {
+		got := SanitizeServerName(in)
+		if got != want || ValidServerName(got) != nil {
+			t.Errorf("SanitizeServerName(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

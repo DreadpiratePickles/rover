@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,9 +170,33 @@ func TestDuplicateToolNameInEnvelopeBlocks(t *testing.T) {
 	// Act
 	out := e.Decide(input(DirC2S, line))
 
-	// Assert
-	if out.Action != ipc.ActionBlock || out.Reason != "args_duplicate_keys" {
+	// Assert: the strict envelope parse already refuses it (review C1).
+	if out.Action != ipc.ActionBlock || out.Reason != ReasonInvalidJSONRPC+`: params: duplicate key: "name" and "name"` {
 		t.Fatalf("%+v", out)
+	}
+	mustContain(t, out.Response, `"code":-32600`)
+}
+
+func TestInvalidLinesBlockInEveryMode(t *testing.T) {
+	// Arrange: before review C1 these were judged as echo / ping.
+	e := mustLoad(t, permitEcho)
+	lines := []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","Name":"read_file","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","Method":"ping","params":{"name":"read_file","arguments":{}}}`,
+	}
+	for _, mode := range []Mode{ModeEnforce, ModeObserve} {
+		for _, l := range lines {
+			in := input(DirC2S, l)
+			in.Mode = mode
+
+			// Act
+			out := e.Decide(in)
+
+			// Assert
+			if out.Action != ipc.ActionBlock || !strings.HasPrefix(out.Reason, ReasonInvalidJSONRPC+": ") || out.WouldDeny || !Policed(DirC2S, in.Msg) {
+				t.Errorf("%s %s: %+v", mode, l, out)
+			}
+		}
 	}
 }
 
@@ -228,6 +253,30 @@ when { context.norm.path.under_projects };`)
 	}
 	if inside.Action != ipc.ActionForward || !contains(inside.RuleIDs, "fs-projects") {
 		t.Fatalf("inside %+v", inside)
+	}
+}
+
+// Review H1: "~/projects/../.ssh" used to be joined onto the root and judged
+// under_projects, while the server expands "~" to $HOME and reads ~/.ssh.
+func TestTildePathIsDeniedUnderProjectsPermit(t *testing.T) {
+	// Arrange
+	root := t.TempDir()
+	e := mustLoad(t, `@id("fs-projects")
+permit (principal, action == Action::"call_tool", resource in Server::"echo")
+when { context.norm.path.under_projects };`)
+	for _, mode := range []Mode{ModeEnforce, ModeObserve} {
+		in := input(DirC2S, toolsCall("1", "read_file", `{"path":"~/projects/../.ssh"}`))
+		in.Mode = mode
+		in.Roots = []normalize.Root{{Name: "projects", Path: root}}
+		in.Normalizers = normalize.Rules{"path": normalize.KindPath}
+
+		// Act
+		out := e.Decide(in)
+
+		// Assert
+		if out.Action != ipc.ActionBlock || out.Reason != ReasonNormReject {
+			t.Fatalf("%s: %+v", mode, out)
+		}
 	}
 }
 

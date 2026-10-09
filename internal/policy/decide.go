@@ -18,6 +18,9 @@ const (
 	// ReasonApprovalM2 blocks a permit that needs approval, because the
 	// approval flow does not exist before M9 (fail closed).
 	ReasonApprovalM2 = "approval_required_not_available_until_M9"
+	// ReasonInvalidJSONRPC blocks a line jsonrpc.Parse could not classify
+	// unambiguously; the full reason is "invalid_jsonrpc: <Message.Invalid>".
+	ReasonInvalidJSONRPC = "invalid_jsonrpc"
 )
 
 // Outcome is what the enforcement point must do with one message.
@@ -40,10 +43,14 @@ type Outcome struct {
 // Policed messages: client->server tools/call (call_tool), tools/list
 // (list_tools), resources/read (read_resource) and server->client
 // sampling/createMessage (server_sampling), elicitation/create
-// (server_elicitation). Everything else is forwarded unjudged in M2.
+// (server_elicitation). Everything else is forwarded unjudged in M2, except
+// an invalid (ambiguous) line, which is blocked in every mode.
 func (e *Engine) Decide(in Input) Outcome {
 	if in.Dir != DirC2S && in.Dir != DirS2C {
 		return block(in, ReasonInvalidDirection, nil, nil)
+	}
+	if in.Msg.Kind == jsonrpc.KindInvalid {
+		return InvalidOutcome(in.Msg)
 	}
 	action := policedAction(in.Dir, in.Msg)
 	if action == "" {
@@ -119,6 +126,20 @@ func block(in Input, reason string, ids, findings []string) Outcome {
 // Policed reports whether Decide judges this message with Cedar (the five
 // policed methods). roverd uses it to block exactly these messages when no
 // policy is loaded, and to forward everything else.
+//
+// An invalid line counts as policed: Decide always blocks it.
 func Policed(dir string, m jsonrpc.Message) bool {
-	return policedAction(dir, m) != ""
+	return m.Kind == jsonrpc.KindInvalid || policedAction(dir, m) != ""
+}
+
+// InvalidOutcome blocks an invalid line, in every mode (review C1: Rover
+// cannot know how the receiver will read an ambiguous line). If it still
+// names an exact id and method, the requester gets -32600 Invalid Request
+// rather than waiting forever; anything else is dropped.
+func InvalidOutcome(m jsonrpc.Message) Outcome {
+	o := Outcome{Action: ipc.ActionBlock, Reason: ReasonInvalidJSONRPC + ": " + m.Invalid}
+	if m.InvalidRequest() {
+		o.Response = InvalidRequestResponse(m.ID, o.Reason)
+	}
+	return o
 }

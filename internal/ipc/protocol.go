@@ -113,8 +113,8 @@ func (f Frame) Validate() error {
 		if f.WrapperPID <= 0 || f.ClientPID <= 0 {
 			return fmt.Errorf("%w: hello needs wrapper_pid and client_pid", ErrBadFrame)
 		}
-		if f.ServerName == "" || len(f.ServerName) > 128 {
-			return fmt.Errorf("%w: hello needs server_name (1..128 bytes)", ErrBadFrame)
+		if err := ValidServerName(f.ServerName); err != nil {
+			return fmt.Errorf("%w: hello: %w", ErrBadFrame, err)
 		}
 		if f.Transport != "stdio" && f.Transport != "http" {
 			return fmt.Errorf("%w: unknown transport %q", ErrBadFrame, f.Transport)
@@ -161,4 +161,47 @@ func Encode(f Frame) ([]byte, error) {
 		return nil, err
 	}
 	return append(b, '\n'), nil
+}
+
+// MaxServerName is the longest server name a hello may carry.
+const MaxServerName = 128
+
+// ValidServerName accepts 1..MaxServerName bytes of [A-Za-z0-9_.-]. Tool
+// ids are "<server>/<tool>", split at the first "/", so a "/" in a server
+// name would let "evil/echo" + "x" pass for server "evil", tool "echo/x"
+// (review L4). Quotes, spaces and Unicode are refused too: the name ends
+// up in Cedar entity ids and the audit log.
+func ValidServerName(name string) error {
+	if name == "" || len(name) > MaxServerName {
+		return fmt.Errorf("server name must be 1..%d bytes", MaxServerName)
+	}
+	for i := 0; i < len(name); i++ {
+		if !serverNameByte(name[i]) {
+			return fmt.Errorf("server name %q may only contain A-Za-z0-9_.-", name)
+		}
+	}
+	return nil
+}
+
+// SanitizeServerName turns any string (the default name, a command's base
+// name) into a valid server name: every other byte becomes "_", and the
+// result is cut to MaxServerName bytes ("_" if empty).
+func SanitizeServerName(s string) string {
+	if s == "" {
+		return "_"
+	}
+	if len(s) > MaxServerName {
+		s = s[:MaxServerName]
+	}
+	b := []byte(s)
+	for i, c := range b {
+		if !serverNameByte(c) {
+			b[i] = '_'
+		}
+	}
+	return string(b)
+}
+
+func serverNameByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '.' || c == '-'
 }

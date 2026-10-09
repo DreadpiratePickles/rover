@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -137,7 +138,7 @@ func TestHiddenToolIsBlockedAndFilteredFromList(t *testing.T) {
 	s := start(t, Options{Audit: audit.New(log), Policy: engine(t, hidingPolicy), Config: enforce()})
 	c := dial(t, s)
 	echoTool := `{"name":"echo","description":"Echo  text","inputSchema":{"type":"object"}}`
-	list := `{"jsonrpc":"2.0","id":5,"result":{"tools":[` + echoTool + `,{"name":"read_file"}],"nextCursor":"x"},"extra":1}`
+	list := `{"jsonrpc":"2.0","id":5,"result":{"tools":[` + echoTool + `,{"name":"read_file"}],"nextCursor":"x","extra":1}}`
 
 	// Act
 	read := decide(t, c, "c2s", call("4", "read_file"))
@@ -162,7 +163,7 @@ func TestHiddenToolIsBlockedAndFilteredFromList(t *testing.T) {
 	if echo.Action != ipc.ActionForward || listReq.Action != ipc.ActionForward {
 		t.Fatalf("echo %+v list %+v", echo, listReq)
 	}
-	want := `{"jsonrpc":"2.0","id":5,"result":{"tools":[` + echoTool + `],"nextCursor":"x"},"extra":1}`
+	want := `{"jsonrpc":"2.0","id":5,"result":{"tools":[` + echoTool + `],"nextCursor":"x","extra":1}}`
 	if listRes.Action != ipc.ActionReplace || string(listRes.ReplacementRaw) != want {
 		t.Fatalf("tools/list result:\n got %s\nwant %s", listRes.ReplacementRaw, want)
 	}
@@ -232,7 +233,9 @@ func TestReloadSwapsPolicy(t *testing.T) {
 	}
 
 	// Act
-	s.Reload(engine(t, hidingPolicy), enforce())
+	if err := s.Reload(engine(t, hidingPolicy), enforce()); err != nil {
+		t.Fatal(err)
+	}
 
 	// Assert
 	if v := decide(t, c, "c2s", call("2", "echo")); v.Action != ipc.ActionForward {
@@ -244,6 +247,8 @@ func TestUnfilterableToolsListIsReplacedWithError(t *testing.T) {
 	cases := map[string]string{
 		"duplicate tools key": `{"jsonrpc":"2.0","id":9,"result":{"tools":[],"tools":[{"name":"read_file"}]}}`,
 		"no tools array":      `{"jsonrpc":"2.0","id":9,"result":{"other":1}}`,
+		"Tools beside tools":  `{"jsonrpc":"2.0","id":9,"result":{"tools":[{"name":"read_file"}],"Tools":[]}}`,
+		"Name beside name":    `{"jsonrpc":"2.0","id":9,"result":{"tools":[{"name":"echo","Name":"read_file"}]}}`,
 	}
 	for name, res := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -283,10 +288,12 @@ func TestUncorrelatedResultIsFilteredToo(t *testing.T) {
 
 func TestSpliceResultRefusesAmbiguousMessages(t *testing.T) {
 	for name, raw := range map[string]string{
-		"duplicate result": `{"jsonrpc":"2.0","id":1,"result":{},"result":{}}`,
-		"no result":        `{"jsonrpc":"2.0","id":1}`,
-		"trailing data":    `{"jsonrpc":"2.0","id":1,"result":{}} {}`,
-		"not an object":    `[]`,
+		"duplicate result":  `{"jsonrpc":"2.0","id":1,"result":{},"result":{}}`,
+		"Result and result": `{"jsonrpc":"2.0","id":1,"Result":{},"result":{}}`,
+		"only Result":       `{"jsonrpc":"2.0","id":1,"Result":{}}`,
+		"no result":         `{"jsonrpc":"2.0","id":1}`,
+		"trailing data":     `{"jsonrpc":"2.0","id":1,"result":{}} {}`,
+		"not an object":     `[]`,
 	} {
 		if _, err := spliceResult([]byte(raw), []byte(`{}`)); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -295,5 +302,43 @@ func TestSpliceResultRefusesAmbiguousMessages(t *testing.T) {
 	got, err := spliceResult([]byte(`{ "id" : 1 , "result" : {"a": 1} , "z":2}`), []byte(`{"b":2}`))
 	if err != nil || string(got) != `{ "id" : 1 , "result" : {"b":2} , "z":2}` {
 		t.Fatalf("splice = %s, %v", got, err)
+	}
+}
+
+// Review M2: `rm config.yaml && rover policy apply` reloaded the default
+// config (observe) into an enforcing daemon. Until M9 adds OS
+// authentication, a reload may tighten the mode but never loosen it.
+func TestReloadRefusesEnforceToObserve(t *testing.T) {
+	// Arrange
+	s := start(t, Options{Audit: audit.New(&syncBuf{}), Policy: engine(t, hidingPolicy), Config: enforce()})
+	c := dial(t, s)
+	permitAll := engine(t, `permit (principal, action, resource);`)
+
+	// Act
+	err := s.Reload(permitAll, config.Default())
+
+	// Assert: refused, and the previous policy and mode still apply.
+	if !errors.Is(err, ErrModeDowngrade) || !strings.Contains(err.Error(), "refused: switching enforce -> observe needs OS authentication (M9)") {
+		t.Fatalf("Reload err = %v", err)
+	}
+	if v := decide(t, c, "c2s", call("1", "read_file")); v.Action != ipc.ActionBlock {
+		t.Fatalf("after a refused reload read_file must still be blocked: %+v", v)
+	}
+	// Enforce -> enforce and observe -> enforce are fine.
+	if err := s.Reload(permitAll, enforce()); err != nil {
+		t.Fatalf("enforce -> enforce: %v", err)
+	}
+	if v := decide(t, c, "c2s", call("2", "read_file")); v.Action != ipc.ActionForward {
+		t.Fatalf("new enforce policy not applied: %+v", v)
+	}
+}
+
+func TestReloadAllowsObserveToEnforce(t *testing.T) {
+	s := start(t, Options{Audit: audit.New(&syncBuf{}), Policy: engine(t, hidingPolicy), Config: config.Default()})
+	if err := s.Reload(engine(t, hidingPolicy), enforce()); err != nil {
+		t.Fatalf("observe -> enforce: %v", err)
+	}
+	if err := s.Reload(engine(t, hidingPolicy), config.Default()); !errors.Is(err, ErrModeDowngrade) {
+		t.Fatalf("enforce -> observe after the upgrade: %v", err)
 	}
 }

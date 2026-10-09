@@ -227,3 +227,24 @@ func TestUnknownActionIsRefused(t *testing.T) {
 		t.Fatal("an action the wrapper does not understand must stop the session")
 	}
 }
+
+// An ambiguous request ("method" and "Method") is invalid, not a request,
+// but its sender still waits on the id: roverd's -32600 reply must reach it.
+func TestBlockedInvalidRequestGetsRoverdResponseRaw(t *testing.T) {
+	// Arrange
+	in := `{"jsonrpc":"2.0","id":8,"method":"tools/call","Method":"ping"}` + "\n"
+	raw := `{"jsonrpc":"2.0","id":8,"error":{"code":-32600,"message":"Invalid Request"}}`
+	d := &fakeDecider{verdicts: []ipc.Frame{{Action: ipc.ActionBlock, Reason: "invalid_jsonrpc", ResponseRaw: []byte(raw)}}}
+	var out, back bytes.Buffer
+
+	// Act
+	err := New(d).Pump(strings.NewReader(in), &out, &back, ClientToServer)
+
+	// Assert
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 || back.String() != raw+"\n" {
+		t.Fatalf("out=%q back=%q", out.String(), back.String())
+	}
+}

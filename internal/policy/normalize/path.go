@@ -142,6 +142,13 @@ func checkPathText(s string) error {
 	if !utf8.ValidString(s) {
 		return errors.New("path is not valid UTF-8")
 	}
+	if strings.HasPrefix(s, "~") {
+		// "~" and "~user" mean a home directory to a shell and to many
+		// servers, but Rover cannot know which one, so it cannot say where
+		// the path points. Joining it onto a root would call
+		// "~/projects/../.ssh" inside that root (review H1).
+		return errors.New("path_tilde: path starts with \"~\", which the server may expand to a home directory")
+	}
 	lower := strings.ToLower(s)
 	for _, enc := range percentTraversal {
 		if strings.Contains(lower, enc) {

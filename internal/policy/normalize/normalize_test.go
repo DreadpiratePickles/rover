@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cedar-policy/cedar-go/types"
@@ -70,6 +71,8 @@ func TestPathEscapeMatrix(t *testing.T) {
 		"U+2215 lookalike":       tmp + "/projects\u2215app",
 		"U+FF0F lookalike":       tmp + "/projects\uff0fapp",
 		"trailing NUL":           root + "/app\x00",
+		"tilde home ssh":         "~/.ssh/id_rsa",
+		"tilde projects dot-dot": "~/projects/../.ssh",
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -87,6 +90,29 @@ func TestPathEscapeMatrix(t *testing.T) {
 				t.Fatalf("under_projects = %v for %q (norm %v)", got, in, res.Norm)
 			}
 		})
+	}
+}
+
+// A leading "~" is expanded by many servers (to $HOME, or to another user's
+// home for "~user"), but Rover cannot know what it becomes. Joining it onto
+// the root made "~/.ssh/id_rsa" look like <root>/~/.ssh/id_rsa, under the
+// root (review H1). It is a hard reject, with or without roots.
+func TestPathTildeIsRejected(t *testing.T) {
+	_, roots := fixture(t)
+	for _, in := range []string{"~", "~/.ssh/id_rsa", "~/projects/../.ssh", "~root/.ssh", "~bobby"} {
+		for _, rs := range [][]Root{roots, nil} {
+			// Act
+			_, err := applyPath(t, types.String(in), rs)
+
+			// Assert
+			if !errors.Is(err, ErrReject) || !strings.Contains(err.Error(), "path_tilde") {
+				t.Errorf("%q (roots %v): err = %v, want ErrReject with path_tilde", in, rs != nil, err)
+			}
+		}
+	}
+	// A "~" that is not the first character is an ordinary name.
+	if _, err := applyPath(t, types.String("app/~backup"), roots); err != nil {
+		t.Fatalf("app/~backup: %v", err)
 	}
 }
 

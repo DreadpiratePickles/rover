@@ -91,16 +91,43 @@ func loadEngine(file, configDir string) (*policy.Engine, string, error) {
 	return eng, schemaName, nil
 }
 
-// loadAll loads config.yaml and policy.cedar for roverd. The files must be
-// owner-only: a policy anyone else can write is not the owner's policy.
-// On any error the caller runs (or keeps running) without this pair.
-func loadAll(dirs paths.Dirs) (daemon.Policy, config.Config, error) {
-	for _, f := range []string{config.FileName, policyFile, schemaFile} {
-		if err := paths.CheckPrivate(filepath.Join(dirs.Config, f), 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, config.Config{}, err
+// checkPrivateFiles fails unless every file that exists is owner-only: a
+// policy anyone else can write is not the owner's policy. A missing file is
+// not an error here (loading it reports that, or a default applies).
+func checkPrivateFiles(files ...string) error {
+	for _, f := range files {
+		if f == "" {
+			continue
+		}
+		if err := paths.CheckPrivate(f, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 	}
-	cfg, err := config.Load(dirs.Config)
+	return nil
+}
+
+// loadConfig loads config.yaml after checking it, the schema and the policy
+// file are owner-only, then checks the normalizers file it names. roverd
+// and `rover policy validate` both use it, so they refuse the same files.
+func loadConfig(configDir, policyPath string) (config.Config, error) {
+	if err := checkPrivateFiles(filepath.Join(configDir, config.FileName), policyPath, filepath.Join(configDir, schemaFile)); err != nil {
+		return config.Config{}, err
+	}
+	cfg, err := config.Load(configDir)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if err := checkPrivateFiles(cfg.NormalizersFile); err != nil {
+		return config.Config{}, err
+	}
+	return cfg, nil
+}
+
+// loadAll loads config.yaml and policy.cedar for roverd. The files must be
+// owner-only (see loadConfig). On any error the caller runs (or keeps
+// running) without this pair.
+func loadAll(dirs paths.Dirs) (daemon.Policy, config.Config, error) {
+	cfg, err := loadConfig(dirs.Config, filepath.Join(dirs.Config, policyFile))
 	if err != nil {
 		return nil, config.Config{}, err
 	}

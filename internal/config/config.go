@@ -63,6 +63,10 @@ type Config struct {
 	Labels map[string]map[string][]string
 	// Normalizers is the built-in mapping unless config.yaml names a file.
 	Normalizers normalize.Config
+	// NormalizersFile is the absolute path of that file, or "" for the
+	// built-in mapping. roverd and `rover policy validate` check that it is
+	// owner-only, like the other policy files.
+	NormalizersFile string
 }
 
 // Default is the configuration used when config.yaml does not exist.
@@ -157,11 +161,11 @@ func Parse(b []byte, dir string) (Config, error) {
 	}
 	cfg.Labels = f.Labels
 	if f.Normalizers != "" {
-		n, err := loadNormalizers(f.Normalizers, dir)
+		n, p, err := loadNormalizers(f.Normalizers, dir)
 		if err != nil {
 			return Config{}, err
 		}
-		cfg.Normalizers = n
+		cfg.Normalizers, cfg.NormalizersFile = n, p
 	}
 	return cfg, nil
 }
@@ -194,20 +198,20 @@ func checkLabels(labels map[string]map[string][]string) error {
 	return nil
 }
 
-func loadNormalizers(path, dir string) (normalize.Config, error) {
+func loadNormalizers(path, dir string) (normalize.Config, string, error) {
 	p, err := expandPath(path, dir)
 	if err != nil {
-		return normalize.Config{}, fmt.Errorf("config: normalizers: %w", err)
+		return normalize.Config{}, "", fmt.Errorf("config: normalizers: %w", err)
 	}
 	b, err := readLimited(p)
 	if err != nil {
-		return normalize.Config{}, fmt.Errorf("config: normalizers: %w", err)
+		return normalize.Config{}, "", fmt.Errorf("config: normalizers: %w", err)
 	}
 	n, err := normalize.Parse(b)
 	if err != nil {
-		return normalize.Config{}, fmt.Errorf("config: normalizers %s: %w", p, err)
+		return normalize.Config{}, "", fmt.Errorf("config: normalizers %s: %w", p, err)
 	}
-	return n, nil
+	return n, p, nil
 }
 
 // expandPath expands a leading "~" to the home directory and makes p
