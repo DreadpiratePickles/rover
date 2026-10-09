@@ -1,7 +1,7 @@
-// rover-gate: the Rover MCP security gateway.
+// Command rover is the Rover MCP security gateway.
 //
-//	rover-gate wrap [--log FILE] [--no-bodies] -- <mcp server command> [args...]
-//	rover-gate log  [--log FILE]
+//	rover wrap [--log FILE] [--no-bodies] -- <mcp server command> [args...]
+//	rover log  [--log FILE]
 //
 // "wrap" starts the real MCP server as a child process and sits between it and
 // the agent. To use it, change the agent's MCP config from
@@ -10,7 +10,7 @@
 //
 // to
 //
-//	"command": "rover-gate", "args": ["wrap", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+//	"command": "rover", "args": ["wrap", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 package main
 
 import (
@@ -27,8 +27,8 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"rover/internal/audit"
-	"rover/internal/proxy"
+	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/proxy"
 )
 
 func main() {
@@ -46,7 +46,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage:\n  rover-gate wrap [--log FILE] [--no-bodies] -- <server command> [args...]\n  rover-gate log [--log FILE]")
+	fmt.Fprintln(os.Stderr, "usage:\n  rover wrap [--log FILE] [--no-bodies] -- <server command> [args...]\n  rover log [--log FILE]")
 	os.Exit(2)
 }
 
@@ -69,19 +69,24 @@ func wrap(args []string) int {
 	}
 
 	// Everything we print goes to stderr: stdout belongs to the protocol.
-	errf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, "[rover-gate] "+format+"\n", a...) }
+	errf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, "[rover] "+format+"\n", a...) }
 
 	log, err := audit.Open(*logPath)
 	if err != nil {
 		errf("cannot open audit log: %v", err)
 		return 1 // fail closed: no audit log, no session
 	}
-	defer log.Close()
+	// The log file is unbuffered (each Write is one write(2) on an O_APPEND fd),
+	// so there is nothing left to flush by the time we close it.
+	defer func() { _ = log.Close() }()
 
 	sess := proxy.NewSession(newSessionID(), log)
 	sess.LogBodies = !*noBodies
 
-	cmd := exec.Command(server[0], server[1:]...)
+	// G204: running a caller-chosen command is the whole point of "wrap". The
+	// command comes from the user's own MCP client config, and exec.Command
+	// never goes through a shell, so there is no injection surface here.
+	cmd := exec.Command(server[0], server[1:]...) //nolint:gosec // G204: wrapping the user-configured server is intended, see above
 	cmd.Stderr = os.Stderr
 	childIn, err := cmd.StdinPipe()
 	if err != nil {
@@ -112,7 +117,7 @@ func wrap(args []string) int {
 	outDone := make(chan error, 1)
 	go func() {
 		err := sess.Pump(os.Stdin, childIn, proxy.ClientToServer)
-		childIn.Close() // agent hung up -> tell the server (EOF on its stdin)
+		_ = childIn.Close() // agent hung up -> tell the server (EOF on its stdin)
 		inDone <- err
 	}()
 	go func() { outDone <- sess.Pump(childOut, os.Stdout, proxy.ServerToClient) }()
@@ -161,7 +166,7 @@ func showLog(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only: a close error loses nothing
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 32<<20)

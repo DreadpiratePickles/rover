@@ -1,7 +1,7 @@
 // Package proxy sits in the middle of an MCP stdio connection.
 //
-//	agent (Claude Code) --stdin-->  rover-gate  --stdin--> MCP server
-//	agent               <--stdout-- rover-gate  <--stdout- MCP server
+//	agent (Claude Code) --stdin-->    rover     --stdin--> MCP server
+//	agent               <--stdout--   rover     <--stdout- MCP server
 //
 // LESSON (A1): this is a man-in-the-middle, used defensively. Every security
 // feature in Track A (policy, pinning, inspection, redaction) is a hook in
@@ -21,12 +21,14 @@ import (
 	"sync"
 	"time"
 
-	"rover/internal/audit"
-	"rover/internal/jsonrpc"
+	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 )
 
+// Direction says which way a message is travelling.
 type Direction string
 
+// The two directions of an MCP stdio connection.
 const (
 	ClientToServer Direction = "c2s"
 	ServerToClient Direction = "s2c"
@@ -43,6 +45,7 @@ func (d Direction) other() Direction {
 // a single endless line and exhaust the gateway's memory (a DoS).
 const DefaultMaxMessage = 16 << 20 // 16 MiB
 
+// ErrMessageTooLarge is returned when a single message exceeds Session.MaxMessage.
 var ErrMessageTooLarge = errors.New("message exceeds size limit")
 
 type pending struct {
@@ -63,6 +66,7 @@ type Session struct {
 	pending map[string]pending // key: "<requester dir>:<raw id>"
 }
 
+// NewSession returns a Session that logs bodies and uses DefaultMaxMessage.
 func NewSession(id string, log *audit.Logger) *Session {
 	return &Session{ID: id, Log: log, LogBodies: true, MaxMessage: DefaultMaxMessage, now: time.Now, pending: map[string]pending{}}
 }
@@ -91,14 +95,14 @@ func (s *Session) Pump(src io.Reader, dst io.Writer, dir Direction) error {
 	}
 }
 
-// readLine reads up to and including '\n', refusing lines longer than max.
+// readLine reads up to and including '\n', refusing lines longer than limit.
 // bufio.Scanner is the usual tool, but its default 64 KiB limit silently
 // breaks large tool results - a classic MCP-proxy bug.
-func readLine(r *bufio.Reader, max int) ([]byte, error) {
+func readLine(r *bufio.Reader, limit int) ([]byte, error) {
 	var buf []byte
 	for {
 		chunk, err := r.ReadSlice('\n')
-		if len(buf)+len(chunk) > max {
+		if len(buf)+len(chunk) > limit {
 			return nil, ErrMessageTooLarge
 		}
 		buf = append(buf, chunk...)

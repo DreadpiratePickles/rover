@@ -44,7 +44,7 @@ func TestParse(t *testing.T) {
 func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}}`))
 	f.Add([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
-	f.Fuzz(func(t *testing.T, b []byte) {
+	f.Fuzz(func(_ *testing.T, b []byte) {
 		m := Parse(b)
 		_ = m.ToolName()
 	})
