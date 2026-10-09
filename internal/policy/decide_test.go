@@ -2,6 +2,7 @@ package policy
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,7 +231,7 @@ func TestNormalisedPathDecidesProjectAccess(t *testing.T) {
 	}
 	e := mustLoad(t, `@id("fs-projects")
 permit (principal, action == Action::"call_tool", resource in Server::"echo")
-when { context.norm.path.under_projects };`)
+when { context.norm has path.under_projects && context.norm.path.under_projects };`)
 	base := func(path string) Input {
 		args, _ := json.Marshal(map[string]string{"path": path})
 		in := input(DirC2S, toolsCall("1", "read_file", string(args)))
@@ -263,7 +264,7 @@ func TestTildePathIsDeniedUnderProjectsPermit(t *testing.T) {
 	root := t.TempDir()
 	e := mustLoad(t, `@id("fs-projects")
 permit (principal, action == Action::"call_tool", resource in Server::"echo")
-when { context.norm.path.under_projects };`)
+when { context.norm has path.under_projects && context.norm.path.under_projects };`)
 	for _, mode := range []Mode{ModeEnforce, ModeObserve} {
 		in := input(DirC2S, toolsCall("1", "read_file", `{"path":"~/projects/../.ssh"}`))
 		in.Mode = mode
@@ -312,17 +313,48 @@ permit (principal, action == Action::"call_tool", resource == Tool::"echo/echo")
 }
 
 func TestErroringForbidCountsAsFired(t *testing.T) {
-	// Arrange: the call has no "url" argument, so the forbid cannot evaluate.
+	// Arrange: the addition overflows a Long, so the forbid cannot evaluate.
+	// (Since M3 a missing argument is no longer an error: every norm and
+	// args attribute is optional and must be guarded with `has`. Overflow
+	// is one of the few evaluation errors left.)
+	e := mustLoad(t, permitEcho+`
+@id("overflow") forbid (principal, action == Action::"call_tool", resource)
+when { context.session.calls + 9223372036854775807 > 0 };`)
+	in := input(DirC2S, toolsCall("1", "echo", `{}`))
+	in.Session.Calls = 1
+
+	// Act
+	out := e.Decide(in)
+
+	// Assert
+	if out.Action != ipc.ActionBlock || !contains(out.RuleIDs, "overflow") {
+		t.Fatalf("%+v", out)
+	}
+}
+
+func TestMissingOptionalArgumentIsNotAnError(t *testing.T) {
+	// Arrange: the call has no "url" argument, so `has url` is false.
 	e := mustLoad(t, permitEcho+`
 @id("no-evil-host") forbid (principal, action == Action::"call_tool", resource)
-when { context.norm.url.host == "evil.example" };`)
+when { context.norm has url && context.norm.url.host == "evil.example" };`)
 
 	// Act
 	out := e.Decide(input(DirC2S, toolsCall("1", "echo", `{}`)))
 
 	// Assert
-	if out.Action != ipc.ActionBlock || !contains(out.RuleIDs, "no-evil-host") {
+	if out.Action != ipc.ActionForward || contains(out.RuleIDs, "no-evil-host") {
 		t.Fatalf("%+v", out)
+	}
+}
+
+func TestOptionalAttributeWithoutHasGuardIsRefusedAtLoad(t *testing.T) {
+	// Act
+	_, err := Load([]byte(`forbid (principal, action == Action::"call_tool", resource)
+when { context.norm.url.host == "evil.example" };`), "p.cedar", policyfiles.Schema)
+
+	// Assert
+	if !errors.Is(err, ErrLoad) || !strings.Contains(err.Error(), "optional attribute") {
+		t.Fatalf("want an unsafe optional access error, got %v", err)
 	}
 }
 

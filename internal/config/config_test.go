@@ -143,3 +143,69 @@ func TestOversizedConfigIsRefused(t *testing.T) {
 		t.Fatal("oversized config accepted")
 	}
 }
+
+func TestPolicySettingsOverrideConfig(t *testing.T) {
+	// Arrange
+	base, err := Parse([]byte("mode: observe\nroots:\n  old: /old\nlabels:\n  a:\n    b: [egress]\n"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := PolicySettings{
+		Mode:      "enforce",
+		RootOrder: []string{"lab", "projects"},
+		Roots:     map[string]string{"lab": "/srv/lab", "projects": "/p"},
+		Labels:    map[string]map[string][]string{"fs": {"read_file": {"reads_private"}}},
+	}
+
+	// Act
+	got, err := base.WithPolicySettings(s)
+
+	// Assert
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Mode != policy.ModeEnforce || len(got.Roots) != 2 || got.Roots[0].Name != "lab" || got.Roots[0].Path != "/srv/lab" {
+		t.Errorf("got %+v", got)
+	}
+	if got.ToolLabels("fs", "read_file")[0] != "reads_private" || got.ToolLabels("a", "b") != nil {
+		t.Errorf("labels %v", got.Labels)
+	}
+	if base.Mode != policy.ModeObserve || base.Roots[0].Name != "old" {
+		t.Errorf("base was modified: %+v", base)
+	}
+}
+
+func TestEmptyPolicySettingsKeepConfig(t *testing.T) {
+	// Arrange
+	base, err := Parse([]byte("mode: enforce\nroots:\n  old: /old\n"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Act
+	got, err := base.WithPolicySettings(PolicySettings{})
+
+	// Assert
+	if err != nil || got.Mode != policy.ModeEnforce || got.Roots[0].Name != "old" {
+		t.Fatalf("%v %+v", err, got)
+	}
+}
+
+func TestPolicySettingsRejectBadValues(t *testing.T) {
+	for name, s := range map[string]PolicySettings{
+		"mode":          {Mode: "audit"},
+		"relative root": {RootOrder: []string{"a"}, Roots: map[string]string{"a": ""}},
+		"missing path":  {RootOrder: []string{"a"}},
+		"bad label":     {Labels: map[string]map[string][]string{"s": {"t": {"nope"}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Act
+			_, err := Default().WithPolicySettings(s)
+
+			// Assert
+			if err == nil {
+				t.Fatal("want an error")
+			}
+		})
+	}
+}

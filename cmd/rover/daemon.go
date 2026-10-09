@@ -73,7 +73,10 @@ func runDaemon(args []string) int {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	pol, cfg, err := loadAll(dirs)
+	pol, cfg, note, err := loadAll(dirs)
+	if note != "" {
+		logf("policy precedence: %s", note)
+	}
 	if err != nil {
 		logf("POLICY NOT LOADED: %v; every tools/call, tools/list, resources/read, sampling and elicitation request is blocked (no_policy)", err)
 		pol = nil
@@ -97,7 +100,7 @@ func runDaemon(args []string) int {
 		Policy:     pol,
 		Config:     cfg,
 	})
-	go reloadOnHUP(hup, dirs, srv, logf)
+	go reloadOnHUP(hup, dirs, srv, note, logf)
 	if err := srv.Listen(); err != nil {
 		logf("%v", err)
 		return 1
@@ -119,13 +122,20 @@ func runDaemon(args []string) int {
 	return 0
 }
 
-// reloadOnHUP reloads config.yaml and policy.cedar on every SIGHUP. A
-// failed reload keeps whatever was running before (a policy, or none), and
-// so does a reload that would switch enforce to observe (daemon.ErrModeDowngrade).
+// reloadOnHUP reloads config.yaml and the policy (policy.cedar, else
+// policy.yaml) on every SIGHUP. A failed reload, including a policy.yaml
+// that does not compile, keeps whatever was running before (a policy, or
+// none), and so does a reload that would switch enforce to observe
+// (daemon.ErrModeDowngrade). The precedence note is logged again only when
+// it changes.
 // TODO(M9): policy changes must be confirmed with OS authentication.
-func reloadOnHUP(hup <-chan os.Signal, dirs paths.Dirs, srv *daemon.Server, logf func(string, ...any)) {
+func reloadOnHUP(hup <-chan os.Signal, dirs paths.Dirs, srv *daemon.Server, lastNote string, logf func(string, ...any)) {
 	for range hup {
-		pol, cfg, err := loadAll(dirs)
+		pol, cfg, note, err := loadAll(dirs)
+		if note != "" && note != lastNote {
+			logf("policy precedence: %s", note)
+			lastNote = note
+		}
 		if err != nil {
 			logf("policy reload FAILED, keeping the previous policy: %v", err)
 			continue

@@ -85,6 +85,8 @@ jobs:
         run: go test ./internal/policy -run='^$' -fuzz=FuzzDecide -fuzztime=30s
       - name: fuzz policy.FilterToolsList (30s)
         run: go test ./internal/policy -run='^$' -fuzz=FuzzFilterToolsList -fuzztime=30s
+      - name: fuzz yaml2cedar.Compile (30s)
+        run: go test ./internal/policy/yaml2cedar -run='^$' -fuzz=FuzzCompile -fuzztime=30s
       # On a crash, keep the failing input so it can be reproduced locally
       # (copy it into internal/jsonrpc/testdata/fuzz/FuzzParse/ and run go test).
       - name: upload crashing input
@@ -100,6 +102,7 @@ jobs:
             internal/policy/testdata/fuzz/
             internal/policy/convert/testdata/fuzz/
             internal/policy/normalize/testdata/fuzz/
+            internal/policy/yaml2cedar/testdata/fuzz/
           if-no-files-found: ignore
 
   govulncheck:

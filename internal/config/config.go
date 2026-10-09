@@ -249,3 +249,49 @@ func readLimited(path string) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// PolicySettings are the settings a policy.yaml may carry (plan §5.4). When
+// roverd loads a policy.yaml they override config.yaml: a non-empty Mode
+// replaces mode, a non-empty root list replaces roots, and non-empty labels
+// replace labels. Normalizers always come from config.yaml.
+type PolicySettings struct {
+	Mode      string
+	RootOrder []string          // root names in file order
+	Roots     map[string]string // name -> path as written ("~" allowed)
+	Labels    map[string]map[string][]string
+}
+
+// WithPolicySettings returns a copy of c with s applied. Root paths are
+// expanded and checked exactly as config.yaml's are.
+func (c Config) WithPolicySettings(s PolicySettings) (Config, error) {
+	out := c
+	switch policy.Mode(s.Mode) {
+	case "":
+	case policy.ModeObserve, policy.ModeEnforce:
+		out.Mode = policy.Mode(s.Mode)
+	default:
+		return Config{}, fmt.Errorf("policy.yaml: mode %q: want observe or enforce", s.Mode)
+	}
+	if len(s.RootOrder) > 0 {
+		list := make(rootList, 0, len(s.RootOrder))
+		for _, name := range s.RootOrder {
+			p, ok := s.Roots[name]
+			if !ok {
+				return Config{}, fmt.Errorf("policy.yaml: root %q has no path", name)
+			}
+			list = append(list, normalize.Root{Name: name, Path: p})
+		}
+		roots, err := resolveRoots(list)
+		if err != nil {
+			return Config{}, fmt.Errorf("policy.yaml: %w", err)
+		}
+		out.Roots = roots
+	}
+	if len(s.Labels) > 0 {
+		if err := checkLabels(s.Labels); err != nil {
+			return Config{}, fmt.Errorf("policy.yaml: %w", err)
+		}
+		out.Labels = s.Labels
+	}
+	return out, nil
+}

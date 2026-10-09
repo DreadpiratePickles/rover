@@ -25,14 +25,20 @@ import (
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
 	"github.com/DreadpiratePickles/rover/internal/policy"
+	"github.com/DreadpiratePickles/rover/internal/policy/yaml2cedar"
 	policyfiles "github.com/DreadpiratePickles/rover/policy"
 )
 
 const policyUsage = `usage:
-  rover policy init [--force]          write policy.cedar, config.yaml, the schema and templates
-  rover policy validate [--policy FILE] load and type-check a policy (and run ` + "`cedar validate`" + ` if installed)
-  rover policy test <audit.jsonl>       replay logged messages through the current policy
-  rover policy apply                    ask roverd to reload config.yaml and policy.cedar`
+  rover policy init [--force] [--yaml]   write policy.cedar (or policy.yaml), config.yaml, the schema and templates
+  rover policy compile <file.yaml>       print the Cedar a policy.yaml compiles to
+  rover policy validate [--print-schema] [--policy FILE | FILE]
+                                         load and type-check a policy (.cedar, or .yaml compiled first),
+                                         then run ` + "`cedar validate`" + ` if installed
+  rover policy test <audit.jsonl>        replay logged messages through the current policy
+  rover policy apply                     ask roverd to reload config.yaml and the policy
+
+roverd uses policy.cedar when it exists, else policy.yaml (compiled on load).`
 
 // runPolicy dispatches `rover policy <sub>`.
 func runPolicy(args []string) int {
@@ -43,6 +49,8 @@ func runPolicy(args []string) int {
 	switch args[0] {
 	case "init":
 		return policyInit(args[1:])
+	case "compile":
+		return policyCompile(args[1:])
 	case "validate":
 		return policyValidate(args[1:])
 	case "test":
@@ -60,12 +68,15 @@ type initFile struct {
 	data []byte
 }
 
-func starterFiles() ([]initFile, error) {
-	files := []initFile{
-		{policyFile, policyfiles.Starter},
-		{config.FileName, []byte(starterConfig)},
-		{schemaFile, policyfiles.Schema},
+func starterFiles(useYAML bool) ([]initFile, error) {
+	files := []initFile{{policyFile, policyfiles.Starter}}
+	if useYAML {
+		files = []initFile{{policyYAMLFile, policyfiles.StarterYAML}}
 	}
+	files = append(files,
+		initFile{config.FileName, []byte(starterConfig)},
+		initFile{schemaFile, policyfiles.Schema},
+	)
 	tmpl, err := fs.ReadDir(policyfiles.Templates, ".")
 	if err != nil {
 		return nil, err
@@ -81,17 +92,19 @@ func starterFiles() ([]initFile, error) {
 }
 
 // policyInit writes the starter files, refusing to overwrite any of them
-// unless --force is given.
+// unless --force is given. With --yaml it writes policy.yaml instead of
+// policy.cedar.
 func policyInit(args []string) int {
 	fset := flag.NewFlagSet("policy init", flag.ExitOnError)
 	force := fset.Bool("force", false, "overwrite existing files")
+	useYAML := fset.Bool("yaml", false, "write policy.yaml (compiled to Cedar on load) instead of policy.cedar")
 	_ = fset.Parse(args)
 
 	dirs, err := paths.Resolve()
 	if err == nil {
 		err = paths.Ensure(dirs)
 	}
-	files, ferr := starterFiles()
+	files, ferr := starterFiles(*useYAML)
 	if err == nil {
 		err = ferr
 	}
@@ -124,8 +137,40 @@ func policyInit(args []string) int {
 		}
 		fmt.Println("wrote " + p)
 	}
+	if *useYAML {
+		fmt.Println("next: edit policy.yaml, run `rover policy compile` to read the Cedar it becomes, `rover policy validate`, then `rover policy apply`.")
+		fmt.Println("policy.yaml starts in observe mode: denials are logged as would_deny, not blocked.")
+		if _, err := os.Lstat(filepath.Join(dirs.Config, policyFile)); err == nil {
+			fmt.Println("note: policy.cedar exists and wins over policy.yaml; remove it to use the YAML.")
+		}
+		return 0
+	}
 	fmt.Println("next: edit policy.cedar (it permits nothing yet), run `rover policy validate`, then `rover policy apply`.")
 	fmt.Println("config.yaml starts in observe mode: denials are logged as would_deny, not blocked.")
+	return 0
+}
+
+// policyCompile prints the Cedar a policy.yaml compiles to. This is a
+// human-facing command, so stdout is fine; errors go to stderr.
+func policyCompile(args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: rover policy compile <file.yaml>")
+		return 2
+	}
+	src, err := readCapped(args[0], yaml2cedar.MaxSourceBytes)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	c, err := yaml2cedar.Compile(src, args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if _, err := os.Stdout.Write(c.Cedar); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
 	return 0
 }
 
@@ -146,7 +191,10 @@ func writeNew(path string, data []byte) error {
 	return f.Close()
 }
 
-// policyValidate loads a policy the way roverd would and lists it.
+// policyValidate loads a policy the way roverd would and lists it. The file
+// is --policy, or the one positional argument, or else the one roverd
+// would pick (policy.cedar, else policy.yaml). A .yaml file is compiled
+// first.
 func policyValidate(args []string) int {
 	dirs, err := paths.Resolve()
 	if err != nil {
@@ -154,40 +202,69 @@ func policyValidate(args []string) int {
 		return 1
 	}
 	fset := flag.NewFlagSet("policy validate", flag.ExitOnError)
-	file := fset.String("policy", filepath.Join(dirs.Config, policyFile), "policy file to validate")
+	file := fset.String("policy", "", "policy file to validate (.cedar or .yaml)")
+	printSchema := fset.Bool("print-schema", false, "print the effective schema (generated from the config) and exit")
 	_ = fset.Parse(args)
-
-	// The same owner-only checks roverd applies, so validate and roverd agree.
-	if _, err = loadConfig(dirs.Config, *file); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+	if *file == "" && fset.NArg() == 1 {
+		*file = fset.Arg(0)
+	} else if fset.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "usage: rover policy validate [--print-schema] [--policy FILE | FILE]")
+		return 2
 	}
-	eng, schemaName, err := loadEngine(*file, dirs.Config)
+	if *file == "" {
+		if *file, _, err = pickPolicyFile(dirs.Config); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+	}
+	// The same owner-only checks roverd applies, so validate and roverd agree.
+	cfg, err := loadConfig(dirs.Config, *file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	infos := eng.Policies()
+	l, err := loadPolicy(*file, dirs.Config, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if *printSchema {
+		_, _ = os.Stdout.Write(l.schema)
+		return 0
+	}
+	if c := l.compiled; c != nil {
+		implied := 0
+		for _, r := range c.Rules {
+			if r.Implied {
+				implied++
+			}
+		}
+		fmt.Printf("compiled %s: %d rules + %d implied list_tools permits -> Cedar (mode %s, roots: %s)\n",
+			*file, len(c.Rules)-implied, implied, l.cfg.Mode, strings.Join(policy.RootNames(l.cfg.Roots), ", "))
+	}
+	infos := l.engine.Policies()
 	for _, p := range infos {
 		fmt.Printf("%s  %s\n", p.ID, p.Effect)
 	}
-	fmt.Printf("ok: %d policies (schema: %s)\n", len(infos), schemaName)
-	schema, _, err := readSchema(dirs.Config)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+	fmt.Printf("ok: %d policies (schema: %s, generated for roots: %s)\n",
+		len(infos), l.schemaName, strings.Join(policy.RootNames(l.cfg.Roots), ", "))
+	var compiled []byte
+	if l.compiled != nil {
+		compiled = l.compiled.Cedar
 	}
-	return cedarValidate(*file, schema)
+	return cedarValidate(*file, compiled, l.schema)
 }
 
 // cedarTimeout bounds the official Cedar CLI run.
 const cedarTimeout = 30 * time.Second
 
-// cedarValidate runs the official `cedar validate` against the schema roverd
-// uses (plan §5.1), when the cedar CLI is on PATH, and returns the exit code
-// for validate. The schema is written to a private temporary directory
-// because the effective schema may be the one built into the binary.
-func cedarValidate(policyPath string, schema []byte) int {
+// cedarValidate runs the official `cedar validate` against the effective
+// schema roverd uses (policy.SchemaFor, plan §5.1), when the cedar CLI is on
+// PATH, and returns the exit code for validate. The schema is written to a
+// private temporary directory because it is generated. For a policy.yaml,
+// compiled holds the Cedar it compiled to, which is validated instead of the
+// YAML file.
+func cedarValidate(policyPath string, compiled, schema []byte) int {
 	bin, err := exec.LookPath("cedar")
 	if err != nil {
 		fmt.Println("cedar CLI not installed; skipped")
@@ -198,8 +275,12 @@ func cedarValidate(policyPath string, schema []byte) int {
 		defer func() { _ = os.RemoveAll(tmp) }()
 		err = writeNew(filepath.Join(tmp, schemaFile), schema)
 	}
+	if err == nil && compiled != nil {
+		policyPath = filepath.Join(tmp, policyFile)
+		err = writeNew(policyPath, compiled)
+	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error: cedar validate: schema temp file:", err)
+		fmt.Fprintln(os.Stderr, "error: cedar validate: temp file:", err)
 		return 1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cedarTimeout)
@@ -239,16 +320,22 @@ func policyTest(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	eng, _, err := loadEngine(filepath.Join(dirs.Config, policyFile), dirs.Config)
+	file, _, err := pickPolicyFile(dirs.Config)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	cfg, err := config.Load(dirs.Config)
+	cfg, err := loadConfig(dirs.Config, file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	l, err := loadPolicy(file, dirs.Config, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	eng, cfg := l.engine, l.cfg
 	f, err := os.Open(args[0])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

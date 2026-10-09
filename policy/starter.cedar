@@ -28,4 +28,4 @@ forbid (principal, action == Action::"server_elicitation", resource);
 //   principal,
 //   action == Action::"call_tool",
 //   resource in Server::"filesystem"
-// ) when { context.norm.path.under_projects };
+// ) when { context.norm has path.under_projects && context.norm.path.under_projects };

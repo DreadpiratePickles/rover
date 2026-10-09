@@ -12,17 +12,19 @@
 //     CallContext repeats the four BaseContext fields and adds args and norm.
 //  2. "args: Record" and "norm: Record" are not valid Cedar: Cedar has no
 //     open record type. Args and Norm below list the attributes a policy may
-//     use. To use another argument in a policy, add it here.
-//     They are required (no "?") so a policy can write
-//     `context.norm.path.under_projects` without a `has` guard. At run time
-//     an argument the call did not send is missing; reading it is an
-//     evaluation error. Cedar then skips that policy: a permit does not
-//     apply (default deny) and Rover treats an erroring forbid as a deny
-//     (fail closed). Write `context.norm has path && ...` in a forbid if the
-//     argument is genuinely optional for the tools it covers.
-//  3. under_projects / all_under_projects assume a root named "projects".
-//     Each root in config.yaml produces under_<name>; declare one attribute
-//     per root you use in policies.
+//     use. Every one of them is OPTIONAL ("?:"), because a call may leave an
+//     argument out. Strict validation then insists on a `has` guard before
+//     the attribute is read, for example
+//         context.norm has path.under_projects && context.norm.path.under_projects
+//     so a missing argument is a plain `false`, not an evaluation error.
+//  3. The four declarations Args, Norm, NormPath and NormPaths are
+//     GENERATED. roverd and `rover policy validate` call policy.SchemaFor,
+//     which rewrites them from config: every root <r> in config.yaml (or
+//     policy.yaml) becomes under_<r>?: Bool / all_under_<r>?: Bool, and
+//     every argument named in the normalisers becomes a Norm attribute.
+//     What you see here is the default for one root named "projects".
+//     Print the schema actually in force with
+//         rover policy validate --print-schema
 //  4. Common types (Session, Device, ...) name the nested records.
 
 entity Client   { name: String, version: String };               // e.g. "claude-code"
@@ -36,16 +38,34 @@ type Time      = { hour: Long, weekday: Long };                    // weekday 0 
 type Detection = { max_score: Long, findings: Set<String> };
 
 // context.args: the converted tool arguments (§5.2). Raw text: prefer norm.
-type Args = { path: String, url: String, owner: String, repo: String };
+type Args = {
+  branch?: String,
+  owner?: String,
+  path?: String,
+  query?: String,
+  repo?: String,
+  url?: String
+};
 
 // context.norm: the normalised arguments (§5.3).
-type NormPath  = { path: String, under_projects: Bool };
-type NormPaths = { paths: Set<String>, count: Long, all_under_projects: Bool };
+type NormPath = {
+  path?: String,
+  under_projects?: Bool
+};
+type NormPaths = {
+  paths?: Set<String>,
+  count?: Long,
+  all_under_projects?: Bool
+};
 type NormURL   = { scheme: String, host: String, port: String, has_query: Bool };
 type Norm = {
-  path: NormPath, source: NormPath, destination: NormPath, repo_path: NormPath,
-  paths: NormPaths, files: NormPaths,
-  url: NormURL
+  destination?: NormPath,
+  files?: NormPaths,
+  path?: NormPath,
+  paths?: NormPaths,
+  repo_path?: NormPath,
+  source?: NormPath,
+  url?: NormURL
 };
 
 type BaseContext = { session: Session, device: Device, time: Time, detection: Detection };

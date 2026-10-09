@@ -1,0 +1,55 @@
+# Rover starter policy in YAML, written by `rover policy init --yaml`.
+#
+# How Rover uses this file:
+#   - roverd compiles policy.yaml to Cedar when it loads it. Run
+#     `rover policy compile policy.yaml` to read the Cedar it produces, and
+#     `rover policy validate policy.yaml` to type-check it.
+#   - policy.cedar, when it exists, WINS: roverd then ignores this file.
+#     Delete or rename policy.cedar to use the YAML.
+#   - mode, roots and labels set here override config.yaml.
+#
+# Rover denies by default: anything no allow rule permits is blocked, and a
+# deny always beats an allow. The Cedar starter also has explicit forbids
+# for server->client sampling and elicitation. Those have no YAML form (YAML
+# rules are about tools), and they are not needed here: no rule below allows
+# them, so default deny blocks them.
+#
+# The YAML is strict: an unknown key (a typo such as "alow:"), an unknown
+# condition, a root that is not declared below or an unknown label is an
+# error with its line and column, never silently ignored.
+version: 1
+
+# observe: denials are forwarded and logged as would_deny; switch to enforce
+# once `rover log` shows no surprises.
+mode: observe
+
+defaults: deny   # the only accepted value
+
+servers:
+  filesystem:
+    labels: { read_file: [reads_private], write_file: [destructive] }
+
+rules:
+  # filesystem read_file, only for paths inside the root "projects"
+  # (after "..", symlinks and look-alike separators are resolved).
+  - id: fs-read-projects
+    allow: filesystem.read_file
+    when: { path_under: projects }
+
+  # never delete a GitHub repository; hide the tool from tools/list too.
+  - id: gh-no-delete
+    deny: github.delete_repository
+    hide: true
+
+  # pushing needs a human's approval (blocked until approvals exist in M9).
+  - id: gh-push-needs-approval
+    allow: github.push_files
+    require: approval
+
+  # the lethal trifecta: after private data and untrusted content, no egress.
+  - id: trifecta
+    deny: "*"
+    when: { session: { touched_private: true, saw_untrusted: true }, tool_label: egress }
+
+# named directories; "~" is your home directory.
+roots: { projects: "~/projects" }
