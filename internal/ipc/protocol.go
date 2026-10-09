@@ -73,6 +73,10 @@ type Frame struct {
 	ReplacementRaw []byte   `json:"replacement_raw,omitempty"`
 	Reason         string   `json:"reason,omitempty"`
 	RuleIDs        []string `json:"rule_ids,omitempty"`
+	// ResponseRaw, on a block, is the complete JSON-RPC reply the wrapper
+	// sends back to the requester instead of its default error (for example
+	// a tools/call result with isError true that explains the rule).
+	ResponseRaw []byte `json:"response_raw,omitempty"`
 
 	// error
 	Message string `json:"message,omitempty"`
@@ -139,6 +143,9 @@ func (f Frame) Validate() error {
 			}
 		default:
 			return fmt.Errorf("%w: unknown action %q", ErrBadFrame, f.Action)
+		}
+		if len(f.ResponseRaw) > 0 && f.Action != ActionBlock {
+			return fmt.Errorf("%w: response_raw is only valid on block", ErrBadFrame)
 		}
 	case TypeBye, TypeError:
 	default:

@@ -60,8 +60,10 @@ type Entry struct {
 	ReplyTo   string          `json:"reply_to,omitempty"` // for results/errors: the method they answer
 	LatencyMS *float64        `json:"latency_ms,omitempty"`
 	ToolError bool            `json:"tool_error,omitempty"` // result had isError=true
-	Action    string          `json:"action,omitempty"`     // forward | block | replace | hold (empty before M1)
+	Action    string          `json:"action,omitempty"`     // forward | block | replace | hold | would_deny (empty before M1)
 	Reason    string          `json:"reason,omitempty"`
+	RuleIDs   []string        `json:"rule_ids,omitempty"` // deciding policy ids (M2)
+	Findings  []string        `json:"findings,omitempty"` // conversion/normalisation findings (M2)
 	Bytes     int             `json:"bytes"`
 	Body      json.RawMessage `json:"body,omitempty"`
 	Prev      string          `json:"prev"` // hash of the previous entry, "" for the very first

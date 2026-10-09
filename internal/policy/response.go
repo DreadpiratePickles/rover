@@ -79,3 +79,22 @@ func blockResponse(m jsonrpc.Message, reason string, ids []string) []byte {
 	buf.WriteByte('}')
 	return buf.Bytes()
 }
+
+// BlockResponse is the reply to a request blocked outside Decide (for
+// example by roverd when no policy is loaded), in the same shape Decide
+// uses: an isError result for tools/call, error -32001 otherwise. It is nil
+// when the message has no id to answer.
+func BlockResponse(m jsonrpc.Message, reason string, ids []string) []byte {
+	return blockResponse(m, reason, ids)
+}
+
+// ErrorResponse is a JSON-RPC error -32001 reply carrying id (original
+// bytes, which must be a valid JSON id) and "blocked by rover: <reason>".
+// roverd uses it to replace a server response it refuses to forward, such
+// as a tools/list result FilterToolsList could not parse.
+func ErrorResponse(id []byte, reason string) []byte {
+	if len(id) == 0 {
+		id = []byte("null")
+	}
+	return blockResponse(jsonrpc.Message{Kind: jsonrpc.KindRequest, ID: id, Method: "rover/blocked"}, reason, nil)
+}

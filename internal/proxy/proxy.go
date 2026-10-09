@@ -137,11 +137,20 @@ func (w *Wrapper) apply(v ipc.Frame, line []byte, dst, back io.Writer) error {
 		if m.Kind != jsonrpc.KindRequest {
 			return nil // notifications and responses are simply dropped
 		}
-		resp, err := blockedResponse(m.ID, v)
-		if err != nil {
-			return err
+		var resp []byte
+		if len(v.ResponseRaw) > 0 {
+			// roverd built the reply (plan §5.1), e.g. an isError tool result.
+			resp = v.ResponseRaw
+			if resp[len(resp)-1] != '\n' {
+				resp = append(append([]byte{}, resp...), '\n')
+			}
+		} else {
+			var err error
+			if resp, err = blockedResponse(m.ID, v); err != nil {
+				return err
+			}
 		}
-		_, err = back.Write(resp)
+		_, err := back.Write(resp)
 		return err
 	default:
 		return fmt.Errorf("unknown verdict action %q (refusing to guess)", v.Action)

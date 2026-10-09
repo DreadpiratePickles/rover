@@ -7,6 +7,7 @@ import (
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
+	"github.com/DreadpiratePickles/rover/internal/policy"
 )
 
 // Session is one agent process (Claude Code, Cursor, ...) as seen through
@@ -23,6 +24,9 @@ type Session struct {
 	clientVer  string
 	servers    map[string]int // server name -> connected wrappers
 	pending    map[string]pendingReq
+	// flags is context.session for the policy: what this agent has done
+	// across every server it uses (plan §5.1).
+	flags policy.SessionCtx
 }
 
 type pendingReq struct {
@@ -118,4 +122,42 @@ func other(dir string) string {
 		return "s2c"
 	}
 	return "c2s"
+}
+
+// Flags returns context.session as of now.
+func (s *Session) Flags() policy.SessionCtx {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flags
+}
+
+// noteForwardedCall records that a tools/call with these labels reached its
+// server. Only forwarded calls count: a blocked read never touched data.
+func (s *Session) noteForwardedCall(labels []string) {
+	s.mu.Lock()
+	s.flags = NextFlags(s.flags, labels)
+	s.mu.Unlock()
+}
+
+// NextFlags is context.session after one more forwarded tools/call of a tool
+// with these labels. `rover policy test` replays sessions with it.
+func NextFlags(f policy.SessionCtx, labels []string) policy.SessionCtx {
+	for _, l := range labels {
+		switch l {
+		case "reads_private":
+			f.TouchedPrivate = true
+		case "reads_untrusted":
+			f.SawUntrusted = true
+		}
+	}
+	f.Calls++
+	return f
+}
+
+// forget drops the pending entry of a request that was blocked: its server
+// never saw it, so any "reply" to that id is not a reply to it.
+func (s *Session) forget(server, dir string, id []byte) {
+	s.mu.Lock()
+	delete(s.pending, server+":"+dir+":"+string(id))
+	s.mu.Unlock()
 }

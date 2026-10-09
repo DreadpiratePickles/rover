@@ -24,7 +24,8 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | A1 | `rover wrap`: transparent stdio proxy + JSONL audit log | done |
 | M0 | Repo hygiene: module rename, lint, CI, govulncheck | done |
 | M1 | `roverd` daemon, thin wrappers, peer-checked Unix socket, hash-chained audit log, auto-start | done |
-| M2 | Cedar policy engine | next |
+| M2 | Cedar policy engine: default deny, hidden tools, argument normalisers, `rover policy init/validate/test/apply` | done |
+| M3 | YAML → Cedar compiler | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -32,14 +33,33 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 ```bash
 make build          # -> bin/rover, bin/echo-server  (Go 1.25+)
 make test           # unit + end-to-end tests with the race detector
-make fuzz           # fuzz the JSON-RPC and IPC parsers for 30s each
+make fuzz           # fuzz every parser of attacker input for 30s each
+
+# write a starter policy (it permits nothing) and config.yaml (observe mode)
+./bin/rover policy init
+$EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where files live"
+./bin/rover policy validate  # type-check it against the schema
+./bin/rover policy apply     # ask a running roverd to reload it
 
 # wrap any stdio MCP server; roverd starts itself the first time
 ./bin/rover wrap --name filesystem -- npx -y @modelcontextprotocol/server-filesystem ~/lab
 ./bin/rover log              # timeline of every message
 ./bin/rover log --verify     # check the hash chain, report the first break
 ./bin/rover daemon           # run roverd by hand to watch its log
+./bin/rover policy test audit.jsonl  # replay a log (recorded with --log-bodies) through the current policy
 ```
+
+Rover denies by default: with no `policy.cedar`, roverd blocks every
+`tools/call`, `tools/list`, `resources/read`, sampling and elicitation request
+(reason `no_policy`). `config.yaml` starts in `mode: observe`, where a denied
+message is still forwarded and logged as `would_deny`; switch to
+`mode: enforce` once `rover log` shows no surprises. Every server you permit
+also needs a `list_tools` permit, or the agent never sees its tools.
+
+Schema limitation until M3: a root you add under `roots:` in `config.yaml`
+(say `work`) is only usable in policies as `context.norm.<arg>.under_work`
+once `schema.cedarschema` in the config directory declares a matching
+`under_work: Bool` attribute next to `under_projects`.
 
 In an agent's MCP config, change
 
@@ -57,7 +77,7 @@ to
 
 | | macOS | Linux |
 | --- | --- | --- |
-| Config | `~/Library/Application Support/Rover/` | `$XDG_CONFIG_HOME/rover/` |
+| Config: `policy.cedar`, `config.yaml`, `schema.cedarschema`, `templates/` | `~/Library/Application Support/Rover/` | `$XDG_CONFIG_HOME/rover/` |
 | State: `state.db`, `audit.jsonl`, `roverd.log` | `~/Library/Application Support/Rover/state/` | `$XDG_STATE_HOME/rover/` |
 | Socket, lock and pid files | `~/Library/Application Support/Rover/run/` | `$XDG_RUNTIME_DIR/rover/` |
 
@@ -70,7 +90,12 @@ on for a lab).
 ## Layout
 
 ```
-cmd/rover/             CLI: wrap, daemon, log
+cmd/rover/             CLI: wrap, daemon, log, policy
+internal/policy/       the Cedar decision point: Decide, tools/list hiding (fuzzed)
+internal/policy/convert/    tool arguments -> Cedar values, with limits (fuzzed)
+internal/policy/normalize/  path/url/... normalisers run before the policy (fuzzed)
+internal/config/       config.yaml: mode, roots, tool labels, normalisers
+policy/                the shipped schema, starter policy and templates (embedded)
 internal/proxy/        the wrapper's pump: read, ask roverd, apply the verdict, forward the original bytes
 internal/daemon/       roverd: accept loop, peer check, sessions, the decision path
 internal/ipc/          wrapper <-> roverd protocol (fuzzed) and peer credentials

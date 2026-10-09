@@ -77,6 +77,14 @@ jobs:
         run: go test ./internal/audit -run='^$' -fuzz=FuzzVerify -fuzztime=30s
       - name: fuzz framing.ReadLine (30s)
         run: go test ./internal/framing -run='^$' -fuzz=FuzzReadLine -fuzztime=30s
+      - name: fuzz convert.Args (30s)
+        run: go test ./internal/policy/convert -run='^$' -fuzz=FuzzArgs -fuzztime=30s
+      - name: fuzz normalize path (30s)
+        run: go test ./internal/policy/normalize -run='^$' -fuzz=FuzzPath -fuzztime=30s
+      - name: fuzz policy.Decide (30s)
+        run: go test ./internal/policy -run='^$' -fuzz=FuzzDecide -fuzztime=30s
+      - name: fuzz policy.FilterToolsList (30s)
+        run: go test ./internal/policy -run='^$' -fuzz=FuzzFilterToolsList -fuzztime=30s
       # On a crash, keep the failing input so it can be reproduced locally
       # (copy it into internal/jsonrpc/testdata/fuzz/FuzzParse/ and run go test).
       - name: upload crashing input
@@ -89,6 +97,9 @@ jobs:
             internal/ipc/testdata/fuzz/
             internal/audit/testdata/fuzz/
             internal/framing/testdata/fuzz/
+            internal/policy/testdata/fuzz/
+            internal/policy/convert/testdata/fuzz/
+            internal/policy/normalize/testdata/fuzz/
           if-no-files-found: ignore
 
   govulncheck:

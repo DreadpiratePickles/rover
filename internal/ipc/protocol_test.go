@@ -31,11 +31,29 @@ func TestValidateRejectsBadFrames(t *testing.T) {
 		"verdict no action": {Type: TypeVerdict, Seq: 1},
 		"replace no body":   {Type: TypeVerdict, Seq: 1, Action: ActionReplace},
 		"release hold":      {Type: TypeRelease, Seq: 1, Action: ActionHold},
+		"response on fwd":   {Type: TypeVerdict, Seq: 1, Action: ActionForward, ResponseRaw: []byte("{}")},
 	}
 	for name, f := range cases {
 		if err := f.Validate(); !errors.Is(err, ErrBadFrame) {
 			t.Errorf("%s: want ErrBadFrame, got %v", name, err)
 		}
+	}
+}
+
+func TestBlockWithResponseRawRoundTrips(t *testing.T) {
+	// Arrange
+	in := Frame{Type: TypeVerdict, Seq: 2, Action: ActionBlock, Reason: "r", RuleIDs: []string{"a"}, ResponseRaw: []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)}
+
+	// Act
+	line, err := Encode(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Parse(line[:len(line)-1])
+
+	// Assert
+	if err != nil || string(out.ResponseRaw) != string(in.ResponseRaw) {
+		t.Fatalf("out %+v err %v", out, err)
 	}
 }
 

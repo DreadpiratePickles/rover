@@ -3,9 +3,9 @@
 // needs state (pins, sessions, approvals), it lives here, in one place, so
 // the agent cannot get a different answer by spawning a different wrapper.
 //
-// M1 decides "forward" for everything and records it. M2 onward replaces the
-// body of decide with policy, pinning and detection; the plumbing around it
-// stays the same.
+// M1 decided "forward" for everything. From M2 every message goes through
+// the Cedar policy (policy.go); pinning and detection join it later, and the
+// plumbing around decide stays the same.
 package daemon
 
 import (
@@ -19,9 +19,11 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/config"
 	"github.com/DreadpiratePickles/rover/internal/framing"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
@@ -43,6 +45,11 @@ type Options struct {
 	ParentPID func(int) (int, error)
 	Now       func() time.Time
 	Logf      func(format string, a ...any)
+
+	// Policy and Config are the initial decision source (see Reload). A nil
+	// Policy means no policy is loaded: every policed message is blocked.
+	Policy Policy
+	Config config.Config
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -57,6 +64,9 @@ type Server struct {
 	// unhealthy is set when the audit log failed; every later decision is a
 	// block until a human restarts roverd and looks at the log.
 	unhealthy bool
+
+	pol            atomic.Pointer[loaded]
+	noPolicyWarned atomic.Int64 // unix nanos of the last "no policy" warning
 }
 
 // New prepares a Server; call Listen then Serve.
@@ -73,7 +83,9 @@ func New(o Options) *Server {
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
 	}
-	return &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{}}
+	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{}}
+	s.Reload(o.Policy, o.Config)
+	return s
 }
 
 // Listen binds the socket 0600. A stale socket file from a crashed daemon is
@@ -208,6 +220,9 @@ func (s *Server) handle(uc *net.UnixConn) {
 	cn := &conn{c: uc, w: bufio.NewWriterSize(uc, 64<<10)}
 	r := bufio.NewReaderSize(uc, 64<<10)
 	hello, err := s.readFrame(r)
+	if errors.Is(err, io.EOF) {
+		return // connected and left without a word (`rover policy apply` checks liveness this way)
+	}
 	if err != nil || hello.Type != ipc.TypeHello {
 		if err == nil {
 			err = fmt.Errorf("%w: first frame must be hello, got %s", ipc.ErrBadFrame, hello.Type)
@@ -247,7 +262,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 				_ = cn.send(ipc.Frame{Type: ipc.TypeError, Message: "decide for a session this connection does not own"})
 				return
 			}
-			v := s.decide(sess, hello.ServerName, f)
+			v := s.decide(sess, hello, f)
 			if err := cn.send(v); err != nil {
 				return
 			}
@@ -275,13 +290,22 @@ func (s *Server) readFrame(r *bufio.Reader) (ipc.Frame, error) {
 	return ipc.Parse(line)
 }
 
-// decide is the whole decision path. M1: observe, log, forward. If the audit
-// write fails the answer is block, now and for every later message, because
-// a gateway that cannot record what it allowed is not a gateway.
-func (s *Server) decide(sess *Session, server string, f ipc.Frame) ipc.Frame {
+// decide is the whole decision path: record, judge, log, answer. If the
+// audit write fails the answer is block, now and for every later message,
+// because a gateway that cannot record what it allowed is not a gateway.
+func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
+	server := hello.ServerName
 	m := jsonrpc.Parse(f.Raw)
-	e := sess.observe(server, f.Dir, m, s.o.LogBodies, s.o.Now())
-	e.Action = ipc.ActionForward
+	now := s.o.Now()
+	e := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
+	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, now)
+	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
+	if j.audit != ipc.ActionForward {
+		e.Reason = j.reason
+	}
+	if j.action == ipc.ActionBlock && m.Kind == jsonrpc.KindRequest {
+		sess.forget(server, f.Dir, m.ID)
+	}
 
 	s.mu.Lock()
 	unhealthy := s.unhealthy
@@ -296,7 +320,13 @@ func (s *Server) decide(sess *Session, server string, f ipc.Frame) ipc.Frame {
 		s.o.Logf("AUDIT LOG FAILED, blocking everything from now on: %v", err)
 		return ipc.Frame{Type: ipc.TypeVerdict, Seq: f.Seq, Action: ipc.ActionBlock, Reason: "audit log unavailable: " + err.Error()}
 	}
-	return ipc.Frame{Type: ipc.TypeVerdict, Seq: f.Seq, Action: ipc.ActionForward}
+	if j.call {
+		sess.noteForwardedCall(j.callLabels)
+	}
+	return ipc.Frame{
+		Type: ipc.TypeVerdict, Seq: f.Seq, Action: j.action, Reason: j.reason, RuleIDs: j.ruleIDs,
+		ResponseRaw: j.responseRaw, ReplacementRaw: j.replacement,
+	}
 }
 
 // join finds or creates the session for clientPID and attaches a wrapper to

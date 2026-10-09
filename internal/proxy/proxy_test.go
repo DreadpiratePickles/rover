@@ -112,6 +112,35 @@ func TestBlockedRequestGetsErrorOnItsOwnSide(t *testing.T) {
 	}
 }
 
+func TestBlockedRequestGetsRoverdResponseRaw(t *testing.T) {
+	for name, raw := range map[string]string{
+		"without newline": `{"jsonrpc":"2.0","id":7,"result":{"content":[],"isError":true}}`,
+		"with newline":    `{"jsonrpc":"2.0","id":7,"result":{"content":[],"isError":true}}` + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Arrange
+			in := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_file"}}` + "\n"
+			d := &fakeDecider{verdicts: []ipc.Frame{{Action: ipc.ActionBlock, Reason: "forbid x", ResponseRaw: []byte(raw)}}}
+			var out, back bytes.Buffer
+
+			// Act
+			err := New(d).Pump(strings.NewReader(in), &out, &back, ClientToServer)
+
+			// Assert
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("blocked request reached the server: %q", out.String())
+			}
+			want := strings.TrimSuffix(raw, "\n") + "\n"
+			if back.String() != want {
+				t.Fatalf("back = %q, want exactly %q", back.String(), want)
+			}
+		})
+	}
+}
+
 func TestBlockedNotificationIsDropped(t *testing.T) {
 	in := `{"jsonrpc":"2.0","method":"notifications/x"}` + "\n"
 	d := &fakeDecider{verdicts: []ipc.Frame{{Action: ipc.ActionBlock}}}

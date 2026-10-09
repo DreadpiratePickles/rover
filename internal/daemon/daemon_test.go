@@ -281,7 +281,8 @@ func TestListenRefusesWhenAnotherDaemonAnswers(t *testing.T) {
 
 // Latency budget (plan §4.3): a decide round trip under 10 ms p99.
 func TestDecideLatencyBudget(t *testing.T) {
-	s := start(t, Options{Audit: audit.New(&bytes.Buffer{})})
+	src := `@id("echo") permit (principal, action == Action::"call_tool", resource == Tool::"fs/echo");`
+	s := start(t, Options{Audit: audit.New(&bytes.Buffer{}), Policy: engine(t, src), Config: enforce()})
 	c, err := ipc.Dial(s.Addr(), hello(1, "fs"))
 	if err != nil {
 		t.Fatal(err)
@@ -292,8 +293,9 @@ func TestDecideLatencyBudget(t *testing.T) {
 	lat := make([]time.Duration, 0, n)
 	for i := 0; i < n; i++ {
 		t0 := time.Now()
-		if _, _, err := c.Decide("c2s", msg); err != nil {
-			t.Fatal(err)
+		v, _, err := c.Decide("c2s", msg)
+		if err != nil || v.Action != ipc.ActionForward {
+			t.Fatalf("verdict %+v err %v", v, err)
 		}
 		lat = append(lat, time.Since(t0))
 	}

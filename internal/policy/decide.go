@@ -8,6 +8,7 @@ import (
 	"github.com/cedar-policy/cedar-go/types"
 
 	"github.com/DreadpiratePickles/rover/internal/ipc"
+	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 )
 
 // Reasons Decide reports.
@@ -113,4 +114,11 @@ func block(in Input, reason string, ids, findings []string) Outcome {
 		Findings: findings,
 		Response: blockResponse(in.Msg, reason, ids),
 	}
+}
+
+// Policed reports whether Decide judges this message with Cedar (the five
+// policed methods). roverd uses it to block exactly these messages when no
+// policy is loaded, and to forward everything else.
+func Policed(dir string, m jsonrpc.Message) bool {
+	return policedAction(dir, m) != ""
 }
