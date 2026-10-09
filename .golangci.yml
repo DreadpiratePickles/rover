@@ -1,0 +1,44 @@
+# golangci-lint v2 configuration. CI pins golangci-lint v2.5.0 (see Makefile
+# "tools" and .github/workflows/ci.yml). Validate with: golangci-lint config verify
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - govet       # go vet's analysers (all of them, see settings below)
+    - staticcheck # bugs, simplifications, deprecated APIs
+    - errcheck    # unchecked errors: an ignored error on a decision path fails open
+    - gosec       # security-specific checks (file modes, exec, crypto, ...)
+    - revive      # style and doc comments (golint's successor)
+    - ineffassign # assignments that are never used
+    - unused      # dead code
+    - nolintlint  # every //nolint must name the linter and give a reason
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # struct field ordering for memory; noise, not safety
+    errcheck:
+      check-type-assertions: true
+      check-blank: false # `_ = x()` is an explicit, reviewable decision to ignore
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+  # No exclusion presets: every suppression is a targeted, explained //nolint.
+  exclusions:
+    generated: strict
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

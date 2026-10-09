@@ -1,3 +1,5 @@
-module rover
+module github.com/DreadpiratePickles/rover
 
-go 1.24.7
+go 1.25
+
+toolchain go1.25.14

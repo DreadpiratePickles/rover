@@ -18,8 +18,10 @@ import (
 	"encoding/json"
 )
 
+// Kind is the shape of a JSON-RPC message: one of the Kind* constants.
 type Kind string
 
+// The four JSON-RPC message shapes, plus KindInvalid for anything else.
 const (
 	KindRequest      Kind = "request"
 	KindNotification Kind = "notification"
@@ -42,6 +44,7 @@ type Message struct {
 	Raw    []byte
 }
 
+// RPCError is the "error" member of a JSON-RPC error response.
 type RPCError struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`

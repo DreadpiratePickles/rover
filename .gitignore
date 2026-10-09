@@ -1,3 +1,2 @@
 bin/
 *.jsonl
-internal/jsonrpc/testdata/fuzz/

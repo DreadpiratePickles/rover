@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/audit"
 )
 
 func entries(t *testing.T, buf *bytes.Buffer) []audit.Entry {

@@ -21,6 +21,7 @@ import (
 	"time"
 )
 
+// Entry is one line of the audit log: one message seen in one direction.
 type Entry struct {
 	Time      time.Time       `json:"ts"`
 	Session   string          `json:"session"`
@@ -36,6 +37,7 @@ type Entry struct {
 	Body      json.RawMessage `json:"body,omitempty"`
 }
 
+// Logger writes Entries as JSON lines (one object per line).
 type Logger struct {
 	mu  sync.Mutex
 	w   io.Writer
@@ -48,7 +50,9 @@ func Open(path string) (*Logger, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	// G304: path is the user's own audit-log location (--log or ROVER_LOG),
+	// opened write-only with owner-only permissions; nothing is read from it.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: user-chosen audit-log path, see above
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +73,7 @@ func (l *Logger) Write(e Entry) error {
 	return l.enc.Encode(e)
 }
 
+// Close closes the underlying file, if Open created one.
 func (l *Logger) Close() error {
 	if l.c != nil {
 		return l.c.Close()
