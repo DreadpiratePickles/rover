@@ -16,6 +16,7 @@ import (
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
+	"github.com/DreadpiratePickles/rover/internal/pin"
 	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
@@ -99,6 +100,8 @@ func runDaemon(args []string) int {
 		Logf:       logf,
 		Policy:     pol,
 		Config:     cfg,
+		State:      db,
+		Notifier:   pin.OSNotifier{Logf: logf},
 	})
 	go reloadOnHUP(hup, dirs, srv, note, logf)
 	if err := srv.Listen(); err != nil {

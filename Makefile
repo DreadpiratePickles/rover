@@ -21,8 +21,11 @@ build:
 
 test: vet race
 
+# ./... skips testdata/, so the lab-only evil servers (build tag "lab") are
+# vetted by path.
 vet:
 	go vet ./...
+	go vet -tags lab ./testdata/servers/...
 
 race:
 	go test -race ./...
@@ -33,7 +36,7 @@ race:
 # JSON-RPC classifier, the wrapper<->roverd frame parser, the audit-log
 # verifier, the line reader under all of them, and (M2) tool-argument
 # conversion, path normalisation, the policy decision and tools/list filtering,
-# and (M3) the policy.yaml compiler.
+# (M3) the policy.yaml compiler, and (M4) the canonical JSON of tool pins.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
@@ -44,6 +47,7 @@ fuzz:
 	go test ./internal/policy -run='^$$' -fuzz=FuzzDecide -fuzztime=$(FUZZTIME)
 	go test ./internal/policy -run='^$$' -fuzz=FuzzFilterToolsList -fuzztime=$(FUZZTIME)
 	go test ./internal/policy/yaml2cedar -run='^$$' -fuzz=FuzzCompile -fuzztime=$(FUZZTIME)
+	go test ./internal/pin -run='^$$' -fuzz=FuzzCanonical -fuzztime=$(FUZZTIME)
 
 lint:
 	golangci-lint run ./...
