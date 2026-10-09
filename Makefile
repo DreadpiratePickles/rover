@@ -3,7 +3,7 @@
 # `make ci` runs the same checks, in the same order, as .github/workflows/ci.yml.
 # If you change one, change the other.
 
-GOVULNCHECK_VERSION := v1.8.0
+GOVULNCHECK_VERSION := v1.7.0
 GOLANGCI_LINT_VERSION := v2.5.0
 
 FUZZTIME := 30s

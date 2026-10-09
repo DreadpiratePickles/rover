@@ -57,7 +57,7 @@ Tools needed:
 
 - Go 1.25+. `go.mod` pins the toolchain, and Go downloads it if yours is older (unless `GOTOOLCHAIN=local`).
 - [golangci-lint](https://golangci-lint.run) v2.5.0, installed from the release binary (see the `tools` target in the Makefile).
-- govulncheck v1.8.0 (`make tools`), with `$(go env GOPATH)/bin` on your `PATH`.
+- govulncheck v1.7.0 (`make tools`), with `$(go env GOPATH)/bin` on your `PATH`.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on Linux and macOS for every push to `main` and every pull request.
 
