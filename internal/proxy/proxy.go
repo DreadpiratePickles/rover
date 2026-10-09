@@ -1,11 +1,15 @@
-// Package proxy sits in the middle of an MCP stdio connection.
+// Package proxy is the thin wrapper that sits in the middle of an MCP stdio
+// connection and does exactly what roverd tells it.
 //
-//	agent (Claude Code) --stdin-->    rover     --stdin--> MCP server
-//	agent               <--stdout--   rover     <--stdout- MCP server
+//	agent (Claude Code) --stdin-->   rover wrap   --stdin--> MCP server
+//	agent               <--stdout--  rover wrap   <--stdout- MCP server
+//	                                     │ decide / verdict
+//	                                   roverd
 //
-// LESSON (A1): this is a man-in-the-middle, used defensively. Every security
-// feature in Track A (policy, pinning, inspection, redaction) is a hook in
-// the Pump loop below. A1 only observes; A2 starts saying "no".
+// LESSON (A1, M1): this is a man-in-the-middle, used defensively. The wrapper
+// reads one message, asks roverd for a verdict, applies it and moves on. It
+// holds no policy and no state of its own, so there is nothing in it for an
+// agent to tamper with and nothing that differs from one wrapper to the next.
 //
 // MCP stdio framing: each message is one line of JSON terminated by "\n",
 // and messages must not contain raw newlines.
@@ -19,9 +23,9 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 
-	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/framing"
+	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 )
 
@@ -34,59 +38,76 @@ const (
 	ServerToClient Direction = "s2c"
 )
 
-func (d Direction) other() Direction {
-	if d == ClientToServer {
-		return ServerToClient
-	}
-	return ClientToServer
-}
-
 // DefaultMaxMessage caps one message. Without a cap, a hostile server can send
 // a single endless line and exhaust the gateway's memory (a DoS).
 const DefaultMaxMessage = 16 << 20 // 16 MiB
 
-// ErrMessageTooLarge is returned when a single message exceeds Session.MaxMessage.
-var ErrMessageTooLarge = errors.New("message exceeds size limit")
+// ErrMessageTooLarge is returned when a single message exceeds Wrapper.MaxMessage.
+var ErrMessageTooLarge = framing.ErrTooLarge
 
-type pending struct {
-	method string
-	tool   string
-	start  time.Time
+// Decider is roverd as the wrapper sees it. *ipc.Client implements it; tests
+// use a fake.
+type Decider interface {
+	Decide(dir string, raw []byte) (verdict ipc.Frame, release <-chan ipc.Frame, err error)
 }
 
-// Session holds state shared by both directions of one connection.
-type Session struct {
-	ID         string
-	Log        *audit.Logger
-	LogBodies  bool
+// Wrapper pumps both directions of one connection through a Decider.
+type Wrapper struct {
+	Decider    Decider
 	MaxMessage int
-	now        func() time.Time
+	// Errf receives one-line diagnostics (stderr in the binary).
+	Errf func(format string, a ...any)
 
-	mu      sync.Mutex
-	pending map[string]pending // key: "<requester dir>:<raw id>"
+	held sync.WaitGroup
 }
 
-// NewSession returns a Session that logs bodies and uses DefaultMaxMessage.
-func NewSession(id string, log *audit.Logger) *Session {
-	return &Session{ID: id, Log: log, LogBodies: true, MaxMessage: DefaultMaxMessage, now: time.Now, pending: map[string]pending{}}
+// New returns a Wrapper with the default message limit.
+func New(d Decider) *Wrapper {
+	return &Wrapper{Decider: d, MaxMessage: DefaultMaxMessage, Errf: func(string, ...any) {}}
 }
 
-// Pump copies messages from src to dst, one line at a time, logging each one
-// before forwarding it. It forwards the original bytes, never a re-encoding.
-// It returns nil when src reaches EOF.
-func (s *Session) Pump(src io.Reader, dst io.Writer, dir Direction) error {
+// LockedWriter serialises writes from both pumps to one destination. A
+// blocked request is answered on the side it came from, so each side's
+// writer can be reached from either goroutine.
+type LockedWriter struct {
+	mu sync.Mutex
+	W  io.Writer
+}
+
+func (l *LockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.W.Write(p)
+}
+
+// Pump copies messages from src to dst, one line at a time, after roverd has
+// seen each one. back is the writer facing src's side, used to answer a
+// blocked request with a JSON-RPC error so the caller is not left waiting.
+// Pump returns nil when src reaches EOF. Any failure to get a verdict ends
+// the pump with an error: no verdict, no forwarding (fail closed).
+func (w *Wrapper) Pump(src io.Reader, dst, back io.Writer, dir Direction) error {
 	r := bufio.NewReaderSize(src, 64<<10)
 	for {
-		line, err := readLine(r, s.MaxMessage)
+		line, err := framing.ReadLine(r, w.MaxMessage)
 		if len(bytes.TrimSpace(line)) > 0 {
-			if lerr := s.observe(dir, line); lerr != nil {
-				return fmt.Errorf("audit log failed, stopping session (fail closed): %w", lerr)
+			v, release, derr := w.Decider.Decide(string(dir), line)
+			if derr != nil {
+				return fmt.Errorf("no verdict from roverd, stopping session (fail closed): %w", derr)
 			}
-			if _, werr := dst.Write(line); werr != nil {
-				return werr
+			if v.Action == ipc.ActionHold {
+				w.held.Add(1)
+				go func(line []byte) {
+					defer w.held.Done()
+					final := <-release
+					if aerr := w.apply(final, line, dst, back); aerr != nil {
+						w.Errf("applying release for seq %d: %v", final.Seq, aerr)
+					}
+				}(line)
+			} else if aerr := w.apply(v, line, dst, back); aerr != nil {
+				return aerr
 			}
 		}
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {
@@ -95,67 +116,64 @@ func (s *Session) Pump(src io.Reader, dst io.Writer, dir Direction) error {
 	}
 }
 
-// readLine reads up to and including '\n', refusing lines longer than limit.
-// bufio.Scanner is the usual tool, but its default 64 KiB limit silently
-// breaks large tool results - a classic MCP-proxy bug.
-func readLine(r *bufio.Reader, limit int) ([]byte, error) {
-	var buf []byte
-	for {
-		chunk, err := r.ReadSlice('\n')
-		if len(buf)+len(chunk) > limit {
-			return nil, ErrMessageTooLarge
+// Wait blocks until every held message has been released and applied.
+func (w *Wrapper) Wait() { w.held.Wait() }
+
+func (w *Wrapper) apply(v ipc.Frame, line []byte, dst, back io.Writer) error {
+	switch v.Action {
+	case ipc.ActionForward:
+		_, err := dst.Write(line) // the original bytes, never a re-encoding
+		return err
+	case ipc.ActionReplace:
+		rep := v.ReplacementRaw
+		if len(rep) == 0 || rep[len(rep)-1] != '\n' {
+			rep = append(append([]byte{}, rep...), '\n')
 		}
-		buf = append(buf, chunk...)
-		if err == bufio.ErrBufferFull {
-			continue
+		_, err := dst.Write(rep)
+		return err
+	case ipc.ActionBlock:
+		m := jsonrpc.Parse(line)
+		w.Errf("blocked %s %s: %s", m.Kind, m.Method, v.Reason)
+		if m.Kind != jsonrpc.KindRequest {
+			return nil // notifications and responses are simply dropped
 		}
-		if err == io.EOF && len(buf) > 0 && buf[len(buf)-1] != '\n' {
-			buf = append(buf, '\n') // final message without newline: still frame it
+		resp, err := blockedResponse(m.ID, v)
+		if err != nil {
+			return err
 		}
-		return buf, err
+		_, err = back.Write(resp)
+		return err
+	default:
+		return fmt.Errorf("unknown verdict action %q (refusing to guess)", v.Action)
 	}
 }
 
-func (s *Session) observe(dir Direction, line []byte) error {
-	m := jsonrpc.Parse(line)
-	e := audit.Entry{
-		Time:    s.now().UTC(),
-		Session: s.ID,
-		Dir:     string(dir),
-		Kind:    string(m.Kind),
-		Method:  m.Method,
-		ID:      m.ID,
-		Tool:    m.ToolName(),
-		Bytes:   len(m.Raw),
-	}
-	if s.LogBodies && json.Valid(m.Raw) {
-		e.Body = m.Raw
-	}
+// BlockedErrorCode is the JSON-RPC error code Rover uses when it refuses a
+// request. -32000 to -32099 are reserved for implementation-defined errors.
+const BlockedErrorCode = -32000
 
-	switch m.Kind {
-	case jsonrpc.KindRequest:
-		s.mu.Lock()
-		s.pending[string(dir)+":"+string(m.ID)] = pending{m.Method, e.Tool, s.now()}
-		s.mu.Unlock()
-	case jsonrpc.KindResult, jsonrpc.KindError:
-		// A response travels the opposite way to its request, so look it up
-		// under the other direction. IDs are only unique per direction.
-		key := string(dir.other()) + ":" + string(m.ID)
-		s.mu.Lock()
-		p, ok := s.pending[key]
-		delete(s.pending, key)
-		s.mu.Unlock()
-		if ok {
-			ms := float64(s.now().Sub(p.start).Microseconds()) / 1000
-			e.LatencyMS, e.ReplyTo, e.Tool = &ms, p.method, p.tool
-		}
-		if m.Kind == jsonrpc.KindResult {
-			var r struct {
-				IsError bool `json:"isError"`
-			}
-			_ = json.Unmarshal(m.Result, &r)
-			e.ToolError = r.IsError
-		}
+func blockedResponse(id json.RawMessage, v ipc.Frame) ([]byte, error) {
+	type errData struct {
+		Rover   string   `json:"rover"`
+		RuleIDs []string `json:"rule_ids,omitempty"`
 	}
-	return s.Log.Write(e)
+	type rpcErr struct {
+		Code    int     `json:"code"`
+		Message string  `json:"message"`
+		Data    errData `json:"data"`
+	}
+	msg := "blocked by rover"
+	if v.Reason != "" {
+		msg += ": " + v.Reason
+	}
+	out := struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   rpcErr          `json:"error"`
+	}{"2.0", id, rpcErr{BlockedErrorCode, msg, errData{"blocked", v.RuleIDs}}}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }

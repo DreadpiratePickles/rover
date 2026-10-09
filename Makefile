@@ -6,6 +6,11 @@
 GOVULNCHECK_VERSION := v1.7.0
 GOLANGCI_LINT_VERSION := v2.5.0
 
+# Run every Go command with the toolchain go.mod pins, so `make ci` on a laptop
+# with a newer or older Go gives the same answer as CI (govulncheck in
+# particular reports standard-library findings for whatever toolchain runs it).
+export GOTOOLCHAIN ?= $(shell awk '/^toolchain /{print $$2}' go.mod)
+
 FUZZTIME := 30s
 
 .PHONY: build test vet race fuzz lint vuln ci tools clean
@@ -24,8 +29,11 @@ race:
 
 # Fails only if the fuzzer finds a crashing input (saved under
 # internal/jsonrpc/testdata/fuzz/). Finding no new coverage is not a failure.
+# One fuzz run per parser of attacker-controlled input (plan §0.5): the
+# JSON-RPC classifier and the wrapper<->roverd frame parser.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
+	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 
 lint:
 	golangci-lint run ./...

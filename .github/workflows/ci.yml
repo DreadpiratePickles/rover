@@ -71,6 +71,8 @@ jobs:
       # finds an input that crashes the parser; no new coverage is not a failure.
       - name: fuzz jsonrpc.Parse (30s)
         run: go test ./internal/jsonrpc -run='^$' -fuzz=FuzzParse -fuzztime=30s
+      - name: fuzz ipc.Parse (30s)
+        run: go test ./internal/ipc -run='^$' -fuzz=FuzzParse -fuzztime=30s
       # On a crash, keep the failing input so it can be reproduced locally
       # (copy it into internal/jsonrpc/testdata/fuzz/FuzzParse/ and run go test).
       - name: upload crashing input
@@ -78,7 +80,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-crashers
-          path: internal/jsonrpc/testdata/fuzz/
+          path: |
+            internal/jsonrpc/testdata/fuzz/
+            internal/ipc/testdata/fuzz/
           if-no-files-found: ignore
 
   govulncheck:
