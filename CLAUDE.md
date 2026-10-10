@@ -7,7 +7,9 @@ Rover is an open-source (Apache-2.0) security layer for developers using AI agen
 **Read `docs/IMPLEMENTATION_PLAN.md` before doing anything.** It holds the locked decisions (§2), the threat model (§3), the architecture (§4), the policy model (§5) and the milestones (§6).
 
 ## Working rules
-- Build **one milestone per branch and PR** (`m<N>-<slug>`), in the order of §6. After each milestone, **stop and wait** for Bobby to say "next". He's learning each milestone at about 10 hours a week, so don't run ahead.
+- Build **one milestone per branch and PR** (`m<N>-<slug>`), in the order of §6. Bobby said on 2026-10-09: keep going, no check-ins between milestones. So: open the PR, stack the next milestone's branch on it, and continue. He merges PRs himself; never merge or push to `main` from an agent.
+- Every milestone is **verified by a separate agent** that gets the plan, the diff and the acceptance criteria and assumes the work is broken. Fix what it finds before stacking the next milestone on top.
+- Delegate implementation to worker agents with a written brief (interfaces, tests, definition of done); the main session plans, reviews and integrates.
 - Every milestone ends with `docs/lessons/<milestone>.md`, written for a security beginner. The format is in plan §0.4.
 - 🔍 marks unverified facts. Check them against official docs or source before building on them, and use the stated fallback if they're false. If the plan says "stop and ask", stop.
 - Never change a locked decision (§2) on your own. Raise it instead.
