@@ -244,6 +244,7 @@ func (f Frame) Validate() error {
 func validateAdmin(f Frame) error {
 	if (f.Path != "" || f.Adapter != "" || f.Scope != "") && f.Op != OpTamperResolve && f.Op != OpTamperForget {
 		return fmt.Errorf("%w: %s takes no path, adapter or scope", ErrBadFrame, f.Op)
+	}
 	if f.Hash != "" && f.Op != OpPolicyApply {
 		return fmt.Errorf("%w: %s takes no hash", ErrBadFrame, f.Op)
 	}
@@ -260,6 +261,8 @@ func validateAdmin(f Frame) error {
 		}
 		if len(f.Adapter) > 64 || len(f.Scope) > MaxPath || (f.Op == OpTamperResolve) != (f.Adapter != "") {
 			return fmt.Errorf("%w: tamper_resolve needs an adapter (1..64 bytes), tamper_forget none", ErrBadFrame)
+		}
+		return nil
 	case OpPolicyApply:
 		if len(f.Hash) != 64 || !validDigestPrefix(f.Hash) || f.ServerName != "" || f.Tool != "" || f.Digest != "" {
 			return fmt.Errorf("%w: policy_apply needs only a 64-hex-digit hash", ErrBadFrame)
