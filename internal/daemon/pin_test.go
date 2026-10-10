@@ -88,7 +88,8 @@ func TestPinsThroughDaemon(t *testing.T) {
 			// Arrange
 			log := &syncBuf{}
 			notes := &recordingNotifier{}
-			s := start(t, Options{Audit: audit.New(log), Policy: engine(t, pinPolicy), Config: tc.cfg, Notifier: notes})
+			auth := &testAuth{ok: true}
+			s := start(t, Options{Audit: audit.New(log), Policy: engine(t, pinPolicy), Config: tc.cfg, Notifier: notes, Authenticator: auth})
 			c := dial(t, s)
 
 			// Act
@@ -137,13 +138,24 @@ func TestPinsThroughDaemon(t *testing.T) {
 				t.Fatalf("audit pinned=%d recheck=%d mismatch=%d", pinned, recheck, mism)
 			}
 
+			// M9: without the OS dialog's yes, nothing is approved.
+			auth.set(false)
+			if _, err := ipc.Admin(s.Addr(), ipc.Frame{Op: ipc.OpPinApprove, ServerName: "echo", Tool: "echo", Digest: evil.Short()}); err == nil ||
+				!strings.Contains(err.Error(), "OS authentication did not succeed") {
+				t.Fatalf("approve without authentication: %v", err)
+			}
+			if again := decide(t, c, "c2s", call("6", "echo")); again.Action != ipc.ActionBlock {
+				t.Fatalf("a refused approval must change nothing: %+v", again)
+			}
+			auth.set(true)
+
 			// Approve through the admin frame, as `rover pin approve` does.
 			res, err := ipc.Admin(s.Addr(), ipc.Frame{Op: ipc.OpPinApprove, ServerName: "echo", Tool: "echo", Digest: evil.Short()})
 			if err != nil {
 				t.Fatal(err)
 			}
 			var p pin.Pinned
-			if err := json.Unmarshal(res.Result, &p); err != nil || p.Method != pin.MethodCLI || p.Mismatch {
+			if err := json.Unmarshal(res.Result, &p); err != nil || p.Method != pin.MethodOSAuth+":test" || p.Mismatch {
 				t.Fatalf("approve result %s %v", res.Result, err)
 			}
 			es := log.entries(t)

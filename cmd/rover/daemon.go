@@ -12,12 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
+	"github.com/DreadpiratePickles/rover/internal/approve/page"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
-	"github.com/DreadpiratePickles/rover/internal/pin"
 	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
@@ -80,22 +81,23 @@ func runDaemon(args []string) int {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	pol, cfg, note, err := loadAll(dirs)
-	if note != "" {
-		logf("policy precedence: %s", note)
-	}
-	if err != nil {
-		logf("POLICY NOT LOADED: %v; every tools/call, tools/list, resources/read, sampling and elicitation request is blocked (no_policy)", err)
-		pol = nil
-	} else {
-		logf("policy loaded (mode %s)", cfg.Mode)
-	}
-
+	pol, cfg, note := loadApprovedAtStart(dirs, db, logf)
 	sock, err := paths.SocketPath(dirs)
 	if err != nil {
 		logf("%v", err)
 		return 1
 	}
+	notifier := newNotifier(logf)
+	auth := newAuthenticator(logf)
+	store := approve.NewBoltStore(db)
+	details := page.New(store, cfg.Approvals.ShowArgs)
+	var pages approve.Pages = details
+	if err := details.Start(); err != nil {
+		logf("approval details page: %v; notifications will carry no link", err)
+		pages = nil
+	}
+	defer func() { _ = details.Close() }()
+	flow := &approve.Flow{Store: store, Auth: auth, Notifier: notifier, Pages: pages, Timeout: cfg.Approvals.Timeout(), Logf: logf}
 	srv := daemon.New(daemon.Options{
 		SocketPath: sock,
 		Audit:      log,
@@ -107,15 +109,18 @@ func runDaemon(args []string) int {
 		Policy:     pol,
 		Config:     cfg,
 		State:      db,
-		Notifier:   pin.OSNotifier{Logf: logf},
+		Notifier:   notifier,
 
 		TamperFiles: watchedConfigs(dirs, logf),
 		RoverPath:   roverPathForDaemon(logf),
 
 		StateDBCreated:  stateCreated,
 		AuditHadHistory: hadHistory,
+
+		Prompter:      flow,
+		Authenticator: auth,
 	})
-	go reloadOnHUP(hup, dirs, srv, note, logf)
+	go reloadOnHUP(hup, reloader{dirs: dirs, db: db, srv: srv, flow: flow, page: details, logf: logf}, note)
 	if err := srv.Listen(); err != nil {
 		logf("%v", err)
 		return 1
@@ -154,32 +159,6 @@ func watchedConfigs(dirs paths.Dirs, logf func(string, ...any)) []clients.Config
 		logf("tamper watch: watching %d client config file(s)", len(files))
 	}
 	return files
-}
-
-// reloadOnHUP reloads config.yaml and the policy (policy.cedar, else
-// policy.yaml) on every SIGHUP. A failed reload, including a policy.yaml
-// that does not compile, keeps whatever was running before (a policy, or
-// none), and so does a reload that would switch enforce to observe
-// (daemon.ErrModeDowngrade). The precedence note is logged again only when
-// it changes.
-// TODO(M9): policy changes must be confirmed with OS authentication.
-func reloadOnHUP(hup <-chan os.Signal, dirs paths.Dirs, srv *daemon.Server, lastNote string, logf func(string, ...any)) {
-	for range hup {
-		pol, cfg, note, err := loadAll(dirs)
-		if note != "" && note != lastNote {
-			logf("policy precedence: %s", note)
-			lastNote = note
-		}
-		if err != nil {
-			logf("policy reload FAILED, keeping the previous policy: %v", err)
-			continue
-		}
-		if err := srv.Reload(pol, cfg); err != nil {
-			logf("policy reload %v; keeping the previous policy and mode", err)
-			continue
-		}
-		logf("policy reloaded (mode %s)", cfg.Mode)
-	}
 }
 
 // roverPathForDaemon is the binary wrapped servers must run: this one.

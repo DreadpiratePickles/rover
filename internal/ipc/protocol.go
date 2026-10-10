@@ -39,6 +39,11 @@ const (
 	TypeRelease = "release"
 	TypeBye     = "bye"
 	TypeError   = "error" // roverd -> wrapper, fatal for the connection
+	// TypeInject (M9) is pushed by roverd: the wrapper writes Raw, one
+	// server->client request of Rover's own (an elicitation/create with a
+	// "rover-" id), to the client side, and routes the client's reply back
+	// to roverd only, never to the server.
+	TypeInject = "inject"
 	// TypeAdmin is a one-shot request from the rover CLI (instead of a
 	// hello): roverd runs Op and answers admin_result (or error), then
 	// closes. The peer uid check applies as for every connection.
@@ -46,8 +51,9 @@ const (
 	TypeAdminResult = "admin_result"
 )
 
-// Admin operations (M4). TODO(M9): pin_approve and pin_reset will need OS
-// authentication; until then the CLI is the only client.
+// Admin operations (M4). pin_approve and pin_reset run the OS
+// authentication dialog in the process that executes them (roverd, or the
+// CLI when no roverd runs) before they change anything (M9).
 const (
 	OpPinList    = "pin_list"
 	OpPinApprove = "pin_approve"
@@ -70,6 +76,25 @@ const (
 
 // MaxPath bounds the path in a tamper_resolve or tamper_forget frame.
 const MaxPath = 4096
+
+// MaxInject bounds an inject frame's message. Rover's own elicitation
+// request is a few hundred bytes.
+const MaxInject = 64 << 10
+
+// InjectIDPrefix starts the JSON-RPC id of every request roverd injects.
+// The wrapper and roverd both refuse to forward a reply with such an id to
+// the server, and roverd blocks a server request that uses the prefix.
+const InjectIDPrefix = "rover-"
+
+// IsInjectID reports whether id (raw JSON) is a string starting with
+// InjectIDPrefix: the id of a request roverd injected, or one borrowing it.
+func IsInjectID(id json.RawMessage) bool {
+	var s string
+	if len(id) < 2 || id[0] != '"' || json.Unmarshal(id, &s) != nil {
+		return false
+	}
+	return strings.HasPrefix(s, InjectIDPrefix)
+}
 
 // MaxToolName bounds the tool named in an admin frame.
 const MaxToolName = 1024
@@ -196,6 +221,10 @@ func (f Frame) Validate() error {
 		}
 		if len(f.ResponseRaw) > 0 && f.Action != ActionBlock {
 			return fmt.Errorf("%w: response_raw is only valid on block", ErrBadFrame)
+		}
+	case TypeInject:
+		if len(f.Raw) == 0 || len(f.Raw) > MaxInject {
+			return fmt.Errorf("%w: inject needs raw of 1..%d bytes", ErrBadFrame, MaxInject)
 		}
 	case TypeAdmin:
 		return validateAdmin(f)

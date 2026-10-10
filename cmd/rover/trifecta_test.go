@@ -167,6 +167,7 @@ func TestTrifectaEndToEnd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "config", "config.yaml"), []byte(trifectaConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	applyPolicy(t, dir)
 	secret := filepath.Join(dir, "secret.txt")
 	if err := os.WriteFile(secret, []byte("s3cret"), 0o600); err != nil {
 		t.Fatal(err)

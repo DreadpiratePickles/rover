@@ -14,6 +14,10 @@ import (
 // adminTimeout bounds one admin round trip.
 const adminTimeout = 10 * time.Second
 
+// AuthAdminTimeout bounds an admin request that shows the OS dialog first
+// (pin_approve, pin_reset): the human needs time to answer it.
+const AuthAdminTimeout = 3 * time.Minute
+
 // Admin sends one admin frame to roverd at path and returns its
 // admin_result. A connection failure is returned as is (wrapped), so the
 // caller can tell "no daemon" (errors.Is ErrNoDaemon) from a refusal.
@@ -27,7 +31,11 @@ func Admin(path string, req Frame) (Frame, error) {
 		return Frame{}, fmt.Errorf("%w: %w", ErrNoDaemon, err)
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(adminTimeout))
+	limit := adminTimeout
+	if req.Op == OpPinApprove || req.Op == OpPinReset {
+		limit = AuthAdminTimeout
+	}
+	_ = conn.SetDeadline(time.Now().Add(limit))
 	line, err := Encode(req)
 	if err != nil {
 		return Frame{}, err

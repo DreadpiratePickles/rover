@@ -98,6 +98,13 @@ func wrap(args []string) int {
 	w.Errf = errf
 	toServer := &proxy.LockedWriter{W: childIn}
 	toAgent := &proxy.LockedWriter{W: os.Stdout}
+	// roverd's own requests to the agent (M9 elicitation) go to the agent
+	// side only; the agent's replies to them never reach the server.
+	client.SetInjectHandler(func(raw []byte) {
+		if err := w.Inject(raw, toAgent); err != nil {
+			errf("inject from roverd: %v", err)
+		}
+	})
 
 	inDone := make(chan error, 1)
 	outDone := make(chan error, 1)
@@ -206,7 +213,7 @@ func spawnDaemon(dirs paths.Dirs) error {
 		return err
 	}
 	defer func() { _ = logf.Close() }()
-	cmd := exec.Command(exe, "daemon") //nolint:gosec // G204: re-executing our own binary
+	cmd := exec.Command(exe, append(daemonExtraArgs(), "daemon")...) //nolint:gosec // G204: re-executing our own binary
 	cmd.Stdin = nil
 	cmd.Stdout = logf
 	cmd.Stderr = logf

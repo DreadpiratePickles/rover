@@ -28,6 +28,9 @@ type Client struct {
 	closed   bool
 	err      error
 	done     chan struct{}
+	// inject receives the message of every inject frame (M9); nil drops
+	// them, which only means no elicitation reaches the client.
+	inject func(raw []byte)
 }
 
 // Hello identifies the wrapper to roverd.
@@ -75,6 +78,14 @@ func Dial(path string, h Hello) (*Client, error) {
 	}
 	go c.readLoop(r)
 	return c, nil
+}
+
+// SetInjectHandler installs fn for inject frames. It is called on the
+// reading goroutine, one frame at a time; it must not block for long.
+func (c *Client) SetInjectHandler(fn func(raw []byte)) {
+	c.mu.Lock()
+	c.inject = fn
+	c.mu.Unlock()
 }
 
 // SessionID is the id roverd assigned in welcome.
@@ -189,6 +200,14 @@ func (c *Client) readLoop(r *bufio.Reader) {
 
 func (c *Client) dispatch(f Frame) {
 	c.mu.Lock()
+	if f.Type == TypeInject {
+		fn := c.inject
+		c.mu.Unlock()
+		if fn != nil {
+			fn(f.Raw)
+		}
+		return
+	}
 	defer c.mu.Unlock()
 	switch f.Type {
 	case TypeVerdict:

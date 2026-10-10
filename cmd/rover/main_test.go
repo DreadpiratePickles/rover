@@ -31,8 +31,10 @@ func TestMain(m *testing.M) {
 	}
 	bins.rover = filepath.Join(dir, "rover")
 	bins.echo = filepath.Join(dir, "echo-server")
+	// rover is built with the testauth tag (testauth.go): its hidden
+	// --test-auth flag replaces the OS dialog, so no test ever shows one.
 	for bin, pkg := range map[string]string{bins.rover: ".", bins.echo: "../../examples/echo-server"} {
-		if out, err := exec.Command("go", "build", "-o", bin, pkg).CombinedOutput(); err != nil { //nolint:gosec // G204: test builds fixed packages into a temp dir
+		if out, err := exec.Command("go", "build", "-tags", "testauth", "-o", bin, pkg).CombinedOutput(); err != nil { //nolint:gosec // G204: test builds fixed packages into a temp dir
 			panic(fmt.Sprintf("build %s: %v\n%s", pkg, err, out))
 		}
 	}
@@ -79,10 +81,21 @@ func (l *lockedBuf) String() string {
 }
 
 // startDaemon runs `rover daemon` as a subprocess, waits for its socket and
-// returns its stderr.
+// returns its stderr. Its OS dialog is the testauth fake, answering allow.
 func startDaemon(t *testing.T, dir string, args ...string) *lockedBuf {
 	t.Helper()
-	cmd := exec.Command(bins.rover, append([]string{"daemon"}, args...)...) //nolint:gosec // G204: test runs the binary it just built
+	return startDaemonArgs(t, dir, append([]string{"--test-auth=allow", "daemon"}, args...))
+}
+
+// startDaemonFlags is startDaemon with these testauth flags instead.
+func startDaemonFlags(t *testing.T, dir string, testFlags ...string) *lockedBuf {
+	t.Helper()
+	return startDaemonArgs(t, dir, append(testFlags, "daemon"))
+}
+
+func startDaemonArgs(t *testing.T, dir string, argv []string) *lockedBuf {
+	t.Helper()
+	cmd := exec.Command(bins.rover, argv...) //nolint:gosec // G204: test runs the binary it just built
 	cmd.Env = env(dir)
 	stderr := &lockedBuf{}
 	cmd.Stderr = stderr

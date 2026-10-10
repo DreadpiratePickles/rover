@@ -46,6 +46,7 @@ func learnSession(t *testing.T, dir string) {
 	}
 	_, _ = f.WriteString("normalizers: normalizers.yaml\n")
 	_ = f.Close()
+	applyPolicy(t, dir)
 	startDaemon(t, dir)
 
 	m := &mcp{t: t, cmd: exec.Command(bins.rover, "wrap", "--name", "files", "--", bins.echo)} //nolint:gosec // G204: test runs the binaries it built

@@ -4,9 +4,10 @@
 //	rover daemon [--log-bodies]
 //	rover log [--log FILE] [--verify]
 //	rover policy init|validate|test|apply|propose|diff|labels
-//	rover pin list [server] | approve <server> <tool> | reset <server>
+//	rover pin list [server] | approve <server> <tool> <digest> | reset <server>
 //	rover eval [--corpus DIR]
 //	rover install|uninstall [--client NAME ...] [--yes] [--dry-run] [--service]
+//	rover install --polkit
 //	rover doctor [--json]
 //	rover version
 //
@@ -27,6 +28,7 @@ import (
 )
 
 func main() {
+	os.Args = append(os.Args[:1:1], stripTestFlags(os.Args[1:])...)
 	if len(os.Args) < 2 {
 		usage()
 	}
@@ -60,8 +62,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage:\n  rover wrap [--name NAME] -- <server command> [args...]\n  rover daemon [--log-bodies]\n  rover log [--log FILE] [--verify]\n"+
 		"  rover policy init [--force]\n  rover policy validate [--policy FILE]\n  rover policy test <audit.jsonl>\n  rover policy apply\n"+
 		"  rover policy propose [--out FILE [--force]] [--yaml]\n  rover policy diff [FILE]\n  rover policy labels [server]\n"+
-		"  rover pin list [server]\n  rover pin approve <server> <tool>\n  rover pin reset <server>\n  rover eval [--corpus DIR]\n"+
-		"  rover install [--client NAME ...] [--yes] [--dry-run] [--rover PATH]\n  rover install --service [--yes]\n"+
+		"  rover pin list [server]\n  rover pin approve <server> <tool> <digest>\n  rover pin reset <server>\n  rover eval [--corpus DIR]\n"+
+		"  rover install [--client NAME ...] [--yes] [--dry-run] [--rover PATH]\n  rover install --service [--yes]\n  rover install --polkit\n"+
 		"  rover uninstall [--client NAME ...] [--yes] [--dry-run] [--service]\n  rover doctor [--json]\n  rover version")
 	os.Exit(2)
 }

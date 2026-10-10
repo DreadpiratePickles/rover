@@ -37,8 +37,8 @@ func ValidDigestPrefix(s string) bool {
 // the human approves what they saw in `rover pin list`, and a server that
 // changed again in between gets ErrChangedSinceListed (review M2). It
 // returns the new pin and the digest approved before ("" if none).
-// TODO(M9): only after OS authentication; until then the CLI is the only
-// caller, and it is not reachable through the MCP stream.
+// method is how the human proved they were there (M9: the OS dialog's
+// method); roverd only calls Approve after that dialog succeeded.
 func (c *Checker) Approve(server, tool, digestPrefix, method string) (Pinned, Digest, error) {
 	if !ValidDigestPrefix(digestPrefix) {
 		return Pinned{}, "", ErrBadDigestPrefix
@@ -49,16 +49,9 @@ func (c *Checker) Approve(server, tool, digestPrefix, method string) (Pinned, Di
 	if err != nil {
 		return Pinned{}, "", err
 	}
-	p, known := pins[tool]
-	switch {
-	case !known:
-		return Pinned{}, "", fmt.Errorf("%w: %s/%s has never been listed", ErrNothingToApprove, server, tool)
-	case !p.Mismatch:
-		return Pinned{}, "", fmt.Errorf("%w: %s/%s matches its pin", ErrNothingToApprove, server, tool)
-	case p.Latest == "":
-		return Pinned{}, "", fmt.Errorf("%s/%s cannot be approved: its definition has no canonical form (%s)", server, tool, p.Problem)
-	case !strings.HasPrefix(string(p.Latest), digestPrefix):
-		return Pinned{}, "", fmt.Errorf("%w (latest is %s, you approved %s)", ErrChangedSinceListed, p.Latest.Short(), digestPrefix)
+	p, err := approvable(pins, server, tool, digestPrefix)
+	if err != nil {
+		return Pinned{}, "", err
 	}
 	np := Pinned{Server: server, Tool: tool, Digest: p.Latest, ApprovedAt: c.now().UTC(), Method: method, Canonical: p.LatestCanonical}
 	if err := c.store.Put(np); err != nil {
@@ -68,8 +61,40 @@ func (c *Checker) Approve(server, tool, digestPrefix, method string) (Pinned, Di
 	return np, p.Digest, nil
 }
 
+// CheckApprovable reports the error Approve would return now, without
+// changing anything. roverd calls it before showing the OS dialog, so the
+// human is never asked to approve something that cannot be approved.
+func (c *Checker) CheckApprovable(server, tool, digestPrefix string) error {
+	if !ValidDigestPrefix(digestPrefix) {
+		return ErrBadDigestPrefix
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pins, err := c.load(server)
+	if err != nil {
+		return err
+	}
+	_, err = approvable(pins, server, tool, digestPrefix)
+	return err
+}
+
+func approvable(pins map[string]Pinned, server, tool, digestPrefix string) (Pinned, error) {
+	p, known := pins[tool]
+	switch {
+	case !known:
+		return Pinned{}, fmt.Errorf("%w: %s/%s has never been listed", ErrNothingToApprove, server, tool)
+	case !p.Mismatch:
+		return Pinned{}, fmt.Errorf("%w: %s/%s matches its pin", ErrNothingToApprove, server, tool)
+	case p.Latest == "":
+		return Pinned{}, fmt.Errorf("%s/%s cannot be approved: its definition has no canonical form (%s)", server, tool, p.Problem)
+	case !strings.HasPrefix(string(p.Latest), digestPrefix):
+		return Pinned{}, fmt.Errorf("%w (latest is %s, you approved %s)", ErrChangedSinceListed, p.Latest.Short(), digestPrefix)
+	}
+	return p, nil
+}
+
 // Reset forgets every pin of server; its next tools/list is trusted on
-// first use again. TODO(M9): OS authentication.
+// first use again. roverd only calls it after the OS dialog succeeded (M9).
 func (c *Checker) Reset(server string) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

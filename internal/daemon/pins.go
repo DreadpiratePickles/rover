@@ -1,9 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
@@ -127,7 +131,11 @@ func orNone(d string) string {
 // The peer uid check has already passed. Approve and reset are audited
 // before the answer goes out; if the audit write fails, roverd turns
 // unhealthy like on any other audit failure.
-// TODO(M9): pin_approve and pin_reset need OS authentication.
+//
+// pin_approve and pin_reset first show the OS authentication dialog (M9),
+// in this process: roverd, or the CLI itself when no roverd runs. The
+// admin frame alone proves nothing, since anything running as the user
+// can open the socket and send one; only the dialog proves a human.
 func (s *Server) Admin(f ipc.Frame) ipc.Frame {
 	fail := func(err error) ipc.Frame { return ipc.Frame{Type: ipc.TypeError, Message: err.Error()} }
 	if f.Op == ipc.OpObservationsDump {
@@ -157,20 +165,31 @@ func (s *Server) Admin(f ipc.Frame) ipc.Frame {
 		}
 		return adminResult(ps, "")
 	case ipc.OpPinApprove:
-		p, prev, err := s.pins.Approve(f.ServerName, f.Tool, f.Digest, pin.MethodCLI)
+		if err := s.pins.CheckApprovable(f.ServerName, f.Tool, f.Digest); err != nil {
+			return fail(err)
+		}
+		method, err := s.authenticate(fmt.Sprintf("Rover: approve the changed tool %s.%s (digest %s)?", f.ServerName, approve.Clean(f.Tool), f.Digest))
 		if err != nil {
 			return fail(err)
 		}
-		result, entry.Action, entry.Reason = p, AuditPinApproved, "method:"+pin.MethodCLI
+		p, prev, err := s.pins.Approve(f.ServerName, f.Tool, f.Digest, method)
+		if err != nil {
+			return fail(err)
+		}
+		result, entry.Action, entry.Reason = p, AuditPinApproved, "method:"+method
 		entry.Digest, entry.PrevDigest = string(p.Digest), string(prev)
-		s.o.Logf("pin approved by CLI: %s/%s -> %s", f.ServerName, f.Tool, p.Digest.Short())
+		s.o.Logf("pin approved (%s): %s/%s -> %s", method, f.ServerName, f.Tool, p.Digest.Short())
 	case ipc.OpPinReset:
+		method, err := s.authenticate(fmt.Sprintf("Rover: forget every tool pin of %s?", f.ServerName))
+		if err != nil {
+			return fail(err)
+		}
 		n, err := s.pins.Reset(f.ServerName)
 		if err != nil {
 			return fail(err)
 		}
-		result, entry.Action, entry.Reason = map[string]int{"removed": n}, AuditPinReset, "method:"+pin.MethodCLI
-		s.o.Logf("pins reset by CLI: %s (%d removed)", f.ServerName, n)
+		result, entry.Action, entry.Reason = map[string]int{"removed": n}, AuditPinReset, "method:"+method
+		s.o.Logf("pins reset (%s): %s (%d removed)", method, f.ServerName, n)
 	default:
 		return fail(errors.New("unknown admin op " + f.Op))
 	}
@@ -186,4 +205,29 @@ func adminResult(v any, note string) ipc.Frame {
 		return ipc.Frame{Type: ipc.TypeError, Message: err.Error()}
 	}
 	return ipc.Frame{Type: ipc.TypeAdminResult, Result: b, Message: note}
+}
+
+// adminAuthTimeout bounds the OS dialog of an admin request; the CLI waits
+// ipc.AuthAdminTimeout, a little longer.
+const adminAuthTimeout = 150 * time.Second
+
+// ErrNotAuthenticated refuses an admin change the human did not confirm.
+var ErrNotAuthenticated = errors.New("refused: OS authentication did not succeed")
+
+// authenticate shows the OS dialog and returns the pin method to record,
+// "osauth:<method>". Any failure refuses the change.
+func (s *Server) authenticate(reason string) (string, error) {
+	if s.o.Authenticator == nil {
+		return "", fmt.Errorf("%w: no authenticator in this process", ErrNotAuthenticated)
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, adminAuthTimeout)
+	defer cancel()
+	ok, method, err := s.o.Authenticator.Authenticate(ctx, reason)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrNotAuthenticated, err)
+	}
+	if !ok {
+		return "", ErrNotAuthenticated
+	}
+	return pin.MethodOSAuth + ":" + method, nil
 }

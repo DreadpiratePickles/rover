@@ -142,3 +142,18 @@ func TestInstallRefusesAndUninstallStacked(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallPolkitPrintsCommandsAndNeverRunsSudo(t *testing.T) {
+	var out strings.Builder
+	installPolkit(&out, "linux")
+	for _, want := range []string{"sudo tee /usr/share/polkit-1/actions/org.rover.approve.policy", "<allow_active>auth_self</allow_active>", "instead of running sudo", "no_auth_agent"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q:\n%s", want, out.String())
+		}
+	}
+	var mac strings.Builder
+	installPolkit(&mac, "darwin")
+	if !strings.Contains(mac.String(), "LocalAuthentication") {
+		t.Fatal(mac.String())
+	}
+}

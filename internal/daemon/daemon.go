@@ -21,10 +21,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/config"
-	"github.com/DreadpiratePickles/rover/internal/framing"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 	"github.com/DreadpiratePickles/rover/internal/learn"
@@ -75,6 +75,13 @@ type Options struct {
 	// PIDAlive reports whether an agent pid exists (sessionlife.go); nil
 	// means kill(pid, 0).
 	PIDAlive func(int) bool
+
+	// Prompter runs the approval of a held call (M9, approvals.go). Nil
+	// means approvals are unavailable: a held call is blocked at once.
+	Prompter approve.Prompter
+	// Authenticator shows the OS dialog before `rover pin approve` and
+	// `rover pin reset` change anything (M9). Nil refuses both.
+	Authenticator approve.Authenticator
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -100,6 +107,13 @@ type Server struct {
 	taint      toolTaint     // learn mode: tools whose last listing was flagged
 	tamper     tamperState   // the client-config watch (tamper.go)
 	closedDone chan struct{} // closed when Close has finished (final flush)
+
+	// ctx lives as long as the server; Close cancels it, which denies
+	// every approval still running.
+	ctx      context.Context
+	cancel   context.CancelFunc
+	elicits  elicitTable // elicitations waiting for the client (approvals.go)
+	approvWG sync.WaitGroup
 }
 
 // New prepares a Server; call Listen then Serve.
@@ -128,7 +142,8 @@ func New(o Options) *Server {
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
 		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescerWith(o.Notifier, o.Now, blockedMessage),
-		closedDone: make(chan struct{})}
+		closedDone: make(chan struct{}), elicits: elicitTable{m: map[string]elicitWait{}}}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if o.State != nil {
 		s.rec = learn.NewRecorder(o.State, o.Logf)
 	}
@@ -211,6 +226,7 @@ func (s *Server) Close() {
 		return
 	}
 	s.closed = true
+	s.cancel()
 	conns := make([]net.Conn, 0, len(s.conns))
 	for c := range s.conns {
 		conns = append(conns, c)
@@ -223,6 +239,7 @@ func (s *Server) Close() {
 	for _, c := range conns {
 		_ = c.Close()
 	}
+	s.approvWG.Wait() // their audit entries are written before the log closes
 	if s.rec != nil {
 		if err := s.rec.Close(); err != nil {
 			s.o.Logf("learn: final write of observations failed: %v", err)
@@ -240,35 +257,6 @@ func (s *Server) Sessions() []*Session {
 		out = append(out, sess)
 	}
 	return out
-}
-
-type conn struct {
-	c  *net.UnixConn
-	w  *bufio.Writer
-	mu sync.Mutex
-}
-
-func (c *conn) send(f ipc.Frame) error {
-	line, err := ipc.Encode(f)
-	if err != nil {
-		return err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, err := c.w.Write(line); err != nil {
-		return err
-	}
-	return c.w.Flush()
-}
-
-func (s *Server) track(c net.Conn, on bool) {
-	s.mu.Lock()
-	if on {
-		s.conns[c] = struct{}{}
-	} else {
-		delete(s.conns, c)
-	}
-	s.mu.Unlock()
 }
 
 func (s *Server) handle(uc *net.UnixConn) {
@@ -336,7 +324,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 				_ = cn.send(ipc.Frame{Type: ipc.TypeError, Message: "decide for a session this connection does not own"})
 				return
 			}
-			v := s.decide(sess, hello, f)
+			v := s.decide(sess, hello, f, cn)
 			if err := cn.send(v); err != nil {
 				return
 			}
@@ -349,30 +337,18 @@ func (s *Server) handle(uc *net.UnixConn) {
 	}
 }
 
-// readFrame reads one line; io.EOF with no bytes means the peer hung up.
-func (s *Server) readFrame(r *bufio.Reader) (ipc.Frame, error) {
-	line, err := framing.ReadLine(r, ipc.MaxFrame)
-	if len(line) == 0 {
-		if err == nil {
-			err = io.EOF
-		}
-		return ipc.Frame{}, err
-	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		return ipc.Frame{}, err
-	}
-	return ipc.Parse(line)
-}
-
 // decide is the whole decision path: record, judge, log, answer. If the
 // audit write fails the answer is block, now and for every later message,
 // because a gateway that cannot record what it allowed is not a gateway.
-func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
+func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame, cn *conn) ipc.Frame {
 	server := hello.ServerName
 	m := jsonrpc.Parse(f.Raw)
 	now := s.o.Now()
 	e, req, evicted := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
 	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, req.cursor, now)
+	if j.action == ipc.ActionHold && s.o.Prompter == nil {
+		j = blockJ(m, ReasonApprovalUnavailable, j.ruleIDs, j.findings)
+	}
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
@@ -395,6 +371,9 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	s.notifyPoison(j.poisoned)
 	s.noteSession(sess, server, f.Dir, m, j, req)
 	s.learnAfter(sess, server, f.Dir, m, j, req.obsKey)
+	if j.action == ipc.ActionHold {
+		s.startApproval(held{sess: sess, server: server, dir: f.Dir, seq: f.Seq, m: m, j: j, cn: cn})
+	}
 	return ipc.Frame{
 		Type: ipc.TypeVerdict, Seq: f.Seq, Action: j.action, Reason: j.reason, RuleIDs: j.ruleIDs,
 		ResponseRaw: j.responseRaw, ReplacementRaw: j.replacement,

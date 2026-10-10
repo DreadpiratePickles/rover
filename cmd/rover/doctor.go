@@ -65,10 +65,10 @@ func doctorChecks() ([]check, error) {
 
 	st, stErr := fetchDoctorState(sock, ipc.Admin)
 	out := []check{checkDaemon(st, stErr), checkSocket(sock, os.Getuid()), checkDirs(dirs)}
-	out = append(out, checkPolicy(func() (string, string, error) {
-		_, cfg, note, err := loadAll(dirs)
-		return string(cfg.Mode), note, err
-	})...)
+	_, cfg, note, _, perr := loadAll(dirs)
+	disk, diskErr := loadedHash(dirs)
+	approved, apprErr := approvedPolicy(st, stErr, filepath.Join(dirs.State, "state.db"))
+	out = append(out, checkPolicy(string(cfg.Mode), note, perr), checkPolicyApproval(disk, diskErr, approved, apprErr))
 	if roverErr != nil {
 		out = append(out, fail("client", "cannot tell which rover binary this is: %v", roverErr))
 	} else {

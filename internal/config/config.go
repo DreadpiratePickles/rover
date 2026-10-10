@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -59,7 +60,37 @@ type Config struct {
 	// built-in mapping. roverd and `rover policy validate` check that it is
 	// owner-only, like the other policy files.
 	NormalizersFile string
+	// Approvals configures the approval flow (M9).
+	Approvals Approvals
 }
+
+// Approvals is config.yaml's approvals section.
+//
+//	approvals:
+//	  timeout_s: 120    # no answer in time means deny (1..3600)
+//	  show_args: false  # show call arguments on the details page
+type Approvals struct {
+	// TimeoutS is how long a held call waits for a human; 0 means the
+	// default (120 s).
+	TimeoutS int
+	// ShowArgs shows the arguments on the details page. Off by default:
+	// Rover does not redact secrets from them until M10.
+	ShowArgs bool
+}
+
+// Timeout is the approval timeout.
+func (a Approvals) Timeout() time.Duration {
+	if a.TimeoutS <= 0 {
+		return DefaultApprovalTimeout
+	}
+	return time.Duration(a.TimeoutS) * time.Second
+}
+
+// DefaultApprovalTimeout applies when approvals.timeout_s is not set.
+const DefaultApprovalTimeout = 120 * time.Second
+
+// maxApprovalTimeoutS bounds approvals.timeout_s (an hour).
+const maxApprovalTimeoutS = 3600
 
 // Default is the configuration used when config.yaml does not exist.
 func Default() Config {
@@ -89,6 +120,10 @@ type file struct {
 	Roots       rootList                       `yaml:"roots"`
 	Labels      map[string]map[string][]string `yaml:"labels"`
 	Normalizers string                         `yaml:"normalizers"`
+	Approvals   struct {
+		TimeoutS int  `yaml:"timeout_s"`
+		ShowArgs bool `yaml:"show_args"`
+	} `yaml:"approvals"`
 }
 
 // rootList decodes a YAML mapping {name: path} keeping the file's order.
@@ -160,6 +195,10 @@ func Parse(b []byte, dir string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.Labels = f.Labels
+	if f.Approvals.TimeoutS < 0 || f.Approvals.TimeoutS > maxApprovalTimeoutS {
+		return Config{}, fmt.Errorf("config: approvals.timeout_s %d: want 1..%d (0 or absent means %d)", f.Approvals.TimeoutS, maxApprovalTimeoutS, int(DefaultApprovalTimeout/time.Second))
+	}
+	cfg.Approvals = Approvals{TimeoutS: f.Approvals.TimeoutS, ShowArgs: f.Approvals.ShowArgs}
 	if f.Normalizers != "" {
 		n, p, err := loadNormalizers(f.Normalizers, dir)
 		if err != nil {

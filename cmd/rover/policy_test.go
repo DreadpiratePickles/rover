@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -23,7 +25,8 @@ forbid (principal, action == Action::"call_tool", resource == Tool::"echo/read_f
 `
 
 // usePolicy runs `rover policy init` in dir, then replaces the starter
-// policy with src and sets the mode.
+// policy with src, sets the mode, and approves the result with `rover
+// policy apply` (the testauth fake dialog answering allow).
 func usePolicy(t *testing.T, dir, src, mode string) {
 	t.Helper()
 	if out, err := run(dir, "policy", "init"); err != nil {
@@ -41,6 +44,16 @@ func usePolicy(t *testing.T, dir, src, mode string) {
 	cfg = bytes.Replace(cfg, []byte("\nmode: observe\n"), []byte("\nmode: "+mode+"\n"), 1)
 	if err := os.WriteFile(cfgPath, cfg, 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
+	}
+	applyPolicy(t, dir)
+}
+
+// applyPolicy approves the policy files as they are now (the testauth fake
+// dialog answering allow), as a human would after editing them.
+func applyPolicy(t *testing.T, dir string) {
+	t.Helper()
+	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err != nil {
+		t.Fatalf("policy apply: %v\n%s", err, out)
 	}
 }
 
@@ -137,7 +150,7 @@ func TestPolicyEndToEnd(t *testing.T) {
 		!strings.Contains(out, "rules=hide-read-file") || !strings.Contains(out, "3 replayed: 2 forward, 1 block") {
 		t.Fatalf("policy test: %v\n%s", err, out)
 	}
-	if out, err := run(dir, "policy", "apply"); err != nil || !strings.Contains(out, "TODO(M9)") {
+	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err != nil || !strings.Contains(out, "reload requested") {
 		t.Fatalf("policy apply: %v\n%s", err, out)
 	}
 }
@@ -177,10 +190,30 @@ func TestPolicyValidateRejectsBadPolicy(t *testing.T) {
 	}
 }
 
-func TestPolicyApplyWithoutDaemonFails(t *testing.T) {
-	out, err := run(roverDir(t), "policy", "apply")
-	if err == nil || !strings.Contains(out, "not running") {
-		t.Fatalf("apply without roverd must exit 1: %v\n%s", err, out)
+// M9: apply refuses a policy that does not load and anything the OS
+// dialog did not confirm; with no roverd it records the approval itself.
+func TestPolicyApplyNeedsALoadablePolicyAndAuthentication(t *testing.T) {
+	dir := roverDir(t)
+	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err == nil || !strings.Contains(out, "not applied") {
+		t.Fatalf("apply with no policy must exit 1: %v\n%s", err, out)
+	}
+	if out, err := run(dir, "policy", "init"); err != nil || !strings.Contains(out, "method init") {
+		t.Fatalf("init must record the first policy (TOFU): %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config", "policy.cedar"), []byte(e2ePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := run(dir, "--test-auth=deny", "policy", "apply"); err == nil || !strings.Contains(out, "OS authentication did not succeed") {
+		t.Fatalf("apply without authentication must exit 1: %v\n%s", err, out)
+	}
+	if out, err := run(dir, "doctor"); err == nil || !strings.Contains(out, "FAIL  policy-approval") {
+		t.Fatalf("doctor must report the unapproved files: %v\n%s", err, out)
+	}
+	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err != nil || !strings.Contains(out, "roverd is not running and loads it when it starts") {
+		t.Fatalf("apply without roverd: %v\n%s", err, out)
+	}
+	if out, _ := run(dir, "doctor"); !strings.Contains(out, "PASS  policy-approval") {
+		t.Fatalf("doctor after apply:\n%s", out)
 	}
 }
 
@@ -214,25 +247,24 @@ func waitFor(t *testing.T, logs *lockedBuf, want string) {
 	t.Fatalf("daemon never logged %q:\n%s", want, logs.String())
 }
 
-// SIGHUP (M2): apply loads a new policy; a broken one keeps the old.
+// SIGHUP (M2): apply loads a new policy; a broken one is refused by apply
+// and, sent a bare SIGHUP, roverd keeps the old one.
 func TestApplyReloadsAndKeepsPreviousOnError(t *testing.T) {
 	// Arrange: start with no policy file at all.
 	dir := roverDir(t)
 	logs := startDaemon(t, dir)
 	usePolicy(t, dir, e2ePolicy, "enforce")
 	echoCall := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"reloaded"}}}`
-
-	// Act: a good policy, then a broken one.
-	if out, err := run(dir, "policy", "apply"); err != nil {
-		t.Fatalf("apply: %v\n%s", err, out)
-	}
 	waitFor(t, logs, "policy reloaded (mode enforce)")
+
+	// Act: a broken policy.
 	if err := os.WriteFile(filepath.Join(dir, "config", "policy.cedar"), []byte("permit (oops"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := run(dir, "policy", "apply"); err != nil {
-		t.Fatalf("apply: %v\n%s", err, out)
+	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err == nil || !strings.Contains(out, "not applied") {
+		t.Fatalf("apply of a broken policy must fail: %v\n%s", err, out)
 	}
+	hup(t, dir)
 	waitFor(t, logs, "policy reload FAILED")
 	m := wrapEcho(t, dir)
 	r := m.call(echoCall)
@@ -241,5 +273,21 @@ func TestApplyReloadsAndKeepsPreviousOnError(t *testing.T) {
 	// Assert: the good policy is still in force.
 	if !strings.Contains(fmt.Sprint(r["result"]), "reloaded") || strings.Contains(fmt.Sprint(r["result"]), "isError:true") {
 		t.Fatalf("echo must still be permitted by the previous policy: %v", r)
+	}
+}
+
+// hup sends roverd a bare SIGHUP, as an agent with a shell could.
+func hup(t *testing.T, dir string) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "run", "roverd.pid")) //nolint:gosec // G304: the test's ROVER_DIR
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGHUP); err != nil {
+		t.Fatal(err)
 	}
 }

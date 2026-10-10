@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/config"
 	"github.com/DreadpiratePickles/rover/internal/detect"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
@@ -32,6 +33,13 @@ const (
 	// ReasonToolsListRejected replaces a tools/list result that could not be
 	// filtered: forwarding it might show the agent a hidden tool.
 	ReasonToolsListRejected = "tools_list_rejected"
+	// ReasonApprovalUnavailable blocks a held call when roverd has no
+	// approval flow (no Prompter).
+	ReasonApprovalUnavailable = "approval_unavailable"
+	// ReasonRoverReply drops the client's reply to Rover's elicitation.
+	ReasonRoverReply = "rover_elicitation_reply"
+	// ReasonRoverIDTaken blocks a server request using Rover's id prefix.
+	ReasonRoverIDTaken = "rover_id_reserved"
 	// ReasonInvalidJSONRPC blocks a line jsonrpc.Parse could not classify
 	// unambiguously (followed by ": " and jsonrpc.Message.Invalid).
 	ReasonInvalidJSONRPC = policy.ReasonInvalidJSONRPC
@@ -48,8 +56,8 @@ type loaded struct {
 }
 
 // ErrModeDowngrade refuses a reload that would switch an enforcing daemon
-// to observe mode.
-var ErrModeDowngrade = errors.New("refused: switching enforce -> observe needs OS authentication (M9)")
+// to observe mode without an authenticated `rover policy apply`.
+var ErrModeDowngrade = errors.New("refused: switching enforce -> observe needs an authenticated `rover policy apply`")
 
 // Reload atomically replaces the policy and config. Decisions already in
 // flight finish with the previous pair. Pass a nil interface (not a typed nil
@@ -57,21 +65,33 @@ var ErrModeDowngrade = errors.New("refused: switching enforce -> observe needs O
 //
 // A reload may not switch from enforce to observe: anything that can edit or
 // delete config.yaml (an agent with file access, say) could otherwise turn
-// enforcement off with one `rover policy apply` (review M2). That switch will
-// need OS authentication (M9); until then it returns ErrModeDowngrade and
-// the previous policy and mode stay in force. At startup a missing
-// config.yaml still means observe (D6).
-func (s *Server) Reload(p Policy, cfg config.Config) error {
+// enforcement off with a SIGHUP (review M2). Reload returns
+// ErrModeDowngrade and the previous policy and mode stay in force; only
+// ReloadWith(..., true), after an authenticated apply (M9), may switch.
+func (s *Server) Reload(p Policy, cfg config.Config) error { return s.ReloadWith(p, cfg, false) }
+
+// ReloadWith is Reload; authenticated says the human approved this exact
+// policy through the OS dialog, which also allows enforce -> observe.
+func (s *Server) ReloadWith(p Policy, cfg config.Config, authenticated bool) error {
 	next := &loaded{pol: p, cfg: cfg}
 	for {
 		cur := s.pol.Load()
-		if cur != nil && cur.cfg.Mode == policy.ModeEnforce && cfg.Mode != policy.ModeEnforce {
+		if !authenticated && cur != nil && cur.cfg.Mode == policy.ModeEnforce && cfg.Mode != policy.ModeEnforce {
 			return ErrModeDowngrade
 		}
 		if s.pol.CompareAndSwap(cur, next) {
 			return nil
 		}
 	}
+}
+
+// AuditKindPolicy marks a policy approval or refusal in the audit log.
+const AuditKindPolicy = "policy"
+
+// AuditPolicy records a policy event (M9): an approved hash, a refused
+// reload, a rejected nonce.
+func (s *Server) AuditPolicy(action, reason string) error {
+	return s.writeAudit(audit.Entry{Time: s.o.Now().UTC(), Session: adminSession, Kind: AuditKindPolicy, Action: action, Reason: reason})
 }
 
 // InputFor builds the policy input for one message. `rover policy test`
@@ -144,6 +164,12 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 		}
 		return invalidJ(m)
 	}
+	// Rover's own elicitation ids (M9): the client's reply goes to the
+	// approval waiting for it, never to the server; a server request that
+	// borrows the prefix is refused, so a client can never mistake it.
+	if j, mine := s.roverID(sess, dir, m); mine {
+		return j
+	}
 	// A result answering tools/list, or answering nothing we know of (a
 	// server could otherwise send a second, unfiltered reply), is filtered.
 	if dir == policy.DirS2C && m.Kind == jsonrpc.KindResult && (replyTo == "tools/list" || replyTo == "") {
@@ -205,8 +231,14 @@ func (s *Server) judgePolicy(st *loaded, sess *Session, server, transport, dir s
 	switch {
 	case o.Action == ipc.ActionBlock:
 		j.responseRaw = o.Response
+	case o.Action == ipc.ActionHold:
+		// A human decides (approvals.go), who builds the block reply if
+		// it comes to that. A hold verdict carries no response.
+		if dir == policy.DirC2S && m.Kind == jsonrpc.KindRequest && m.Method == "tools/call" {
+			j.callLabels, _ = st.cfg.EffectiveLabels(server, m.ToolName())
+		}
+		return j
 	case o.Action != ipc.ActionForward:
-		// TODO(M9): hold. Until approvals exist, anything else blocks.
 		return blockJ(m, "unsupported decision "+o.Action, o.RuleIDs, findings)
 	case o.WouldDeny:
 		j.audit = AuditWouldDeny

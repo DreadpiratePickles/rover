@@ -8,6 +8,7 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
@@ -161,6 +162,10 @@ type DoctorState struct {
 	TamperAlerts  []TamperAlert `json:"tamper_alerts"`
 	AuditHealthy  bool          `json:"audit_healthy"`
 	ServerVersion int           `json:"protocol_version"`
+	// ApprovedPolicy is the approved policy hash (M9), if any; doctor
+	// compares it with the files on disk.
+	ApprovedPolicy *approve.PolicyApproval `json:"approved_policy,omitempty"`
+	ApprovedErr    string                  `json:"approved_policy_error,omitempty"`
 }
 
 func (s *Server) doctorState() ipc.Frame {
@@ -178,8 +183,18 @@ func (s *Server) doctorState() ipc.Frame {
 			alerts = append(alerts, a)
 		}
 	}
-	return adminResult(DoctorState{Mode: string(l.cfg.Mode), PolicyLoaded: l.pol != nil, WatchedFiles: n,
-		TamperAlerts: alerts, AuditHealthy: healthy, ServerVersion: ipc.Version}, "")
+	st := DoctorState{Mode: string(l.cfg.Mode), PolicyLoaded: l.pol != nil, WatchedFiles: n,
+		TamperAlerts: alerts, AuditHealthy: healthy, ServerVersion: ipc.Version}
+	if s.o.State != nil {
+		a, found, err := approve.CurrentPolicy(s.o.State)
+		switch {
+		case err != nil:
+			st.ApprovedErr = err.Error()
+		case found:
+			st.ApprovedPolicy = &a
+		}
+	}
+	return adminResult(st, "")
 }
 
 // tamperNotifier gives tamper notifications their own title. The pin

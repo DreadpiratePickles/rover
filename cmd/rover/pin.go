@@ -26,6 +26,9 @@ const pinUsage = `usage:
                                      server changed the tool again since
   rover pin reset <server>           forget a server's pins: its next tools/list is trusted on first use
 
+approve and reset show the OS authentication dialog first (Touch ID or your
+password on macOS, polkit on Linux); nothing changes unless it succeeds.
+
 roverd holds the state database locked while it runs (bbolt allows no reader
 beside a writer), so these commands ask roverd over its socket; with no
 roverd running they open the database themselves.`
@@ -44,11 +47,10 @@ func runPin(args []string) int {
 			req.ServerName = args[1]
 		}
 	case args[0] == "approve" && len(args) == 4:
-		// TODO(M9): OS authentication. Until then anyone who can run this
-		// CLI as the user can approve, which the plan accepts for M4.
+		// The OS dialog runs where the change is made: in roverd, or here
+		// when no roverd is running (daemon.Server.Admin).
 		req = ipc.Frame{Op: ipc.OpPinApprove, ServerName: args[1], Tool: args[2], Digest: args[3]}
 	case args[0] == "reset" && len(args) == 2:
-		// TODO(M9): OS authentication.
 		req = ipc.Frame{Op: ipc.OpPinReset, ServerName: args[1]}
 	default:
 		fmt.Fprintln(os.Stderr, pinUsage)
@@ -79,7 +81,6 @@ func runPin(args []string) int {
 		_ = json.Unmarshal(result, &r)
 		fmt.Printf("removed %d pin(s) for %s; its next tools/list is trusted on first use\n", r.Removed, req.ServerName)
 	}
-	fmt.Println("TODO(M9): this will require OS authentication")
 	return 0
 }
 
@@ -112,7 +113,7 @@ func pinAdmin(req ipc.Frame) (json.RawMessage, error) {
 		return nil, err
 	}
 	defer func() { _ = db.Close() }()
-	o := daemon.Options{State: db}
+	o := daemon.Options{State: db, Authenticator: newAuthenticator(errf)}
 	if req.Op != ipc.OpPinList {
 		logPath := filepath.Join(dirs.State, "audit.jsonl")
 		log, err := audit.Open(logPath)

@@ -53,6 +53,7 @@ func TestPolicyYAMLEndToEnd(t *testing.T) {
 		t.Fatalf("validate starter: %v\n%s", err, out)
 	}
 	writeConfigFile(t, dir, "policy.yaml", echoYAML)
+	applyPolicy(t, dir)
 	logs := startDaemon(t, dir)
 	waitFor(t, logs, "compiling policy.yaml")
 	waitFor(t, logs, "policy loaded (mode enforce)")

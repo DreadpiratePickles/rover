@@ -5,15 +5,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"io/fs"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/config"
@@ -33,7 +29,8 @@ const policyUsage = `usage:
   rover policy propose [--out FILE [--force]] [--yaml]
                                          propose a policy from what learn mode (observe) recorded
   rover policy diff [FILE]               diff the current policy against the proposal (or FILE)
-  rover policy apply                     ask roverd to reload config.yaml and the policy
+  rover policy apply                     approve the policy files with the OS authentication dialog,
+                                         then have roverd load them (roverd loads only approved policies)
   rover policy labels [server]           print each tool's labels and where they come from
                                          (built-in, config, or the conservative default)
 
@@ -142,6 +139,7 @@ func policyInit(args []string) int {
 		}
 		fmt.Println("wrote " + p)
 	}
+	approveFirstPolicy(dirs)
 	if *useYAML {
 		fmt.Println("next: edit policy.yaml, run `rover policy compile` to read the Cedar it becomes, `rover policy validate`, then `rover policy apply`.")
 		fmt.Println("policy.yaml starts in observe mode: denials are logged as would_deny, not blocked.")
@@ -303,71 +301,4 @@ func cedarValidate(policyPath string, compiled, schema []byte) int {
 	}
 	fmt.Printf("cedar validate: ok (%s)\n", bin)
 	return 0
-}
-
-// policyApply asks the running roverd to reload its policy.
-func policyApply(args []string) int {
-	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: rover policy apply")
-		return 2
-	}
-	dirs, err := paths.Resolve()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	b, err := os.ReadFile(filepath.Join(dirs.Run, "roverd.pid"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "roverd is not running (no pid file):", err)
-		return 1
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
-		fmt.Fprintf(os.Stderr, "bad pid file %q\n", b)
-		return 1
-	}
-	// A stale pid file could name an unrelated process, which SIGHUP would
-	// kill; only signal when roverd's socket answers.
-	if err = pingDaemon(dirs); err != nil {
-		fmt.Fprintln(os.Stderr, "roverd is not answering on its socket:", err)
-		return 1
-	}
-	proc, err := os.FindProcess(pid)
-	if err == nil {
-		err = proc.Signal(syscall.SIGHUP)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot signal roverd (pid %d): %v\n", pid, err)
-		return 1
-	}
-	fmt.Printf("reload requested (pid %d); roverd.log says whether it succeeded\n", pid)
-	fmt.Println("note: a running enforce daemon refuses to switch to observe; roverd.log then says")
-	fmt.Println("  \"refused: switching enforce -> observe needs OS authentication (M9)\" (restart roverd to change it)")
-	fmt.Println("TODO(M9): this is not yet protected by OS authentication")
-	return 0
-}
-
-// pingDaemon connects to roverd's socket and leaves without a hello. It
-// half-closes and waits for roverd to hang up, so roverd has read its peer
-// credentials before the connection goes away (no log noise).
-func pingDaemon(dirs paths.Dirs) error {
-	sock, err := paths.SocketPath(dirs)
-	if err != nil {
-		return err
-	}
-	c, err := net.DialTimeout("unix", sock, 500*time.Millisecond)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = c.Close() }()
-	uc, ok := c.(*net.UnixConn)
-	if !ok {
-		return nil
-	}
-	if err := uc.CloseWrite(); err != nil {
-		return err
-	}
-	_ = uc.SetReadDeadline(time.Now().Add(time.Second))
-	_, _ = io.Copy(io.Discard, uc)
-	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
@@ -22,6 +23,7 @@ import (
 
 func TestDoctorCheckFunctions(t *testing.T) {
 	dir := t.TempDir()
+	hashA, hashB := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	st := &daemon.DoctorState{Mode: "observe", AuditHealthy: true, ServerVersion: 1}
 	cases := []struct {
 		got  check
@@ -35,9 +37,13 @@ func TestDoctorCheckFunctions(t *testing.T) {
 		{checkSocket(junkFile(t, dir, "notsock", 0o600), 0), statusFail},
 		{checkDirs(paths.Dirs{Config: mkdir(t, dir, "c", 0o700), State: mkdir(t, dir, "s", 0o700), Run: mkdir(t, dir, "r", 0o700)}), statusPass},
 		{checkDirs(paths.Dirs{Config: mkdir(t, dir, "open", 0o755), State: dir, Run: dir}), statusFail},
-		{checkPolicy(func() (string, string, error) { return "", "", errors.New("no policy") })[0], statusFail},
-		{checkPolicy(func() (string, string, error) { return "enforce", "", nil })[0], statusPass},
-		{checkPolicy(func() (string, string, error) { return "enforce", "", nil })[1], statusWarn},
+		{checkPolicy("", "", errors.New("no policy")), statusFail},
+		{checkPolicy("enforce", "", nil), statusPass},
+		{checkPolicyApproval(hashA, nil, &approve.PolicyApproval{Hash: hashA, Method: "init"}, nil), statusPass},
+		{checkPolicyApproval(hashB, nil, &approve.PolicyApproval{Hash: hashA, Method: "init"}, nil), statusFail}, // tampered
+		{checkPolicyApproval(hashA, nil, nil, nil), statusFail},                                                  // never approved
+		{checkPolicyApproval(hashA, nil, nil, errors.New("db")), statusFail},
+		{checkPolicyApproval("", errors.New("no file"), &approve.PolicyApproval{Hash: hashA}, nil), statusFail},
 		{checkAudit(filepath.Join(dir, "none.jsonl")), statusWarn},
 		{checkAudit(junkFile(t, dir, "bad.jsonl", 0o600)), statusFail},
 		{checkTLS(func() (tls.CurveID, error) { return tls.X25519, nil }), statusFail},
@@ -173,7 +179,7 @@ func TestDoctorEndToEnd(t *testing.T) {
 	for _, c := range res.Checks {
 		status[c.Name] = c.Status
 	}
-	for name, want := range map[string]string{"daemon": statusPass, "socket": statusPass, "dirs": statusPass, "policy": statusPass,
+	for name, want := range map[string]string{"daemon": statusPass, "socket": statusPass, "dirs": statusPass, "policy": statusPass, "policy-approval": statusPass,
 		"client": statusPass, "tls-pq": statusPass, "rover-net": statusWarn, "tamper": statusPass} {
 		if status[name] != want {
 			t.Errorf("%s = %s, want %s\n%s", name, status[name], want, out)
@@ -207,7 +213,7 @@ func TestDoctorEndToEnd(t *testing.T) {
 // startDaemonStoppable is startDaemon with a way to stop it mid-test.
 func startDaemonStoppable(t *testing.T, dir string) func() {
 	t.Helper()
-	cmd := exec.Command(bins.rover, "daemon") //nolint:gosec // G204: test runs the binary it just built
+	cmd := exec.Command(bins.rover, "--test-auth=allow", "daemon") //nolint:gosec // G204: test runs the binary it just built
 	cmd.Env = env(dir)
 	stderr := &lockedBuf{}
 	cmd.Stderr = stderr

@@ -33,6 +33,8 @@ func TestValidateRejectsBadFrames(t *testing.T) {
 		"replace no body":   {Type: TypeVerdict, Seq: 1, Action: ActionReplace},
 		"release hold":      {Type: TypeRelease, Seq: 1, Action: ActionHold},
 		"response on fwd":   {Type: TypeVerdict, Seq: 1, Action: ActionForward, ResponseRaw: []byte("{}")},
+		"inject no raw":     {Type: TypeInject},
+		"inject too big":    {Type: TypeInject, Raw: make([]byte, MaxInject+1)},
 		// Tool ids are "<server>/<tool>", split at the first "/" (review L4).
 		"slash in server":   {Type: TypeHello, Version: Version, WrapperPID: 1, ClientPID: 1, ServerName: "evil/echo", Transport: "stdio"},
 		"space in server":   {Type: TypeHello, Version: Version, WrapperPID: 1, ClientPID: 1, ServerName: "my server", Transport: "stdio"},

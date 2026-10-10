@@ -15,9 +15,11 @@ import (
 const (
 	ReasonNoPermit  = "no permit matched"
 	ReasonWouldDeny = "would_deny"
-	// ReasonApprovalM2 blocks a permit that needs approval, because the
-	// approval flow does not exist before M9 (fail closed).
-	ReasonApprovalM2 = "approval_required_not_available_until_M9"
+	// ReasonApprovalRequired is the reason of a hold: a permit annotated
+	// @rover_require("approval") matched, so a human must approve the
+	// message through the OS authentication dialog first (M9). In observe
+	// mode the message is forwarded and logged as would_deny with it.
+	ReasonApprovalRequired = "approval_required"
 	// ReasonInvalidJSONRPC blocks a line jsonrpc.Parse could not classify
 	// unambiguously; the full reason is "invalid_jsonrpc: <Message.Invalid>".
 	ReasonInvalidJSONRPC = "invalid_jsonrpc"
@@ -25,7 +27,7 @@ const (
 
 // Outcome is what the enforcement point must do with one message.
 type Outcome struct {
-	Action   string   // ipc.ActionForward, ipc.ActionBlock (ActionHold from M9)
+	Action   string   // ipc.ActionForward, ipc.ActionBlock or ipc.ActionHold
 	Reason   string   // why; "" for an unpoliced message
 	RuleIDs  []string // the deciding policy ids, sorted
 	Findings []string // from argument conversion and normalisation
@@ -92,11 +94,18 @@ func (e *Engine) outcome(in Input, decision types.Decision, diag types.Diagnosti
 
 	if decision == cedar.Allow && len(erroredForbids) == 0 {
 		for _, id := range fired {
-			if e.approval[id] {
-				// TODO(M9): return ipc.ActionHold and start the OS approval
-				// dialog. Until then a permit that needs approval blocks.
-				return block(in, ReasonApprovalM2, sortedIDs(fired), findings)
+			if !e.approval[id] {
+				continue
 			}
+			// Observe mode never waits for a human: the message goes
+			// through and the log says it would have needed approval.
+			if in.Mode == ModeObserve {
+				return Outcome{Action: ipc.ActionForward, Reason: ReasonApprovalRequired, RuleIDs: sortedIDs(fired), Findings: findings, WouldDeny: true}
+			}
+			// Hold: roverd runs the approval (package approve). Response
+			// is the block reply, in case roverd cannot start one.
+			return Outcome{Action: ipc.ActionHold, Reason: ReasonApprovalRequired, RuleIDs: sortedIDs(fired), Findings: findings,
+				Response: blockResponse(in.Msg, ReasonApprovalRequired, sortedIDs(fired))}
 		}
 		return Outcome{Action: ipc.ActionForward, RuleIDs: sortedIDs(fired), Findings: findings}
 	}
