@@ -50,8 +50,11 @@ func roverDir(t *testing.T) string {
 	return d
 }
 
+// env runs a test binary with its own ROVER_DIR and its own HOME (M7: the
+// client adapters and roverd's tamper watch read configs under HOME; a test
+// must never see, let alone edit, the developer's real ones).
 func env(dir string, extra ...string) []string {
-	return append(append(os.Environ(), "ROVER_DIR="+dir), extra...)
+	return append(append(os.Environ(), "ROVER_DIR="+dir, "HOME="+filepath.Join(dir, "home")), extra...)
 }
 
 // lockedBuf collects a subprocess's stderr; tests read it while it runs.
@@ -190,7 +193,7 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 	}
 	data, _ := os.ReadFile(logPath) //nolint:gosec // G304: test's own file
 	data = bytes.Replace(data, []byte(`"method":"tools/call"`), []byte(`"method":"tools/cull"`), 1)
-	if err := os.WriteFile(logPath, data, 0o600); err != nil {
+	if err := os.WriteFile(logPath, data, 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
 	vout, verr := run(dir, "log", "--verify")

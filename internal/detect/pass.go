@@ -27,10 +27,10 @@ func (s *scan) pass() {
 		var c byte
 		switch {
 		case i-wi < 8:
-			c = byte(w >> (8 * (i - wi)))
+			c = byte(w >> (8 * (i - wi)) & 0xff)
 		case i+8 <= len(t):
 			w, wi = load8(t, i), i
-			c = byte(w)
+			c = byte(w & 0xff)
 		default:
 			c = t[i]
 		}

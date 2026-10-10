@@ -27,7 +27,7 @@ func TestVerifyChainDetectsRemovedHead(t *testing.T) {
 	_ = l.Close()
 	data, _ := os.ReadFile(path) //nolint:gosec // G304: test's own file
 	lines := bytes.SplitAfter(data, []byte("\n"))
-	if err := os.WriteFile(path, bytes.Join(lines[1:], nil), 0o600); err != nil {
+	if err := os.WriteFile(path, bytes.Join(lines[1:], nil), 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
 	files, _ := ChainFiles(path)
@@ -55,7 +55,7 @@ func TestVerifyChainDetectsRemovedTailViaAnchor(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path) //nolint:gosec // G304: test's own file
 	lines := bytes.SplitAfter(data, []byte("\n"))
-	if err := os.WriteFile(path, bytes.Join(lines[:2], nil), 0o600); err != nil {
+	if err := os.WriteFile(path, bytes.Join(lines[:2], nil), 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
 	res := VerifyChain(files, a)

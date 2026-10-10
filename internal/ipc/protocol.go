@@ -54,6 +54,10 @@ const (
 	// OpObservationsDump returns the learn-mode observations (M6) as a JSON
 	// array, oldest first, capped at 50,000 entries. Read-only.
 	OpObservationsDump = "observations_dump"
+	// OpDoctorState returns what `rover doctor` needs from roverd (M7): the
+	// policy mode, whether a policy is loaded, and the tamper alerts.
+	// Read-only.
+	OpDoctorState = "doctor_state"
 )
 
 // MaxToolName bounds the tool named in an admin frame.
@@ -194,7 +198,7 @@ func validateAdmin(f Frame) error {
 	case OpPinApprove:
 		needTool = true
 	case OpPinReset:
-	case OpObservationsDump:
+	case OpObservationsDump, OpDoctorState:
 		needServer = false
 		if f.ServerName != "" {
 			return fmt.Errorf("%w: %s takes no server", ErrBadFrame, f.Op)

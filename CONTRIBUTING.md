@@ -9,9 +9,9 @@ and every claim it makes should be backed by a test.
 
 ## Prerequisites
 
-- **Go 1.25 or newer.** `go.mod` pins the toolchain (`toolchain go1.25.14`),
-  so if your local Go is at least 1.21 but older than go1.25.14, the `go`
-  command downloads go1.25.14 for you and checks it against the Go checksum
+- **Go 1.25 or newer.** `go.mod` pins the toolchain (`toolchain go1.26.9`),
+  so if your local Go is at least 1.21 but older than go1.26.9, the `go`
+  command downloads go1.26.9 for you and checks it against the Go checksum
   database.
 - **govulncheck**, at the version pinned in the Makefile. Install it with:
 
@@ -20,7 +20,7 @@ and every claim it makes should be backed by a test.
   ```
 
   Make sure `$(go env GOPATH)/bin` is on your `PATH`.
-- **golangci-lint v2.5.0**, the same version CI uses. Upstream advises against
+- **golangci-lint v2.14.0**, the same version CI uses. Upstream advises against
   `go install` for it, so download the release binary and check it against the
   checksums file from the same release. The comment above the `tools` target
   in the `Makefile` has the exact commands.

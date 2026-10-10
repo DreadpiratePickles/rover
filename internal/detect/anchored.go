@@ -98,7 +98,13 @@ func compileLine(id, line string) (*anchored, error) {
 	if lit != strings.ToLower(lit) {
 		return nil, fmt.Errorf("write the expression in lower case")
 	}
-	start := strings.IndexFunc(lit, func(r rune) bool { return r < 0x80 && isWordByte(byte(r)) })
+	start := -1
+	for i := 0; i < len(lit); i++ { // bytes >= 0x80 belong to multi-byte runes, never word bytes
+		if lit[i] < 0x80 && isWordByte(lit[i]) {
+			start = i
+			break
+		}
+	}
 	if start < 0 {
 		return nil, fmt.Errorf("must start with a literal word (optionally after punctuation such as <)")
 	}

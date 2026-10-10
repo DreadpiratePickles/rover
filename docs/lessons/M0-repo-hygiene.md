@@ -18,7 +18,7 @@ Nothing a user would notice. M0 is plumbing:
 
 - **A real name.** The module is now `github.com/DreadpiratePickles/rover`
   and the binary is `rover` (`cmd/rover`), with `wrap` and `log` as before.
-- **A pinned compiler.** `go.mod` says `go 1.25` and `toolchain go1.25.14`.
+- **A pinned compiler.** `go.mod` says `go 1.25` and `toolchain go1.26.9`.
 - **Linters.** `.golangci.yml` turns on `govet`, `staticcheck`, `errcheck`,
   `gosec` and `revive` (plus a few small ones), with no blanket exclusions.
 - **CI.** `.github/workflows/ci.yml` runs on every push to `main` and every
@@ -77,13 +77,13 @@ Immutability protects you from changes, not from a bad first version.
 
 ```
 go 1.25
-toolchain go1.25.14
+toolchain go1.26.9
 ```
 
 - **`go 1.25`** is the minimum version; older Go refuses to build (M13 needs a
   1.25 TLS feature).
-- **`toolchain go1.25.14`** is the toolchain to use if yours is older. With the
-  default `GOTOOLCHAIN=auto`, Go 1.21+ downloads go1.25.14 as a module
+- **`toolchain go1.26.9`** is the toolchain to use if yours is older. With the
+  default `GOTOOLCHAIN=auto`, Go 1.21+ downloads go1.26.9 as a module
   (`golang.org/toolchain`) and verifies it against `sum.golang.org` like any
   other module. If yours is *newer*, Go uses yours.
 
@@ -223,7 +223,7 @@ Run these from the repo root.
 
 ```bash
 make tools            # installs govulncheck (pinned version) into $(go env GOPATH)/bin
-golangci-lint --version   # should say 2.5.0; install steps are in the Makefile comment above `tools`
+golangci-lint --version   # should say 2.14.0; install steps are in the Makefile comment above `tools`
 make ci               # vet, lint, test -race, fuzz (30 s), govulncheck
 ```
 
@@ -249,16 +249,16 @@ go env GOTOOLCHAIN GOPROXY GOSUMDB
 ls "$(go env GOMODCACHE)/golang.org/" | grep toolchain   # downloaded toolchains live here
 ```
 
-If your Go is older than 1.25.14, the first command downloads go1.25.14; if
+If your Go is older than 1.26.9, the first command downloads go1.26.9; if
 it's newer, nothing downloads. To watch a download anyway:
 
 ```bash
 T="$(mktemp -d)"
-GOMODCACHE="$T" GOTOOLCHAIN=go1.25.14 go version   # prints "go: downloading go1.25.14 (...)"
+GOMODCACHE="$T" GOTOOLCHAIN=go1.26.9 go version   # prints "go: downloading go1.26.9 (...)"
 GOMODCACHE="$T" go clean -modcache                 # clean up
 ```
 
-`GOTOOLCHAIN=go1.25.14` forces that exact version; see `go help toolchain`.
+`GOTOOLCHAIN=go1.26.9` forces that exact version; see `go help toolchain`.
 
 **Check dependencies and the binary:**
 
@@ -405,7 +405,7 @@ Undo with `git checkout -- .github/`.
 1. Walk through `go install github.com/DreadpiratePickles/rover/cmd/rover@v0.1.0`
    on a new machine. Where could an attacker interfere at each step, and which
    check catches them? Name one attack that *none* of the checks catch.
-2. Rover's `go.mod` has both `go 1.25` and `toolchain go1.25.14`. Explain what
+2. Rover's `go.mod` has both `go 1.25` and `toolchain go1.26.9`. Explain what
    each line does, what happens on a machine with Go 1.24 and on one with Go
    1.26, and why the patch number matters for a security tool.
 3. Explain "trust on first use" using `go.sum` as the example. What's its weak

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/config"
 	"github.com/DreadpiratePickles/rover/internal/framing"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
@@ -64,6 +65,12 @@ type Options struct {
 	// DisableDetection turns detection tier 1 off. Tests only: it exists so
 	// a test can measure what detection adds to a decision (plan §6 M5).
 	DisableDetection bool
+
+	// TamperFiles are the client configs roverd watches for servers that
+	// stop being wrapped (M7, tamper.go); empty means no watch.
+	TamperFiles []clients.ConfigFile
+	// TamperDebounce is how long a burst of changes settles (default 500 ms).
+	TamperDebounce time.Duration
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -87,6 +94,7 @@ type Server struct {
 	// rec records learn-mode observations (M6); nil without a state DB.
 	rec        *learn.Recorder
 	taint      toolTaint     // learn mode: tools whose last listing was flagged
+	tamper     tamperState   // the client-config watch (tamper.go)
 	closedDone chan struct{} // closed when Close has finished (final flush)
 }
 
@@ -147,6 +155,10 @@ func (s *Server) Listen() error {
 		_ = ln.Close()
 		return err
 	}
+	// The baseline of wrapped servers is read before Listen returns.
+	if err := s.startTamperWatch(); err != nil {
+		s.o.Logf("%v; client configs are not watched", err)
+	}
 	return nil
 }
 
@@ -196,6 +208,7 @@ func (s *Server) Close() {
 		conns = append(conns, c)
 	}
 	s.mu.Unlock()
+	s.stopTamperWatch()
 	if s.ln != nil {
 		_ = s.ln.Close()
 	}

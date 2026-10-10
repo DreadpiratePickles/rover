@@ -25,7 +25,7 @@ func writeFile(t *testing.T, path, data string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
 }

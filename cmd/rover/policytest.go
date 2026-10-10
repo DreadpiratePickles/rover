@@ -53,7 +53,7 @@ func policyTest(args []string) int {
 		return 1
 	}
 	eng, cfg := l.engine, l.cfg
-	f, err := os.Open(args[0])
+	f, err := os.Open(args[0]) //nolint:gosec // G703: reading the file the operator names on the command line is this command's job
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

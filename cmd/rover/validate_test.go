@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -21,7 +22,7 @@ func fakeCedar(t *testing.T, code int) (binDir, record string) {
 		"echo \"$@\" > '" + record + "'\n" +
 		"/bin/ls -l \"$3\" >> '" + record + "'\n" +
 		"echo 'fake cedar says hello'\n" +
-		"exit " + string(rune('0'+code)) + "\n"
+		"exit " + strconv.Itoa(code) + "\n"
 	if err := os.WriteFile(filepath.Join(binDir, "cedar"), []byte(script), 0o700); err != nil { //nolint:gosec // G306: test script must be executable
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestPolicyValidateRunsCedarCLI(t *testing.T) {
 	if !strings.Contains(string(rec), "-rw-------") {
 		t.Fatalf("schema temp file is not 0600: %s", rec)
 	}
-	if _, serr := os.Stat(fields[2]); !os.IsNotExist(serr) {
+	if _, serr := os.Stat(fields[2]); !os.IsNotExist(serr) { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatalf("schema temp file %s left behind: %v", fields[2], serr)
 	}
 }

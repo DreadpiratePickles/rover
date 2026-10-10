@@ -4,7 +4,7 @@
 # - Every third-party action is pinned to a full commit SHA (a tag can be
 #   moved to point at different code; a SHA cannot). The comment names the tag.
 # - The workflow token is read-only, and checkout does not leave it on disk.
-# - Tool versions are pinned: golangci-lint v2.5.0, govulncheck v1.7.0, and Go
+# - Tool versions are pinned: golangci-lint v2.14.0, govulncheck v1.7.0, and Go
 #   from the `toolchain` line in go.mod.
 name: ci
 
@@ -34,7 +34,7 @@ jobs:
           cache: false
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.5.0
+          version: v2.14.0
 
   test:
     strategy:
