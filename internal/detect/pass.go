@@ -157,6 +157,6 @@ func (s *scan) rune(r, prev rune, i, size int, tags *tagState, zw, bidi *runs) {
 // insideWord reports an invisible character between two ASCII letters or
 // digits ("norm\u200bal"): it splits a word so a filter misses it.
 func (s *scan) insideWord(prev rune, next int) bool {
-	alnum := func(c rune) bool { return c < 0x80 && isWordByte(byte((c | 0x20) & 0xff)) && c != '_' }
+	alnum := func(c rune) bool { return c < 0x80 && isWordByte(byte((c|0x20)&0xff)) && c != '_' }
 	return alnum(prev) && next < len(s.text) && alnum(rune(s.text[next]))
 }
