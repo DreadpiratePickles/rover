@@ -49,7 +49,7 @@ const leakyPolicy = `
 
 const leakyConfig = `mode: observe
 labels:
-  leaky: { leak: [reads_untrusted], leak_split: [reads_untrusted], fail: [reads_untrusted], send: [egress] }
+  leaky: { leak: [reads_untrusted], leak_split: [reads_untrusted], fail: [reads_untrusted], leak_key: [reads_untrusted], fail_key: [reads_untrusted], send: [egress] }
 `
 
 // startDaemonLogged runs roverd with its stderr in state/roverd.log, as an
@@ -143,10 +143,14 @@ func TestNoFixtureSecretReachesRoverDir(t *testing.T) {
 		}
 		arg, _ := json.Marshal(map[string]string{"text": c.Text})
 		calls := [][2]string{{"leak", string(arg)}, {"leak_split", string(arg)}, {"fail", string(arg)}, {"send", string(arg)}}
-		if ms := dlp.New().Find([]byte(c.Secret)); len(ms) > 0 && !strings.ContainsAny(c.Secret, " \n") {
-			// A bare short secret: learn mode keeps short literals.
+		if ms := dlp.New().Find([]byte(c.Secret)); len(ms) > 0 {
+			// The bare secret, as a value (learn mode keeps short
+			// literals) and as a member NAME: in a result, structured
+			// content, an error's data and in arguments (review H1).
 			bare, _ := json.Marshal(map[string]string{"text": c.Secret})
-			calls = append(calls, [2]string{"leak", string(bare)})
+			asName, _ := json.Marshal(map[string]string{c.Secret: "v"})
+			calls = append(calls, [2]string{"leak", string(bare)}, [2]string{"leak_key", string(bare)},
+				[2]string{"fail_key", string(bare)}, [2]string{"leak", string(asName)}, [2]string{"send", string(asName)})
 		}
 		for _, call := range calls {
 			id++
@@ -203,15 +207,17 @@ func TestNoFixtureSecretReachesRoverDir(t *testing.T) {
 }
 
 func TestNoBodiesFlagLogsMetadataOnly(t *testing.T) {
-	dir := roverDir(t)
-	usePolicy(t, dir, leakyPolicy, "observe")
-	stop := startDaemonLogged(t, dir, "--no-bodies")
-	m := wrapLeaky(t, dir)
-	m.close()
-	stop()
-	audit, err := os.ReadFile(filepath.Join(dir, "state", "audit.jsonl")) //nolint:gosec // G304: the test's ROVER_DIR
-	if err != nil || bytes.Contains(audit, []byte(`"body":`)) || !bytes.Contains(audit, []byte(`"method":"tools/list"`)) {
-		t.Fatalf("--no-bodies: %v\n%s", err, audit)
+	for _, flag := range []string{"--no-bodies", "--log-bodies=false"} {
+		dir := roverDir(t)
+		usePolicy(t, dir, leakyPolicy, "observe")
+		stop := startDaemonLogged(t, dir, flag)
+		m := wrapLeaky(t, dir)
+		m.close()
+		stop()
+		audit, err := os.ReadFile(filepath.Join(dir, "state", "audit.jsonl")) //nolint:gosec // G304: the test's ROVER_DIR
+		if err != nil || bytes.Contains(audit, []byte(`"body":`)) || !bytes.Contains(audit, []byte(`"method":"tools/list"`)) {
+			t.Fatalf("%s: %v\n%s", flag, err, audit)
+		}
 	}
 }
 

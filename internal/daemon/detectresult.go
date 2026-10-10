@@ -54,10 +54,11 @@ func (s *Server) detectResult(m jsonrpc.Message, replyTo string) judgment {
 	case replyTo == "initialize" || replyTo == "prompts/get":
 		blocks = ""
 	}
-	red, secrets, err := s.redactResponse(m.Raw, member, blocks, bk)
+	r, err := s.redactResponse(m.Raw, member, blocks, bk)
 	if err != nil {
 		return rejectResult(m, err)
 	}
+	red, secrets := r.line, r.kinds
 	if len(secrets) > 0 {
 		if rm := jsonrpc.Parse(red); rm.Kind == m.Kind {
 			m = rm // detection reads, and edits, the redacted line
@@ -97,7 +98,7 @@ func (s *Server) detectResult(m jsonrpc.Message, replyTo string) judgment {
 	}
 	var reasons []string
 	if len(secrets) > 0 {
-		reasons = append(reasons, redactedReason(secrets))
+		reasons = append(reasons, r.reason())
 	}
 	if r := plan.reason(); r != "" {
 		reasons = append(reasons, r)

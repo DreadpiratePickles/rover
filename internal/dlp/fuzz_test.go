@@ -52,7 +52,7 @@ func FuzzRedact(f *testing.F) {
 	}
 	d := New()
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		out, kinds, err := RedactJSON(d, raw)
+		out, kinds, _, err := RedactJSON(d, raw)
 		if err != nil {
 			return
 		}

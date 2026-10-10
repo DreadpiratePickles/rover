@@ -83,7 +83,7 @@ func TestRedactMergesOverlapsAndKeepsOtherBytes(t *testing.T) {
 func TestRedactJSONSplicesOnlyChangedStrings(t *testing.T) {
 	raw := []byte(`{"jsonrpc":"2.0", "id":1,"result":{"content":[{"type":"text","text":"key ` + fakeAKIA + `é"}],` +
 		`"structuredContent":{"password":"hunter2hunter2","n":  5, "x":"café"}}}`)
-	out, kinds, err := RedactJSON(New(), raw)
+	out, kinds, _, err := RedactJSON(New(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,10 +98,10 @@ func TestRedactJSONSplicesOnlyChangedStrings(t *testing.T) {
 	if strings.Join(kinds, ",") != KindAWSAccessKey+","+KindGeneric {
 		t.Fatalf("kinds %v", kinds)
 	}
-	if same, _, _ := RedactJSON(New(), []byte(`{"a":"b"}`)); string(same) != `{"a":"b"}` {
+	if same, _, _, _ := RedactJSON(New(), []byte(`{"a":"b"}`)); string(same) != `{"a":"b"}` {
 		t.Fatal(string(same))
 	}
-	if _, _, err := RedactJSON(New(), []byte(`{"a":1,"a":2}`)); err == nil {
+	if _, _, _, err := RedactJSON(New(), []byte(`{"a":1,"a":2}`)); err == nil {
 		t.Fatal("duplicate keys must be refused")
 	}
 }

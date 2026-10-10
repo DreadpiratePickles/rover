@@ -107,7 +107,9 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 # whose arguments carry one is blocked (secret_in_egress_args:<kind>); a
 # non-egress tool gets its arguments unchanged. Kinds: aws-access-key,
 # aws-secret, github-token, slack-token, slack-webhook, stripe,
-# private-key-pem, jwt, generic-credential, high-entropy.
+# private-key-pem, jwt, http-auth, generic-credential, high-entropy; member
+# names are redacted too; a result that redaction would grow past 16 MiB is
+# replaced by "[Rover removed content: too many secrets to redact (N matches)]".
 # To limit egress tools to trusted hosts, uncomment the egress allow-list at
 # the end of policy.cedar (templates/egress-allowlist.cedar).
 

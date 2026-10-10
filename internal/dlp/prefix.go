@@ -88,8 +88,12 @@ func (r prefixRule) match(text []byte, at int) (int, bool) {
 		}
 		at += n
 	}
+	limit := maxToken
+	if r.exact {
+		limit = r.min + 1 // enough to see the token is longer
+	}
 	end := at
-	for end < len(text) && end-at < maxToken && r.body(text[end]) {
+	for end < len(text) && end-at < limit && r.body(text[end]) {
 		end++
 	}
 	n := end - at

@@ -224,6 +224,9 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	if len(secrets) > 0 {
 		j = s.withSecrets(j, secrets)
 	}
+	if dir == policy.DirS2C && j.action == ipc.ActionForward && serverRequests[m.Method] && m.Kind == jsonrpc.KindRequest {
+		j = s.redactServerRequest(m, j)
+	}
 	j.pinEvents = pinEvents
 	return j
 }

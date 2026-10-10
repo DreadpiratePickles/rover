@@ -2,6 +2,7 @@ package dlp
 
 import (
 	"bytes"
+	"encoding/base64"
 	"math"
 )
 
@@ -9,10 +10,13 @@ import (
 // [A-Za-z0-9+/_-], plus up to two '=' of base64 padding at its end. For a
 // run of n bytes in which byte value b occurs c_b times, the Shannon
 // entropy is H = -Σ (c_b/n) log2(c_b/n) bits per byte. English words and
-// identifiers reuse a few letters (H about 3 to 4); a random base64 string
-// of 32+ bytes uses most of its 64 symbols about equally (H near 5). A run
-// of minRun..maxRun bytes with H >= highEntropy, holding a digit and a
-// letter, is flagged, unless its shape says it is something else:
+// identifiers reuse a few letters (H about 3 to 4); a random string comes
+// close to what its alphabet and length allow (see threshold.go: 4.27 for
+// 32 lowercase+digit bytes, 4.56 for 32 base64 bytes). A run of
+// minRun..maxRun bytes whose H reaches the threshold for its alphabet and
+// length, holding a digit and a letter and at most one separator (/ + _ -)
+// in maxSepShare bytes, is flagged, unless its shape says it is something
+// else:
 //   - hex only (with dashes): SHA-256 digests, git commit ids and UUIDs are
 //     high-entropy by design and are what an audit log is full of, so hex
 //     is never flagged by entropy alone (format detectors still apply);
@@ -24,7 +28,10 @@ import (
 //   - published integrity hashes and public keys: SRI ("sha512-..."), go.sum
 //     ("h1:..."), SSH public keys ("AAAAC3NzaC1lZDI1NTE5..."), and the body
 //     of a public PEM block (CERTIFICATE, PUBLIC KEY, PGP PUBLIC KEY BLOCK);
-//   - the local part of an address (followed by '@'): Message-IDs.
+//   - the local part of an address (followed by '@'): Message-IDs;
+//   - base64 of a whole PEM file ("LS0tLS1CRUdJTi...", kubeconfig *-data):
+//     decoded, a private key is flagged as one at any length, anything
+//     else (a certificate) is public.
 //
 // aws-secret is the 40-byte [A-Za-z0-9+/] run of an AWS secret access key,
 // with H >= awsEntropy, when "aws" or "secret" appears in the 64 bytes
@@ -32,7 +39,7 @@ import (
 const (
 	minRun      = 32
 	maxRun      = 512
-	highEntropy = 4.5
+	maxSepShare = 8 // a run with more than 1/8 separators (/ + _ -) is a path or slug
 	awsEntropy  = 4.3
 	awsLen      = 40
 	awsContext  = 64
@@ -74,6 +81,14 @@ func findRuns(text, lower []byte, public []span, ms []Match) []Match {
 		for pad := 0; pad < 2 && i < len(text) && text[i] == '='; pad++ {
 			i++
 		}
+		if bytes.HasPrefix(text[start:i], base64PEM) {
+			// base64 of a whole PEM file (kubeconfig *-data): a private
+			// key is a key at any length; a certificate is public.
+			if base64PEMPrivate(text[start:i]) {
+				ms = append(ms, Match{Kind: KindPrivateKey, Start: start, End: i})
+			}
+			continue
+		}
 		for len(public) > 0 && public[0].end <= start {
 			public = public[1:]
 		}
@@ -91,25 +106,28 @@ func findRuns(text, lower []byte, public []span, ms []Match) []Match {
 // high-entropy secret, or neither.
 func classifyRun(text, lower []byte, start, end int) (Match, bool) {
 	run := text[start:end]
-	digit, letter, hexOnly, awsShape := false, false, true, len(run) == awsLen
+	digit, lower1, upper1, hexOnly, awsShape := false, false, false, true, len(run) == awsLen
+	seps := 0
 	for _, c := range run {
 		switch {
 		case isDigit(c):
 			digit = true
 		case isUpper(c) || isLower(c):
-			letter = true
+			lower1, upper1 = lower1 || isLower(c), upper1 || isUpper(c)
 			if (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 				hexOnly = false
 			}
 		case c == '-':
-		default:
+			seps++
+		case c != '=':
 			hexOnly = false
+			seps++
 		}
 		if c == '_' || c == '-' {
 			awsShape = false
 		}
 	}
-	if !digit || !letter || hexOnly || publicData(text, start, end) {
+	if !digit || (!lower1 && !upper1) || hexOnly || publicData(text, start, end) {
 		return Match{}, false
 	}
 	h := entropy(run)
@@ -119,7 +137,9 @@ func classifyRun(text, lower []byte, start, end int) (Match, bool) {
 			return Match{Kind: KindAWSSecret, Start: start, End: end, Entropy: h}, true
 		}
 	}
-	if len(run) >= minRun && h >= highEntropy {
+	// A path or slug has a separator every few bytes; random base64 has
+	// one in 32 (+/ or -_ of 64 symbols).
+	if len(run) >= minRun && seps*maxSepShare <= len(run) && h >= threshold(alphabet(lower1, upper1, seps > 0), len(run)) {
 		return Match{Kind: KindHighEntropy, Start: start, End: end, Entropy: h}, true
 	}
 	return Match{}, false
@@ -167,3 +187,21 @@ func entropy(b []byte) float64 {
 // Entropy is the Shannon entropy of b in bits per byte (exported for the
 // lesson's examples and tests).
 func Entropy(b []byte) float64 { return entropy(b) }
+
+// base64PEM is base64 of "-----BEGIN".
+var base64PEM = []byte("LS0tLS1CRUdJTi")
+
+// base64PEMPrivate decodes the start of a base64 PEM file and reports a
+// private key ("-----BEGIN ... PRIVATE KEY-----" on its first line).
+func base64PEMPrivate(run []byte) bool {
+	head := run[:min(len(run), 96)] // 72 decoded bytes: the whole BEGIN line
+	head = head[:len(head)/4*4]
+	dec, err := base64.StdEncoding.DecodeString(string(head))
+	if err != nil {
+		return false
+	}
+	if nl := bytes.IndexByte(dec, '\n'); nl >= 0 {
+		dec = dec[:nl]
+	}
+	return bytes.Contains(dec, []byte("PRIVATE KEY"))
+}

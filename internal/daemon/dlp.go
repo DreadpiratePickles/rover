@@ -43,6 +43,9 @@ import (
 const (
 	// ReasonSecretInEgress blocks an egress call carrying a secret.
 	ReasonSecretInEgress = "secret_in_egress_args"
+	// ReasonTooManySecrets replaces a response that redaction would grow
+	// past the message cap.
+	ReasonTooManySecrets = "too_many_secrets"
 	// ReasonDLPFailed blocks a call whose arguments could not be scanned.
 	ReasonDLPFailed = "dlp_failed"
 	// reasonRedacted is the audit reason part of a redacted response.
@@ -55,6 +58,9 @@ const (
 	// unreadableBody replaces an audit body DLP could not read: never log
 	// what could not be scanned.
 	unreadableBody = `"[REDACTED:unreadable]"`
+	// maxReplacement is the proxy's message cap (proxy.DefaultMaxMessage):
+	// a rewritten line may not be larger than a line the wrapper accepts.
+	maxReplacement = 16 << 20
 )
 
 func dlpFindings(kinds []string) []string {
@@ -72,36 +78,59 @@ type textAt struct {
 	start, end int
 }
 
+// redacted is what redactResponse did to a line.
+type redacted struct {
+	line  []byte
+	kinds []string
+	n     int  // matches redacted
+	cut   bool // too large once redacted: the whole result was replaced
+}
+
+// reason is the audit reason of a redaction.
+func (r redacted) reason() string {
+	if r.cut {
+		return fmt.Sprintf("%s; %s (%d matches)", redactedReason(r.kinds), ReasonTooManySecrets, r.n)
+	}
+	return redactedReason(r.kinds)
+}
+
 // redactResponse redacts raw's top-level member ("result" or "error"):
-// every string, then the boundaries between adjacent text blocks of its
-// blocks member ("content", "contents"; "" for none). It returns raw
-// itself when nothing changed. An error means the line could not be read
+// first the joints between adjacent text blocks of its blocks member
+// ("content", "contents"; "" for none), on the original text, then every
+// string and member name. It returns raw itself when nothing changed. A
+// redacted line larger than the message cap (each marker is longer than
+// what it replaces: 7.8 MB of "pwd=a1234567 " becomes 20 MB) is replaced
+// as a whole by tooManySecrets. An error means the line could not be read
 // strictly.
-func (s *Server) redactResponse(raw []byte, member, blocks string, kind detect.Kind) ([]byte, []string, error) {
+func (s *Server) redactResponse(raw []byte, member, blocks string, kind detect.Kind) (redacted, error) {
 	top, err := splitObject(raw, 0, len(raw))
 	if err != nil {
-		return nil, nil, err
+		return redacted{}, err
 	}
 	f, ok := field(top, member)
 	if !ok {
-		return raw, nil, nil
+		return redacted{line: raw}, nil
 	}
-	val, kinds, err := dlp.RedactJSON(s.dlp, f.Value)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", member, err)
-	}
+	val := f.Value
+	var r redacted
 	if blocks != "" && len(val) > 0 && val[0] == '{' {
-		var more []string
-		if val, more, err = s.redactBoundaries(val, blocks, kind); err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", member, err)
+		if val, r.kinds, r.n, err = s.redactJoints(val, blocks, kind); err != nil {
+			return redacted{}, fmt.Errorf("%s: %w", member, err)
 		}
-		kinds = sortedUnique(append(kinds, more...))
 	}
-	if len(kinds) == 0 {
-		return raw, nil, nil
+	val, more, n, err := dlp.RedactJSON(s.dlp, val)
+	if err != nil {
+		return redacted{}, fmt.Errorf("%s: %w", member, err)
 	}
-	out, err := applyEdits(raw, []edit{{start: f.Start, end: f.End, with: val}})
-	return out, kinds, err
+	r.n += n
+	if r.kinds = sortedUnique(append(r.kinds, more...)); len(r.kinds) == 0 {
+		return redacted{line: raw}, nil
+	}
+	if len(raw)-len(f.Value)+len(val) > s.maxLine {
+		return tooManySecrets(raw, member, r), nil
+	}
+	r.line, err = applyEdits(raw, []edit{{start: f.Start, end: f.End, with: val}})
+	return r, err
 }
 
 // blockTexts finds the text of every element of res's member array: a
@@ -138,43 +167,24 @@ func blockTexts(res []byte, member string, kind detect.Kind) ([]*textAt, error) 
 	return texts, nil
 }
 
-// redactBoundaries scans the joint of each pair of adjacent text blocks
-// (the last joinWindow bytes of one and the first of the next, joined) for
-// a secret split across them, and redacts both halves.
-func (s *Server) redactBoundaries(res []byte, member string, kind detect.Kind) ([]byte, []string, error) {
-	texts, err := blockTexts(res, member, kind)
-	if err != nil {
-		return nil, nil, err
-	}
-	split := make([][]dlp.Match, len(texts))
-	var kinds []string
-	for i := 0; i+1 < len(texts); i++ {
-		a, b := texts[i], texts[i+1]
-		if a == nil || b == nil {
-			continue
-		}
-		tail, head := a.text[max(0, len(a.text)-joinWindow):], b.text[:min(len(b.text), joinWindow)]
-		for _, m := range s.dlp.Find([]byte(tail + head)) {
-			if m.Start >= len(tail) || m.End <= len(tail) {
-				continue // inside one block: already redacted there
-			}
-			split[i] = append(split[i], dlp.Match{Kind: m.Kind, Start: len(a.text) - len(tail) + m.Start, End: len(a.text)})
-			split[i+1] = append(split[i+1], dlp.Match{Kind: m.Kind, Start: 0, End: m.End - len(tail)})
-			kinds = append(kinds, m.Kind)
+// tooManySecrets replaces a whole response by a fixed notice (a result
+// with one text block, or an error with that message). The request id is
+// kept so the agent gets its answer.
+func tooManySecrets(raw []byte, member string, r redacted) redacted {
+	id := json.RawMessage("null")
+	if fs, err := jsonrpc.Object(raw); err == nil {
+		if v, ok := fs.Get("id"); ok {
+			id = v
 		}
 	}
-	var edits []edit
-	for i, ms := range split {
-		if len(ms) > 0 {
-			red := dlp.Redact([]byte(texts[i].text), ms)
-			edits = append(edits, edit{start: texts[i].start, end: texts[i].end, with: mustJSON(string(red))})
-		}
+	text := fmt.Sprintf("[Rover removed content: too many secrets to redact (%d matches)]", r.n)
+	var body any = map[string]any{"content": []any{map[string]string{"type": "text", "text": text}}, "isError": false}
+	if member == "error" {
+		body = map[string]any{"code": -32001, "message": text}
 	}
-	if len(edits) == 0 {
-		return res, nil, nil
-	}
-	out, err := applyEdits(res, edits)
-	return out, kinds, err
+	r.line = mustJSON(map[string]any{"jsonrpc": "2.0", "id": id, member: body})
+	r.cut = true
+	return r
 }
 
 // dlpResponse redacts a server response that detection does not scan (an
@@ -185,16 +195,16 @@ func (s *Server) dlpResponse(m jsonrpc.Message) (judgment, bool) {
 	if m.Kind == jsonrpc.KindError {
 		member = "error"
 	}
-	line, kinds, err := s.redactResponse(m.Raw, member, "", detect.KindToolResult)
+	r, err := s.redactResponse(m.Raw, member, "", detect.KindToolResult)
 	if err != nil {
 		return judgment{action: ipc.ActionReplace, audit: ipc.ActionBlock, reason: ReasonResultRejected + ": " + err.Error(),
 			replacement: policy.ErrorResponse(m.ID, ReasonResultRejected)}, true
 	}
-	if len(kinds) == 0 {
+	if len(r.kinds) == 0 {
 		return judgment{}, false
 	}
-	return judgment{action: ipc.ActionReplace, audit: ipc.ActionReplace, reason: redactedReason(kinds),
-		findings: dlpFindings(kinds), replacement: line}, true
+	return judgment{action: ipc.ActionReplace, audit: ipc.ActionReplace, reason: r.reason(),
+		findings: dlpFindings(r.kinds), replacement: r.line}, true
 }
 
 func redactedReason(kinds []string) string { return reasonRedacted + ": " + strings.Join(kinds, ", ") }
@@ -232,7 +242,7 @@ func (s *Server) withSecrets(j judgment, kinds []string) judgment {
 
 // redactRaw redacts one JSON value for the audit log or an approval record.
 func (s *Server) redactRaw(raw json.RawMessage) json.RawMessage {
-	out, _, err := dlp.RedactJSON(s.dlp, raw)
+	out, _, _, err := dlp.RedactJSON(s.dlp, raw)
 	if err != nil {
 		return json.RawMessage(unreadableBody)
 	}
@@ -252,9 +262,37 @@ func (s *Server) redactEntry(e audit.Entry) audit.Entry {
 		e.ID = s.redactRaw(e.ID)
 	}
 	if len(e.Body) > 0 {
-		e.Body = s.redactRaw(e.Body)
+		e.Body = s.redactBody(e)
 	}
 	return e
+}
+
+// redactBody redacts an audit entry's body. The body of a server reply is
+// the original line (M9: the log keeps what the server sent), so it gets
+// what the forwarded line got, the joint scan across its text blocks
+// included: a key split in two blocks must not be whole in the log.
+func (s *Server) redactBody(e audit.Entry) json.RawMessage {
+	member, blocks, kind := "", "", detect.KindToolResult
+	switch e.Kind {
+	case string(jsonrpc.KindResult):
+		member, blocks = "result", "content"
+		switch e.ReplyTo {
+		case "resources/read":
+			blocks, kind = "contents", detect.KindResource
+		case "initialize", "prompts/get":
+			blocks = ""
+		}
+	case string(jsonrpc.KindError):
+		member = "error"
+	}
+	if member == "" {
+		return s.redactRaw(e.Body)
+	}
+	r, err := s.redactResponse(e.Body, member, blocks, kind)
+	if err != nil {
+		return json.RawMessage(unreadableBody)
+	}
+	return r.line
 }
 
 // redactingLogf wraps logf so no log line carries a secret.
@@ -277,10 +315,27 @@ func RedactingLogf(logf func(string, ...any)) func(string, ...any) {
 
 // redactRecord returns r with every string redacted (learn-mode shapes
 // keep short literals, which is exactly the size of a key id).
+// Argument names are redacted too, kept unique like RedactJSON's.
 func (s *Server) redactRecord(r types.Record) types.Record {
 	m := make(types.RecordMap, r.Len())
+	used := map[string]bool{}
+	var renamed []types.String
+	for k := range r.All() {
+		if len(s.dlp.Find([]byte(k))) > 0 {
+			renamed = append(renamed, k)
+		} else {
+			used[strings.ToLower(string(k))] = true
+		}
+	}
 	for k, v := range r.All() {
 		m[k] = s.redactValue(string(k), v)
+	}
+	for _, k := range renamed {
+		v := m[k]
+		delete(m, k)
+		name := dlp.UniqueName(s.redactText(string(k)), used)
+		used[strings.ToLower(name)] = true
+		m[types.String(name)] = v
 	}
 	return types.NewRecord(m)
 }

@@ -37,6 +37,7 @@ const (
 	KindSlackToken   = "slack-token"
 	KindStripe       = "stripe"
 	KindJWT          = "jwt"
+	KindHTTPAuth     = "http-auth"
 	KindAWSSecret    = "aws-secret"
 	KindGeneric      = "generic-credential"
 	KindHighEntropy  = "high-entropy"
@@ -47,7 +48,7 @@ const (
 // Kinds lists every kind, most specific first.
 var Kinds = []string{
 	KindPrivateKey, KindAWSAccessKey, KindGitHubToken, KindSlackWebhook, KindSlackToken,
-	KindStripe, KindJWT, KindAWSSecret, KindGeneric, KindHighEntropy,
+	KindStripe, KindJWT, KindHTTPAuth, KindAWSSecret, KindGeneric, KindHighEntropy,
 }
 
 var priority = func() map[string]int {
@@ -89,6 +90,7 @@ func (detector) Find(text []byte) []Match {
 	ms = findPrefixed(text, ms)
 	ms, public := findPEM(text, ms)
 	ms = findJWT(text, ms)
+	ms = findHTTPAuth(text, lower, ms)
 	ms = findGeneric(text, lower, ms)
 	ms = findRuns(text, lower, public, ms)
 	return resolve(ms)

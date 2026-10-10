@@ -36,18 +36,22 @@ func findGeneric(text, lower []byte, ms []Match) []Match {
 				break
 			}
 			at := from + i
-			from = at + len(w)
-			if s, e, ok := genericValue(text, at+len(w)); ok {
+			s, e, ok := genericValue(text, at+len(w))
+			if ok {
 				ms = append(ms, Match{Kind: KindGeneric, Start: s, End: e})
-				from = e
 			}
+			// Continue after whatever was read, match or not: a word that
+			// starts inside the value just read is part of that value, and
+			// skipping it keeps every byte read a constant number of times.
+			from = max(at+len(w), e)
 		}
 	}
 	return ms
 }
 
 // genericValue parses name-tail, separator and value after a credential
-// word ending at at, and returns the value's span.
+// word ending at at, and returns the value's span; when ok is false, end
+// is still how far it read (0 when it stopped before a value).
 func genericValue(text []byte, at int) (int, int, bool) {
 	i := runOf(text, at, func(c byte) bool { return isAlnum(c) || c == '_' || c == '-' }, maxNameTail)
 	if i < len(text) && (text[i] == '"' || text[i] == '\'') {
@@ -71,7 +75,7 @@ func genericValue(text []byte, at int) (int, int, bool) {
 			end++
 		}
 		if end >= len(text) || text[end] != q || !plausibleValue(text[i+1:end], true) {
-			return 0, 0, false
+			return 0, end, false
 		}
 		return i + 1, end, true
 	}
@@ -80,7 +84,7 @@ func genericValue(text []byte, at int) (int, int, bool) {
 		end++
 	}
 	if !plausibleValue(text[i:end], false) {
-		return 0, 0, false
+		return 0, end, false
 	}
 	return i, end, true
 }
@@ -96,9 +100,16 @@ func isSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'
 }
 
-func unquotedStop(c byte) bool {
-	return isSpace(c) || strings.IndexByte("\"'`,;&)}]<>\\", c) >= 0
-}
+// stopTable marks the bytes that end an unquoted value: white space,
+// NUL, quotes and punctuation that ends a value in code or a query.
+var stopTable = func() (t [256]bool) {
+	for _, c := range []byte(" \t\n\r\f\v\x00\"'`,;&)}]<>\\") {
+		t[c] = true
+	}
+	return t
+}()
+
+func unquotedStop(c byte) bool { return stopTable[c] }
 
 // plausibleValue says whether v looks like a credential rather than code,
 // a placeholder or a number. A quoted value only has to be long enough and

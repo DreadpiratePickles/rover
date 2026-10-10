@@ -3,5 +3,5 @@
 # `rover eval` fail when a directory has fewer cases. Every secret here is
 # FAKE (right shape, valid nowhere); the RSA key was generated for this
 # corpus with `openssl genrsa 512` and is test-only.
-secrets 37
-benign 46
+secrets 41
+benign 47

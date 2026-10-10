@@ -69,8 +69,8 @@ func FuzzScanResult(f *testing.F) {
 		if resource {
 			blocks, kind = "contents", detect.KindResource
 		}
-		if red, _, err := s.redactResponse(m.Raw, member, blocks, kind); err == nil && !json.Valid(red) {
-			t.Fatalf("redacted line is not JSON:\n%s\n%s", line, red)
+		if r, err := s.redactResponse(m.Raw, member, blocks, kind); err == nil && !json.Valid(r.line) {
+			t.Fatalf("redacted line is not JSON:\n%s\n%s", line, r.line)
 		}
 	})
 }

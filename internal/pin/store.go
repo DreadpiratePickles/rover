@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/dlp"
 	"github.com/DreadpiratePickles/rover/internal/state"
 	bolt "go.etcd.io/bbolt"
 )
@@ -82,11 +83,18 @@ func sortPins(ps []Pinned) {
 	})
 }
 
+// capCanonical is the copy of a tool's canonical JSON stored for display:
+// capped, and with secrets redacted (M10), since a description can quote
+// a key. Only this copy is redacted; the digest is over the original.
 func capCanonical(c []byte) string {
-	if len(c) > maxStoredCanonical {
-		return string(c[:maxStoredCanonical])
+	d := dlp.New()
+	out, _, _, err := dlp.RedactJSON(d, c)
+	if err != nil {
+		out = dlp.Redact(c, d.Find(c))
 	}
-	return string(c)
+	// Redacted first, then cut: a secret straddling the cap is gone, not
+	// stored half raw. The cut copy is for display only.
+	return string(out[:min(len(out), maxStoredCanonical)])
 }
 
 // BoltStore keeps pins in state.BucketPins.

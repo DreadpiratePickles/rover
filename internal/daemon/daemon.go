@@ -128,6 +128,7 @@ type Server struct {
 	// ctx lives as long as the server; Close cancels it, which denies
 	// every approval still running.
 	dlp      dlp.Detector // secrets (M10, dlp.go)
+	maxLine  int          // largest line roverd hands back (maxReplacement; tests lower it)
 	ctx      context.Context
 	cancel   context.CancelFunc
 	elicits  elicitTable // elicitations waiting for the client (approvals.go)
@@ -163,7 +164,7 @@ func New(o Options) *Server {
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
 		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescerWith(o.Notifier, o.Now, blockedMessage),
-		closedDone: make(chan struct{}), elicits: elicitTable{m: map[string]elicitWait{}}, holds: holdTable{m: map[string]*holdEntry{}}, dlp: det}
+		closedDone: make(chan struct{}), elicits: elicitTable{m: map[string]elicitWait{}}, holds: holdTable{m: map[string]*holdEntry{}}, dlp: det, maxLine: maxReplacement}
 	if o.Audit != nil {
 		o.Audit.SetRedactor(s.redactEntry) // every audit write is redacted (M10)
 	}

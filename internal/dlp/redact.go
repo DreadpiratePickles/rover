@@ -1,6 +1,9 @@
 package dlp
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/DreadpiratePickles/rover/internal/jsonedit"
 )
 
@@ -57,44 +60,104 @@ func FindValue(d Detector, key, s string) []Match {
 	return ms
 }
 
-// RedactJSON redacts secrets inside the string values of raw, one JSON
-// value read strictly (jsonedit.Strings: exact keys, no duplicates, depth
-// at most jsonedit.MaxDepth). Each string that holds a secret is decoded,
-// redacted and re-encoded, and only its bytes are spliced; every other byte
-// of raw is kept, so valid JSON stays valid JSON. It returns raw itself
-// when nothing matched, and the distinct kinds found. An error means raw
-// could not be read strictly: callers must not use raw then (fail closed).
-func RedactJSON(d Detector, raw []byte) ([]byte, []string, error) {
+// RedactJSON redacts secrets inside the strings of raw, one JSON value
+// read strictly (jsonedit.Walk: exact keys, no duplicates, depth at most
+// jsonedit.MaxDepth): string values AND member names. Each string that
+// holds a secret is decoded, redacted and re-encoded, and only its bytes
+// are spliced; every other byte of raw is kept, so valid JSON stays valid
+// JSON. A redacted member name that would collide with another name of its
+// object gets a suffix, "[REDACTED:kind]#2", so names stay unique. It
+// returns raw itself when nothing matched, the distinct kinds found and the
+// number of matches. An error means raw could not be read strictly:
+// callers must not use raw then (fail closed).
+func RedactJSON(d Detector, raw []byte) ([]byte, []string, int, error) {
 	var edits []jsonedit.Edit
 	var all []Match
-	err := jsonedit.Strings(raw, func(key string, start, end int, s string) error {
-		ms := FindValue(d, key, s)
-		if len(ms) == 0 {
-			return nil
+	objs := map[int]*object{}
+	err := jsonedit.Walk(raw, func(s jsonedit.Str) error {
+		var ms []Match
+		if s.IsKey {
+			ms = d.Find([]byte(s.Value))
+			o := objs[s.Obj]
+			if o == nil {
+				o = &object{used: map[string]bool{}}
+				objs[s.Obj] = o
+			}
+			if len(ms) == 0 {
+				o.used[fold(s.Value)] = true
+				return nil
+			}
+			o.renames = append(o.renames, rename{s.Start, s.End, string(Redact([]byte(s.Value), ms))})
+		} else {
+			if ms = FindValue(d, s.Key, s.Value); len(ms) == 0 {
+				return nil
+			}
+			edits = append(edits, jsonedit.Edit{Start: s.Start, End: s.End, With: jsonedit.EncodeString(string(Redact([]byte(s.Value), ms)))})
 		}
 		all = append(all, ms...)
-		edits = append(edits, jsonedit.Edit{Start: start, End: end, With: jsonedit.EncodeString(string(Redact([]byte(s), ms)))})
 		return nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
+	}
+	for _, o := range objs {
+		edits = append(edits, o.edits()...)
 	}
 	if len(edits) == 0 {
-		return raw, nil, nil
+		return raw, nil, 0, nil
 	}
 	out, err := jsonedit.Apply(raw, edits)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
-	return out, KindsOf(all), nil
+	return out, KindsOf(all), len(all), nil
 }
 
-// FindJSON returns the distinct kinds of secret in raw's string values
-// (read as RedactJSON reads them) without rewriting anything.
+// object collects the member names of one object: those kept (used, folded
+// as jsonrpc.Object compares them) and those to rename.
+type object struct {
+	used    map[string]bool
+	renames []rename
+}
+
+type rename struct {
+	start, end int
+	name       string
+}
+
+func fold(s string) string { return strings.ToLower(s) }
+
+// edits gives each renamed member a name no other member of the object has.
+func (o *object) edits() []jsonedit.Edit {
+	out := make([]jsonedit.Edit, 0, len(o.renames))
+	for _, r := range o.renames {
+		name := UniqueName(r.name, o.used)
+		o.used[fold(name)] = true
+		out = append(out, jsonedit.Edit{Start: r.start, End: r.end, With: jsonedit.EncodeString(name)})
+	}
+	return out
+}
+
+// UniqueName returns name, or name#2, name#3, ... whichever is not in used
+// (folded); it does not add it.
+func UniqueName(name string, used map[string]bool) string {
+	cand := name
+	for i := 2; used[fold(cand)]; i++ {
+		cand = name + "#" + strconv.Itoa(i)
+	}
+	return cand
+}
+
+// FindJSON returns the distinct kinds of secret in raw's string values and
+// member names (read as RedactJSON reads them) without rewriting anything.
 func FindJSON(d Detector, raw []byte) ([]string, error) {
 	var all []Match
-	err := jsonedit.Strings(raw, func(key string, _, _ int, s string) error {
-		all = append(all, FindValue(d, key, s)...)
+	err := jsonedit.Walk(raw, func(s jsonedit.Str) error {
+		if s.IsKey {
+			all = append(all, d.Find([]byte(s.Value))...)
+		} else {
+			all = append(all, FindValue(d, s.Key, s.Value)...)
+		}
 		return nil
 	})
 	if err != nil {

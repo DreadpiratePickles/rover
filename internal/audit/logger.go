@@ -42,6 +42,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -69,8 +70,12 @@ type Entry struct {
 	PrevDigest string          `json:"prev_digest,omitempty"`
 	Bytes      int             `json:"bytes"`
 	Body       json.RawMessage `json:"body,omitempty"`
-	Prev       string          `json:"prev"` // hash of the previous entry, "" for the very first
-	Hash       string          `json:"hash,omitempty"`
+	// BodyTruncated says Body is a JSON string holding only the start of
+	// the body, cut to fit MaxLine (M10); BodySHA256 is the whole body's.
+	BodyTruncated bool   `json:"body_truncated,omitempty"`
+	BodySHA256    string `json:"body_sha256,omitempty"`
+	Prev          string `json:"prev"` // hash of the previous entry, "" for the very first
+	Hash          string `json:"hash,omitempty"`
 }
 
 // DefaultRotateBytes is the size at which the daemon starts a new log file.
@@ -163,9 +168,10 @@ func (l *Logger) Write(e Entry) error {
 	l.mu.Lock()
 	redact := l.redact
 	l.mu.Unlock()
-	if redact != nil {
-		e = redact(e) // outside the lock: a large body takes a while to scan
+	if redact == nil {
+		return ErrNoRedactor // fail closed: never write an unredacted entry
 	}
+	e = fit(redact(e)) // outside the lock: a large body takes a while to scan
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e.Prev = l.last
@@ -287,4 +293,59 @@ func lastEntry(path string) (string, time.Time, error) {
 		return "", time.Time{}, fmt.Errorf("line %d: %w", res.Line, res.Err)
 	}
 	return res.LastHash, res.LastTime, nil
+}
+
+// ErrNoRedactor refuses a Write before SetRedactor: an audit log that
+// might hold secrets is worse than none (M10).
+var ErrNoRedactor = errors.New("audit: no redactor installed")
+
+const (
+	// maxReason caps an entry's reason.
+	maxReason = 64 << 10
+	// fitHeadroom is kept free under MaxLine for the hash, prev and the
+	// truncation fields.
+	fitHeadroom = 4 << 10
+)
+
+// fit makes e encodable within MaxLine, so a size can never fail a write
+// (an audit failure blocks everything): the reason is capped, and a body
+// too large for the line is replaced by a JSON string holding its start,
+// with body_truncated and the whole body's SHA-256.
+func fit(e Entry) Entry {
+	if len(e.Reason) > maxReason {
+		e.Reason = strings.ToValidUTF8(e.Reason[:maxReason], "") + "...(truncated)"
+	}
+	if len(e.Body) == 0 {
+		return e
+	}
+	line, _, err := encode(e)
+	if err == nil && len(line) <= MaxLine-fitHeadroom {
+		return e
+	}
+	sum := sha256.Sum256(e.Body)
+	body := e.Body
+	e.Body, e.BodyTruncated, e.BodySHA256 = json.RawMessage(`""`), true, hex.EncodeToString(sum[:])
+	meta, _, _ := encode(e)
+	budget := MaxLine - fitHeadroom - len(meta)
+	n := min(len(body), budget)
+	for n > 0 {
+		s, _ := marshalString(string(body[:n]))
+		if len(s) <= budget {
+			e.Body = s
+			break
+		}
+		n = n * budget / len(s) * 9 / 10
+	}
+	return e
+}
+
+// marshalString is s as a JSON string without HTML escaping.
+func marshalString(s string) (json.RawMessage, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }

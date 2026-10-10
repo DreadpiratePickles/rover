@@ -28,7 +28,7 @@ import (
 func runDaemon(args []string) int {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	noBodies := fs.Bool("no-bodies", false, "log metadata only, no message bodies (bodies are on by default, secrets redacted; config.yaml audit.bodies)")
-	_ = fs.Bool("log-bodies", true, "deprecated: bodies are logged by default since M10")
+	logBodiesFlag := fs.Bool("log-bodies", true, "deprecated (bodies are logged by default since M10); --log-bodies=false is --no-bodies")
 	_ = fs.Parse(args)
 
 	// Every log line goes through DLP: an error message can quote a secret.
@@ -91,7 +91,7 @@ func runDaemon(args []string) int {
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 	pol, cfg, note, reset := loadApprovedAtStart(dirs, db, startFacts{lastAudit: log.LastTime(), stateCreated: stateCreated, history: history}, logf)
-	logBodies := cfg.Audit.Bodies && !*noBodies
+	logBodies := cfg.Audit.Bodies && !*noBodies && *logBodiesFlag
 	sock, err := paths.SocketPath(dirs)
 	if err != nil {
 		logf("%v", err)

@@ -9,6 +9,10 @@
 //	            embedded resource
 //	leak_split  the text cut in two halves, in two adjacent text blocks
 //	fail        a JSON-RPC error whose message and data quote the text
+//	leak_key    the text as a member NAME, in structuredContent
+//	fail_key    the text as a member name in a JSON-RPC error's data
+//	flood       the text repeated "count" times in one text block (a result
+//	            that redaction would grow past the message cap)
 //	send        an "egress" tool: pretends to send the text somewhere
 //
 // Build it only with `-tags lab`: it is not part of any release.
@@ -19,6 +23,8 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 )
 
 type request struct {
@@ -37,6 +43,9 @@ var tools = []map[string]any{
 	tool("leak", "Returns the text in every result channel."),
 	tool("leak_split", "Returns the text in two text blocks."),
 	tool("fail", "Fails with the text in the error."),
+	tool("leak_key", "Returns the text as a member name."),
+	tool("fail_key", "Fails with the text as a member name."),
+	tool("flood", "Returns the text repeated count times."),
 	tool("send", "Sends the text."),
 }
 
@@ -85,6 +94,13 @@ func handle(req request) map[string]any {
 				map[string]any{"type": "text", "text": "start " + text[:half]},
 				map[string]any{"type": "text", "text": text[half:] + " end"},
 			}}
+		case "leak_key":
+			resp["result"] = map[string]any{"content": []any{}, "structuredContent": map[string]any{text: "owner"}}
+		case "flood":
+			n, _ := strconv.Atoi(p.Arguments["count"])
+			resp["result"] = map[string]any{"content": []any{map[string]any{"type": "text", "text": strings.Repeat(text, min(max(n, 0), 1<<20))}}}
+		case "fail_key":
+			resp["error"] = map[string]any{"code": -32000, "message": "failed", "data": map[string]any{text: true}}
 		case "fail":
 			resp["error"] = map[string]any{"code": -32000, "message": "could not use " + text, "data": map[string]any{"detail": text}}
 		default:

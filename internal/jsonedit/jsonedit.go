@@ -88,14 +88,58 @@ func WalkStrings(raw []byte, keys map[string]bool, fn func(string)) error {
 // Strings calls fn for every string value in raw with the member key it
 // belongs to ("" at the top or in a top-level array; an array element
 // inherits its array's key) and its offsets in raw, quotes included.
-// Member keys themselves are not visited. An error from fn stops the walk.
+// Member keys themselves are not visited (see Walk). An error from fn
+// stops the walk.
 func Strings(raw []byte, fn func(key string, start, end int, s string) error) error {
+	return Walk(raw, func(s Str) error {
+		if s.IsKey {
+			return nil
+		}
+		return fn(s.Key, s.Start, s.End, s.Value)
+	})
+}
+
+// Str is one string Walk visits: a value (Key is its member name) or a
+// member name itself (IsKey; Obj is the offset of its object, so names of
+// one object can be told apart from another's). Start and End are its
+// offsets in the walked bytes, quotes included; Value is decoded.
+type Str struct {
+	Key        string
+	IsKey      bool
+	Obj        int
+	Start, End int
+	Value      string
+}
+
+// Walk calls fn for every string in raw: values and member names. A
+// secret can sit in a name as easily as in a value.
+func Walk(raw []byte, fn func(Str) error) error {
 	trimmed := bytes.TrimLeftFunc(raw, unicode.IsSpace) // as bytes.TrimSpace
 	lead := len(raw) - len(trimmed)
 	return walk(bytes.TrimRightFunc(trimmed, unicode.IsSpace), lead, "", fn, 0)
 }
 
-func walk(raw []byte, base int, key string, fn func(string, int, int, string) error, depth int) error {
+// keySpan finds the member name string at or after from in an object's
+// bytes (skipping white space and commas) and returns its end offset.
+func keySpan(raw []byte, from int) (int, int, bool) {
+	for from < len(raw) && (raw[from] == ',' || raw[from] == ' ' || raw[from] == '\t' || raw[from] == '\n' || raw[from] == '\r') {
+		from++
+	}
+	if from >= len(raw) || raw[from] != '"' {
+		return 0, 0, false
+	}
+	for i := from + 1; i < len(raw); i++ {
+		switch raw[i] {
+		case '\\':
+			i++
+		case '"':
+			return from, i + 1, true
+		}
+	}
+	return 0, 0, false
+}
+
+func walk(raw []byte, base int, key string, fn func(Str) error, depth int) error {
 	if depth > MaxDepth {
 		return ErrTooDeep
 	}
@@ -105,17 +149,26 @@ func walk(raw []byte, base int, key string, fn func(string, int, int, string) er
 	switch raw[0] {
 	case '"':
 		if s, ok := StringValue(raw); ok {
-			return fn(key, base, base+len(raw), s)
+			return fn(Str{Key: key, Obj: -1, Start: base, End: base + len(raw), Value: s})
 		}
 	case '{':
 		fs, err := jsonrpc.Object(raw)
 		if err != nil {
 			return err
 		}
+		at := 1
 		for _, f := range fs {
+			ks, ke, ok := keySpan(raw, at)
+			if !ok || ke > f.Start {
+				return errors.New("member name not found") // cannot happen after Object
+			}
+			if err := fn(Str{IsKey: true, Obj: base, Start: base + ks, End: base + ke, Value: f.Key}); err != nil {
+				return err
+			}
 			if err := walk(f.Value, base+f.Start, f.Key, fn, depth+1); err != nil {
 				return err
 			}
+			at = f.End
 		}
 	case '[':
 		els, err := ArrayElems(raw)

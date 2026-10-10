@@ -17,6 +17,7 @@ channels, and why redaction happens before the model and before the log.
   `Find(text)`, and `Redact(text, matches)`. Kinds, most specific first:
   `private-key-pem`, `aws-access-key` (`AKIA`/`ASIA` + 16), `github-token`
   (`ghp_ gho_ ghs_ ghu_ ghr_` + 36, `github_pat_` + 82), `slack-webhook`,
+  `http-auth` (`Authorization: Bearer <token>`, `Basic <base64 user:pass>`),
   `slack-token` (`xoxa- xoxb- xoxp- xoxr-`), `stripe` (`sk_live_ rk_live_`
   + 24), `jwt` (three base64url parts whose header decodes to JSON with
   `"alg"`), `aws-secret` (40 characters near "aws" or "secret", entropy >=
@@ -32,7 +33,8 @@ channels, and why redaction happens before the model and before the log.
 - **roverd** (`internal/daemon/dlp.go`), in every mode:
   - results and errors: every string of `result` (text blocks,
     `structuredContent`, embedded resources, `resources/read` contents) or
-    `error` (message, data) is redacted **before** detection scans it and
+    `error` (message, data), member names included, is redacted **before**
+    detection scans it and
     before the agent gets it; adjacent text blocks are also scanned across
     their joint. Verdict `replace`, audit findings `dlp:<kind>`, reason
     `redacted: <kinds>`.
@@ -43,14 +45,19 @@ channels, and why redaction happens before the model and before the log.
     every entry, whoever writes it (decisions, approvals, pins, tamper
     alerts), is redacted before it is hashed. A body DLP cannot read becomes
     `"[REDACTED:unreadable]"`.
-  - log lines, learn-mode shapes in `state.db` and approval records are
-    redacted too.
+  - sampling and elicitation requests a server sends are redacted before
+    the client gets them.
+  - log lines, learn-mode shapes in `state.db` (a resource URI is not
+    recorded at all, M9's rule), approval records and the tool text kept with pins
+    for `rover pin list` are redacted too; the pin digest is over the
+    original.
 - **Bodies on by default.** `rover daemon --no-bodies`, or
   `audit: {bodies: false}` in config.yaml, logs metadata only. (`--log-bodies`
-  is still accepted and does nothing.)
+  is still accepted: alone it changes nothing, `--log-bodies=false` is the
+  same as `--no-bodies`.)
 - **Egress allow-list** template, `policy/templates/egress-allowlist.cedar`,
   and the same rule commented out at the end of the starter `policy.cedar`.
-- **Corpus** `testdata/corpus/dlp/`: 37 fake secrets, 46 benign look-alikes,
+- **Corpus** `testdata/corpus/dlp/`: 41 fake secrets, 47 benign look-alikes,
   `dlp/MIN_COUNTS`; gates recall >= 0.95, false positives <= 0.02 in
   `internal/dlp/corpus_test.go` and in a `dlp` section of `rover eval`.
 - **Lab server** `testdata/servers/leaky` (build tag `lab`): echoes its
@@ -82,18 +89,51 @@ each byte value b occurs in a string of n bytes, c_b times, so its
 probability is p_b = c_b / n; then H = −Σ p_b · log2(p_b) bits per byte.
 `aaaa` has one symbol with p = 1: H = 0. `abcd` has four symbols at 1/4
 each: H = 4 · (1/4 · 2) = 2. A string can never beat log2 of its alphabet or
-of its length: hex has 16 symbols, so H <= 4 whatever it is, which is why a
-SHA-256 digest can never reach Rover's 4.5 threshold (the explicit "hex is
-never flagged" rule documents that, and guards a future lower threshold); a
-32-byte run has at most 32 distinct bytes, so H <= 5. Random base64 of 32+
-bytes lands near 4.8 to 5.2 (the AWS documentation's example secret is
-4.66, a random 40-character key 5.17), while identifiers and paths that
-reuse a few letters sit around 3.5 to 4.2. So: a run of 32 to 512 token
-bytes `[A-Za-z0-9+/_-]` with H >= 4.5, holding a digit and a letter, is
-`high-entropy`, unless its shape says it is public data: hex (hashes, git
-ids, UUIDs), base64 of an image or PDF, an SRI or go.sum hash, an SSH public
-key, the body of a certificate or public key, a Message-ID before `@`, or
+of its length: hex has 16 symbols, so H <= 4; a 32-byte run has at most 32
+distinct bytes, so H <= 5. And a *random* string does not reach that ceiling
+either, because with few draws some symbols repeat and others never appear:
+for n bytes drawn evenly from k symbols the expected entropy is
+E(k, n) = log2(n) − (k/n)·E[c·log2 c], with c ~ Binomial(n, 1/k) the count
+of one symbol. For 32 bytes that is about 4.27 with lowercase+digits
+(k = 36) and 4.56 with base64 (k = 64); only from about 48 bytes does random
+base64 average 4.9 or more (5.81 at 256 bytes). A first version of Rover
+used one fixed threshold, 4.5, and so missed most 32-character
+lowercase+digit tokens and about a third of 32-character base64 ones; the
+verification caught it. Now the threshold is E(k, n) − 0.35 for the run's
+own alphabet and length (about 2.5 standard deviations below the mean at 32
+bytes), and a run with more than one separator (`/ + _ -`) in eight bytes is
+a path or slug, not a token. So: a run of 32 to 512 token bytes
+`[A-Za-z0-9+/_-]` at or above its threshold, holding a digit and a letter,
+is `high-entropy`, unless its shape says it is public data: hex (hashes,
+git ids, UUIDs; hex can reach 4.0, above the lowercase threshold, so this
+exclusion is load-bearing), base64 of an image or PDF, an SRI or go.sum
+hash, an SSH public key, the body of a certificate or public key, base64 of
+a whole certificate (a kubeconfig's `certificate-authority-data`; base64 of
+a whole *private key* is decoded and flagged), a Message-ID before `@`, or
 anything inside a URL.
+
+### 2b. Member names are strings too
+
+JSON has two kinds of string: values and member names. The first version
+redacted only values, so `{"structuredContent":{"AKIA...":"owner"}}` reached
+the model and the log unchanged, an egress call carrying a token as an
+argument *name* was forwarded, and learn mode stored that name. Every
+walker now visits names as well; a redacted name gets the same marker, and
+a suffix (`[REDACTED:aws-access-key]#2`) when two names of one object would
+otherwise collide, because a JSON object with a duplicate name is exactly
+the parser differential Rover refuses everywhere else.
+
+### 2c. Redaction makes text longer
+
+`[REDACTED:generic-credential]` is 29 bytes; the value it replaces can be
+8. A 7.8 MB result of `pwd=a1234567 ` became 20 MB once redacted: larger
+than the 16 MiB message cap, larger than an audit line may be, so the audit
+write failed and roverd, failing closed, blocked everything until restart.
+Now a redacted result that would exceed the cap is replaced as a whole by
+`[Rover removed content: too many secrets to redact (N matches)]`, and an
+audit entry too large for its line keeps the start of its body as a string
+with `body_truncated: true` and the whole body's SHA-256. Size can no
+longer fail an audit write; a real I/O error still does.
 
 ### 3. Why logs leak
 
@@ -208,7 +248,14 @@ the same call is forwarded (not egress), and the audit body shows
 `AKIAEXAMPLE` and `000000001`. Neither half is a key on its own, but roverd
 also scans the joint of adjacent blocks (the last and first 4 KB joined),
 so both halves come back redacted (`start [REDACTED:aws-access-key]`,
-`[REDACTED:aws-access-key] end`). What still gets through, honestly:
+`[REDACTED:aws-access-key] end`). The joint is also scanned with a NUL
+between the two sides, and a match from the plain join that crosses the
+joint is kept only when neither side of the joint is white space: then the
+token really continues across it (`export GITHUB_TOKEN=ghp_a1b2` + `c3d4...`
+is caught), while `password=hunter2hunter2` ending in a line break does not
+swallow a next block starting `[default]`. (A first fix used a cleverer
+rule and lost split tokens after a credential name; the re-verification
+caught it.) What still gets through, honestly:
 the two halves in two *different* results (two calls), a space or a
 lowercase change (`AKIA EXAMPLE000000001`), base64 of a short key (28
 characters, under the 32-byte entropy floor), and a random secret inside a
