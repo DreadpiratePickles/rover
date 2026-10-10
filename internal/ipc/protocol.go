@@ -38,7 +38,26 @@ const (
 	TypeRelease = "release"
 	TypeBye     = "bye"
 	TypeError   = "error" // roverd -> wrapper, fatal for the connection
+	// TypeAdmin is a one-shot request from the rover CLI (instead of a
+	// hello): roverd runs Op and answers admin_result (or error), then
+	// closes. The peer uid check applies as for every connection.
+	TypeAdmin       = "admin"
+	TypeAdminResult = "admin_result"
 )
+
+// Admin operations (M4). TODO(M9): pin_approve and pin_reset will need OS
+// authentication; until then the CLI is the only client.
+const (
+	OpPinList    = "pin_list"
+	OpPinApprove = "pin_approve"
+	OpPinReset   = "pin_reset"
+)
+
+// MaxToolName bounds the tool named in an admin frame.
+const MaxToolName = 1024
+
+// MinDigestPrefix is the shortest digest prefix pin_approve accepts.
+const MinDigestPrefix = 12
 
 // Actions a verdict or release can carry.
 const (
@@ -78,8 +97,16 @@ type Frame struct {
 	// a tools/call result with isError true that explains the rule).
 	ResponseRaw []byte `json:"response_raw,omitempty"`
 
-	// error
+	// error, and an admin_result's note
 	Message string `json:"message,omitempty"`
+
+	// admin (ServerName names the server), admin_result
+	Op   string `json:"op,omitempty"`
+	Tool string `json:"tool,omitempty"`
+	// Digest is the digest prefix a pin_approve approves: the one the
+	// human saw in `rover pin list` (at least MinDigestPrefix hex digits).
+	Digest string          `json:"digest,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
 }
 
 // ErrBadFrame wraps every parse or validation failure.
@@ -147,11 +174,53 @@ func (f Frame) Validate() error {
 		if len(f.ResponseRaw) > 0 && f.Action != ActionBlock {
 			return fmt.Errorf("%w: response_raw is only valid on block", ErrBadFrame)
 		}
-	case TypeBye, TypeError:
+	case TypeAdmin:
+		return validateAdmin(f)
+	case TypeBye, TypeError, TypeAdminResult:
 	default:
 		return fmt.Errorf("%w: unknown type %q", ErrBadFrame, f.Type)
 	}
 	return nil
+}
+
+func validateAdmin(f Frame) error {
+	needServer, needTool := true, false
+	switch f.Op {
+	case OpPinList:
+		needServer = f.ServerName != "" // optional: all servers
+	case OpPinApprove:
+		needTool = true
+	case OpPinReset:
+	default:
+		return fmt.Errorf("%w: unknown admin op %q", ErrBadFrame, f.Op)
+	}
+	if needServer {
+		if err := ValidServerName(f.ServerName); err != nil {
+			return fmt.Errorf("%w: admin: %w", ErrBadFrame, err)
+		}
+	}
+	if needTool && (f.Tool == "" || len(f.Tool) > MaxToolName) {
+		return fmt.Errorf("%w: %s needs a tool name of 1..%d bytes", ErrBadFrame, f.Op, MaxToolName)
+	}
+	if !needTool && f.Tool != "" {
+		return fmt.Errorf("%w: %s takes no tool", ErrBadFrame, f.Op)
+	}
+	if needTool != validDigestPrefix(f.Digest) {
+		return fmt.Errorf("%w: %s needs a digest prefix of %d..64 lowercase hex digits only with a tool", ErrBadFrame, f.Op, MinDigestPrefix)
+	}
+	return nil
+}
+
+func validDigestPrefix(s string) bool {
+	if len(s) < MinDigestPrefix || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if (s[i] < '0' || s[i] > '9') && (s[i] < 'a' || s[i] > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Encode returns f as one line.

@@ -26,7 +26,8 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | M1 | `roverd` daemon, thin wrappers, peer-checked Unix socket, hash-chained audit log, auto-start | done |
 | M2 | Cedar policy engine: default deny, hidden tools, argument normalisers, `rover policy init/validate/test/apply` | done |
 | M3 | YAML → Cedar compiler (`rover policy compile`, `policy init --yaml`), schema generated from config | done |
-| M4 | Tool pinning (rug-pull defence) | next |
+| M4 | Tool pinning (rug-pull defence): TOFU digests, changed/new tools filtered and blocked, `rover pin list/approve/reset` | done |
+| M5 | Detection tier 1 and the evaluation corpus | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -55,6 +56,14 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover log --verify     # check the hash chain, report the first break
 ./bin/rover daemon           # run roverd by hand to watch its log
 ./bin/rover policy test audit.jsonl  # replay a log (recorded with --log-bodies) through the current policy
+
+# tool pinning (M4): the first tools/list of a server (and its cursor pages,
+# for 60 s) is trusted and pinned; every tool member except _meta is hashed.
+# Later a changed or new tool is hidden and its calls blocked (pin_mismatch)
+./bin/rover pin list                 # pins, MISMATCH/new markers and a diff of each change
+./bin/rover pin approve filesystem read_file 3f2a9c01b7de   # the digest prefix pin list printed;
+                                     # refused if the tool changed again since (TODO(M9): OS auth)
+./bin/rover pin reset filesystem     # forget a server's pins; next list is trusted on first use
 ```
 
 Rover denies by default: with no `policy.cedar` or `policy.yaml`, roverd blocks every
@@ -115,7 +124,7 @@ on for a lab).
 ## Layout
 
 ```
-cmd/rover/             CLI: wrap, daemon, log, policy
+cmd/rover/             CLI: wrap, daemon, log, policy, pin
 internal/policy/       the Cedar decision point: Decide, tools/list hiding (fuzzed)
 internal/policy/convert/    tool arguments -> Cedar values, with limits (fuzzed)
 internal/policy/normalize/  path/url/... normalisers run before the policy (fuzzed)
@@ -126,11 +135,13 @@ internal/proxy/        the wrapper's pump: read, ask roverd, apply the verdict, 
 internal/daemon/       roverd: accept loop, peer check, sessions, the decision path
 internal/ipc/          wrapper <-> roverd protocol (fuzzed) and peer credentials
 internal/audit/        hash-chained JSONL audit log and its verifier
-internal/state/        bbolt database (pins, approvals, ... from later milestones)
+internal/state/        bbolt database (pins from M4; approvals, ... from later milestones)
+internal/pin/          tool pinning: canonical JSON + SHA-256 per tool (fuzzed), TOFU, mismatch tracking, diffs
 internal/paths/        where files go, and the permission checks
 internal/framing/      newline-delimited reading with a hard size limit
 internal/jsonrpc/      classify JSON-RPC messages (fuzzed)
 examples/echo-server/  A0: MCP server with no SDK (read_file is unsafe on purpose)
+testdata/servers/rugpull/  M4 lab: evil server that changes a tool after its first list (build tag `lab`)
 docs/lessons/          one lesson per module
 ```
 

@@ -16,6 +16,7 @@ import (
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
+	"github.com/DreadpiratePickles/rover/internal/pin"
 	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
@@ -48,6 +49,12 @@ func runDaemon(args []string) int {
 			return 1
 		}
 	}
+	// A history without a database means the pins were lost (review M4):
+	// note both before either file is opened (and so created).
+	logPath := filepath.Join(dirs.State, "audit.jsonl")
+	_, serr := os.Stat(filepath.Join(dirs.State, "state.db"))
+	_, aerr := os.Stat(anchorPath(logPath))
+	stateCreated, hadHistory := errors.Is(serr, os.ErrNotExist), aerr == nil
 	db, err := state.Open(filepath.Join(dirs.State, "state.db"))
 	if errors.Is(err, state.ErrLocked) {
 		logf("another roverd holds the state database; exiting")
@@ -59,7 +66,6 @@ func runDaemon(args []string) int {
 	}
 	defer func() { _ = db.Close() }()
 
-	logPath := filepath.Join(dirs.State, "audit.jsonl")
 	log, err := audit.Open(logPath)
 	if err != nil {
 		logf("audit log: %v", err)
@@ -99,6 +105,11 @@ func runDaemon(args []string) int {
 		Logf:       logf,
 		Policy:     pol,
 		Config:     cfg,
+		State:      db,
+		Notifier:   pin.OSNotifier{Logf: logf},
+
+		StateDBCreated:  stateCreated,
+		AuditHadHistory: hadHistory,
 	})
 	go reloadOnHUP(hup, dirs, srv, note, logf)
 	if err := srv.Listen(); err != nil {

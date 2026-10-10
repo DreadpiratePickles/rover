@@ -74,6 +74,8 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"type":"hello","version":1,"wrapper_pid":2,"client_pid":1,"server_name":"fs","transport":"stdio"}`))
 	f.Add([]byte(`{"type":"decide","session_id":"s","seq":1,"dir":"c2s","raw":"e30="}`))
 	f.Add([]byte(`{"type":"verdict","seq":1,"action":"forward"}`))
+	f.Add([]byte(`{"type":"admin","op":"pin_approve","server_name":"echo","tool":"echo","digest":"0123456789ab"}`))
+	f.Add([]byte(`{"type":"admin_result","result":[{"server":"echo"}]}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		fr, err := Parse(b)
 		if err != nil {
@@ -113,6 +115,37 @@ func TestServerNames(t *testing.T) {
 		got := SanitizeServerName(in)
 		if got != want || ValidServerName(got) != nil {
 			t.Errorf("SanitizeServerName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAdminFrames(t *testing.T) {
+	for _, ok := range []string{
+		`{"type":"admin","op":"pin_list"}`,
+		`{"type":"admin","op":"pin_list","server_name":"echo"}`,
+		`{"type":"admin","op":"pin_approve","server_name":"echo","tool":"read file","digest":"0123456789ab"}`,
+		`{"type":"admin","op":"pin_reset","server_name":"echo"}`,
+		`{"type":"admin_result","result":{"removed":1}}`,
+	} {
+		if _, err := Parse([]byte(ok)); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		`{"type":"admin","op":"pin_delete"}`,
+		`{"type":"admin","op":"pin_approve","server_name":"echo"}`,
+		`{"type":"admin","op":"pin_approve","server_name":"echo","tool":"echo"}`,                         // no digest
+		`{"type":"admin","op":"pin_approve","server_name":"echo","tool":"echo","digest":"0123456789a"}`,  // too short
+		`{"type":"admin","op":"pin_approve","server_name":"echo","tool":"echo","digest":"0123456789AB"}`, // not lowercase
+		`{"type":"admin","op":"pin_reset","server_name":"echo","digest":"0123456789ab"}`,
+		`{"type":"admin","op":"pin_approve","tool":"echo"}`,
+		`{"type":"admin","op":"pin_reset"}`,
+		`{"type":"admin","op":"pin_reset","server_name":"a/b"}`,
+		`{"type":"admin","op":"pin_reset","server_name":"echo","tool":"x"}`,
+		`{"type":"admin","op":"pin_approve","server_name":"echo","tool":"` + strings.Repeat("x", MaxToolName+1) + `"}`,
+	} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("%.80s: accepted", bad)
 		}
 	}
 }

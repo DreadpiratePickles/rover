@@ -44,6 +44,12 @@ func (s *syncBuf) Write(p []byte) (int, error) {
 	return s.b.Write(p)
 }
 
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 func (s *syncBuf) entries(t *testing.T) []audit.Entry {
 	t.Helper()
 	s.mu.Lock()
@@ -171,8 +177,13 @@ func TestHiddenToolIsBlockedAndFilteredFromList(t *testing.T) {
 	if es[0].Action != "block" || es[0].RuleIDs[0] != "hide-read-file" || es[0].Reason == "" {
 		t.Fatalf("audit of the block: %+v", es[0])
 	}
-	if es[3].Action != "replace" || es[3].ReplyTo != "tools/list" {
-		t.Fatalf("audit of the list: %+v", es[3])
+	// The first list also pins both tools (M4): two "pin" entries come
+	// before the entry of the list itself.
+	if len(es) != 6 || es[3].Kind != AuditKindPin || es[4].Kind != AuditKindPin {
+		t.Fatalf("pin entries: %+v", es)
+	}
+	if es[5].Action != "replace" || es[5].ReplyTo != "tools/list" {
+		t.Fatalf("audit of the list: %+v", es[5])
 	}
 }
 

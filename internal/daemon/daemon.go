@@ -4,8 +4,9 @@
 // the agent cannot get a different answer by spawning a different wrapper.
 //
 // M1 decided "forward" for everything. From M2 every message goes through
-// the Cedar policy (policy.go); pinning and detection join it later, and the
-// plumbing around decide stays the same.
+// the Cedar policy (policy.go); from M4 tool pins are checked first
+// (pins.go); detection joins later, and the plumbing around decide stays
+// the same.
 package daemon
 
 import (
@@ -27,6 +28,8 @@ import (
 	"github.com/DreadpiratePickles/rover/internal/framing"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
+	"github.com/DreadpiratePickles/rover/internal/pin"
+	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
 // Options configures a Server. Audit and SocketPath are required.
@@ -50,6 +53,15 @@ type Options struct {
 	// Policy means no policy is loaded: every policed message is blocked.
 	Policy Policy
 	Config config.Config
+
+	// State is roverd's database; pins live in it (M4). Nil keeps pins in
+	// memory only (tests): pinning is on either way, in every mode (D6).
+	State *state.DB
+	// Notifier tells the human about a blocked tool; nil means none.
+	Notifier pin.Notifier
+	// StateDBCreated (state.db did not exist) and AuditHadHistory (the audit
+	// anchor existed) together mean every pin was lost: see reportStateLoss.
+	StateDBCreated, AuditHadHistory bool
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -65,6 +77,8 @@ type Server struct {
 	// block until a human restarts roverd and looks at the log.
 	unhealthy bool
 
+	pins           *pin.Checker
+	notes          *pin.Coalescer
 	pol            atomic.Pointer[loaded]
 	noPolicyWarned atomic.Int64 // unix nanos of the last "no policy" warning
 }
@@ -83,7 +97,15 @@ func New(o Options) *Server {
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
 	}
-	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{}}
+	if o.Notifier == nil {
+		o.Notifier = pin.NopNotifier{}
+	}
+	var store pin.Store = pin.NewMemStore()
+	if o.State != nil {
+		store = pin.NewBoltStore(o.State)
+	}
+	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
+		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescer(o.Notifier, o.Now)}
 	s.pol.Store(&loaded{pol: o.Policy, cfg: o.Config}) // startup: any mode (D6)
 	return s
 }
@@ -110,6 +132,10 @@ func (s *Server) Listen() error {
 		return err
 	}
 	s.ln = ln
+	if err := s.reportStateLoss(); err != nil {
+		_ = ln.Close()
+		return err
+	}
 	return nil
 }
 
@@ -223,6 +249,10 @@ func (s *Server) handle(uc *net.UnixConn) {
 	if errors.Is(err, io.EOF) {
 		return // connected and left without a word (`rover policy apply` checks liveness this way)
 	}
+	if err == nil && hello.Type == ipc.TypeAdmin {
+		_ = cn.send(s.Admin(hello))
+		return
+	}
 	if err != nil || hello.Type != ipc.TypeHello {
 		if err == nil {
 			err = fmt.Errorf("%w: first frame must be hello, got %s", ipc.ErrBadFrame, hello.Type)
@@ -297,12 +327,13 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	server := hello.ServerName
 	m := jsonrpc.Parse(f.Raw)
 	now := s.o.Now()
-	e := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
-	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, now)
+	e, cursor := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
+	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, cursor, now)
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
 	}
+	entries := append(pinEntries(e, j.pinEvents), e)
 	if j.action == ipc.ActionBlock && m.Kind == jsonrpc.KindRequest {
 		sess.forget(server, f.Dir, m.ID)
 	}
@@ -313,13 +344,10 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	if unhealthy {
 		return ipc.Frame{Type: ipc.TypeVerdict, Seq: f.Seq, Action: ipc.ActionBlock, Reason: "roverd audit log failed earlier; restart roverd"}
 	}
-	if err := s.o.Audit.Write(e); err != nil {
-		s.mu.Lock()
-		s.unhealthy = true
-		s.mu.Unlock()
-		s.o.Logf("AUDIT LOG FAILED, blocking everything from now on: %v", err)
+	if err := s.writeAudit(entries...); err != nil {
 		return ipc.Frame{Type: ipc.TypeVerdict, Seq: f.Seq, Action: ipc.ActionBlock, Reason: "audit log unavailable: " + err.Error()}
 	}
+	s.notifyPins(j.pinEvents)
 	if j.call {
 		sess.noteForwardedCall(j.callLabels)
 	}

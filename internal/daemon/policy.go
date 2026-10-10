@@ -9,6 +9,7 @@ import (
 	"github.com/DreadpiratePickles/rover/internal/config"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
+	"github.com/DreadpiratePickles/rover/internal/pin"
 	"github.com/DreadpiratePickles/rover/internal/policy"
 )
 
@@ -102,13 +103,15 @@ type judgment struct {
 	replacement []byte   // replace: the line forwarded instead
 	callLabels  []string // a forwarded tools/call: its labels, for the session flags
 	call        bool
+	pinEvents   []pin.Event // audited before the message itself, mismatches notified
 }
 
 var forwardJ = judgment{action: ipc.ActionForward, audit: ipc.ActionForward}
 
 // judge runs the policy on one message. It never fails open: every error
 // path ends in block (or, for a server response, a replacement error).
-func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.Message, replyTo string, now time.Time) judgment {
+// cursor is the params.cursor of the tools/list request a result answers.
+func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.Message, replyTo, cursor string, now time.Time) judgment {
 	st := s.pol.Load()
 	// A line that is not unambiguous JSON-RPC is blocked in both directions,
 	// in every mode and with or without a policy: whatever Rover would judge
@@ -122,8 +125,26 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	// A result answering tools/list, or answering nothing we know of (a
 	// server could otherwise send a second, unfiltered reply), is filtered.
 	if dir == policy.DirS2C && m.Kind == jsonrpc.KindResult && (replyTo == "tools/list" || replyTo == "") {
-		return filterList(st, server, m)
+		return s.filterList(st, server, m, replyTo == "", cursor)
 	}
+	// Pins come before policy and apply in every mode (D6): a tool that
+	// changed under the agent is refused even while learning.
+	if dir == policy.DirC2S && m.Kind == jsonrpc.KindRequest && m.Method == "tools/call" {
+		if j, refused := s.pinCall(server, m); refused {
+			return j
+		}
+	}
+	var pinEvents []pin.Event
+	if dir == policy.DirS2C && m.Kind == jsonrpc.KindNotification && m.Method == MethodToolsListChanged {
+		pinEvents = s.pinRecheck(server)
+	}
+	j := s.judgePolicy(st, sess, server, transport, dir, m, now)
+	j.pinEvents = pinEvents
+	return j
+}
+
+// judgePolicy is the Cedar half of judge.
+func (s *Server) judgePolicy(st *loaded, sess *Session, server, transport, dir string, m jsonrpc.Message, now time.Time) judgment {
 	if st.pol == nil {
 		if !policy.Policed(dir, m) {
 			return forwardJ
@@ -174,28 +195,53 @@ func blockJ(m jsonrpc.Message, reason string, ids, findings []string) judgment {
 	}
 }
 
-// filterList removes hidden tools from a tools/list result. The rest of the
-// line (id, jsonrpc, unknown members) stays byte-identical.
-func filterList(st *loaded, server string, m jsonrpc.Message) judgment {
-	if st.pol == nil {
-		return forwardJ // nothing is hidden without a policy
+// filterList removes from a tools/list result first every tool whose pin
+// does not match (pin.Checker.Check, in every mode), then every tool the
+// policy hides. The rest of the line (id, jsonrpc, unknown members) stays
+// byte-identical. uncorrelated is a result answering no request we know of:
+// it is checked too if it carries tools (a server could otherwise send a
+// second, unfiltered list).
+func (s *Server) filterList(st *loaded, server string, m jsonrpc.Message, uncorrelated bool, cursor string) judgment {
+	line, result := m.Raw, m.Result
+	var reasons []string
+	filtered, pinChanged, events, err := s.pins.CheckPage(server, m.Result, cursor)
+	switch {
+	case errors.Is(err, pin.ErrNotToolsList) && uncorrelated:
+		// not a tool list: nothing to pin
+	case err != nil:
+		return rejectList(m, err)
+	case pinChanged:
+		if line, err = spliceResult(line, filtered); err != nil {
+			return rejectList(m, err)
+		}
+		result = filtered
+		reasons = append(reasons, ReasonPinMismatch+": "+strings.Join(mismatched(events), ", "))
 	}
-	rep, hidden, changed, err := st.pol.FilterToolsList(server, m.Result)
-	if err == nil && !changed {
-		return forwardJ
-	}
-	var line []byte
-	if err == nil {
-		line, err = spliceResult(m.Raw, rep)
-	}
-	if err != nil {
-		return judgment{
-			action: ipc.ActionReplace, audit: ipc.ActionBlock,
-			reason:      ReasonToolsListRejected + ": " + err.Error(),
-			replacement: policy.ErrorResponse(m.ID, ReasonToolsListRejected),
+	if st.pol != nil { // without a policy nothing is hidden
+		rep, hidden, changed, err := st.pol.FilterToolsList(server, result)
+		if err == nil && changed {
+			line, err = spliceResult(line, rep)
+			reasons = append(reasons, "hidden: "+strings.Join(hidden, ", "))
+		}
+		if err != nil {
+			return rejectList(m, err)
 		}
 	}
-	return judgment{action: ipc.ActionReplace, audit: ipc.ActionReplace, reason: "hidden: " + strings.Join(hidden, ", "), replacement: line}
+	if len(reasons) == 0 {
+		return judgment{action: ipc.ActionForward, audit: ipc.ActionForward, pinEvents: events}
+	}
+	return judgment{action: ipc.ActionReplace, audit: ipc.ActionReplace, reason: strings.Join(reasons, "; "), replacement: line, pinEvents: events}
+}
+
+// rejectList replaces a tools/list result that could not be checked or
+// filtered with an error: forwarding it might show the agent a hidden or
+// changed tool.
+func rejectList(m jsonrpc.Message, err error) judgment {
+	return judgment{
+		action: ipc.ActionReplace, audit: ipc.ActionBlock,
+		reason:      ReasonToolsListRejected + ": " + err.Error(),
+		replacement: policy.ErrorResponse(m.ID, ReasonToolsListRejected),
+	}
 }
 
 // spliceResult returns raw with the value of its top-level "result" member

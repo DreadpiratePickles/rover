@@ -32,6 +32,7 @@ type Session struct {
 type pendingReq struct {
 	method string
 	tool   string
+	cursor string // tools/list: params.cursor, for the pins' first-listing window
 	start  time.Time
 }
 
@@ -66,7 +67,8 @@ func (s *Session) Client() (name, version string) {
 // observe builds the audit entry for one message and updates the session's
 // request/response correlation. It is the logic that lived in the A1 proxy,
 // now owned by the daemon so the wrapper stays thin.
-func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool, now time.Time) audit.Entry {
+// It also returns the cursor of the tools/list request a result answers.
+func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool, now time.Time) (audit.Entry, string) {
 	e := audit.Entry{
 		Time:    now.UTC(),
 		Session: s.ID,
@@ -81,11 +83,15 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 	if logBodies && json.Valid(m.Raw) {
 		e.Body = m.Raw
 	}
+	cursor := ""
+	if m.Kind == jsonrpc.KindRequest && m.Method == "tools/list" {
+		cursor = listCursor(m.Params)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch m.Kind {
 	case jsonrpc.KindRequest:
-		s.pending[server+":"+dir+":"+string(m.ID)] = pendingReq{m.Method, e.Tool, now}
+		s.pending[server+":"+dir+":"+string(m.ID)] = pendingReq{m.Method, e.Tool, cursor, now}
 		if dir == "c2s" && m.Method == "initialize" {
 			// Read strictly (exact keys); Parse already refused an
 			// ambiguous clientInfo as invalid.
@@ -98,7 +104,7 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 		if p, ok := s.pending[key]; ok {
 			delete(s.pending, key)
 			ms := float64(now.Sub(p.start).Microseconds()) / 1000
-			e.LatencyMS, e.ReplyTo, e.Tool = &ms, p.method, p.tool
+			e.LatencyMS, e.ReplyTo, e.Tool, cursor = &ms, p.method, p.tool, p.cursor
 		}
 		if m.Kind == jsonrpc.KindResult {
 			var r struct {
@@ -108,7 +114,26 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 			e.ToolError = r.IsError
 		}
 	}
-	return e
+	return e, cursor
+}
+
+// listCursor is the exact params.cursor string of a tools/list request, read
+// strictly; "" when absent or not a string (then the page is not a
+// follow-up, which only makes pinning stricter).
+func listCursor(params []byte) string {
+	if len(params) == 0 {
+		return ""
+	}
+	fields, err := jsonrpc.Object(params)
+	if err != nil {
+		return ""
+	}
+	v, ok := fields.Get("cursor")
+	var c string
+	if !ok || json.Unmarshal(v, &c) != nil {
+		return ""
+	}
+	return c
 }
 
 func other(dir string) string {

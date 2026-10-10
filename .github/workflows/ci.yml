@@ -52,7 +52,9 @@ jobs:
           check-latest: true
           cache: false
       - name: go vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          go vet -tags lab ./testdata/servers/...
       - name: go test -race
         run: go test -race ./...
 
@@ -87,6 +89,8 @@ jobs:
         run: go test ./internal/policy -run='^$' -fuzz=FuzzFilterToolsList -fuzztime=30s
       - name: fuzz yaml2cedar.Compile (30s)
         run: go test ./internal/policy/yaml2cedar -run='^$' -fuzz=FuzzCompile -fuzztime=30s
+      - name: fuzz pin.Canonical (30s)
+        run: go test ./internal/pin -run='^$' -fuzz=FuzzCanonical -fuzztime=30s
       # On a crash, keep the failing input so it can be reproduced locally
       # (copy it into internal/jsonrpc/testdata/fuzz/FuzzParse/ and run go test).
       - name: upload crashing input
@@ -103,6 +107,7 @@ jobs:
             internal/policy/convert/testdata/fuzz/
             internal/policy/normalize/testdata/fuzz/
             internal/policy/yaml2cedar/testdata/fuzz/
+            internal/pin/testdata/fuzz/
           if-no-files-found: ignore
 
   govulncheck:

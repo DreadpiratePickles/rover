@@ -4,6 +4,7 @@
 //	rover daemon [--log-bodies]
 //	rover log [--log FILE] [--verify]
 //	rover policy init|validate|test|apply
+//	rover pin list [server] | approve <server> <tool> | reset <server>
 //
 // "wrap" starts the real MCP server as a child process and sits between it and
 // the agent, asking roverd (started on demand) about every message. To use
@@ -34,6 +35,8 @@ func main() {
 		os.Exit(showLog(os.Args[2:]))
 	case "policy":
 		os.Exit(runPolicy(os.Args[2:]))
+	case "pin":
+		os.Exit(runPin(os.Args[2:]))
 	default:
 		usage()
 	}
@@ -41,7 +44,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:\n  rover wrap [--name NAME] -- <server command> [args...]\n  rover daemon [--log-bodies]\n  rover log [--log FILE] [--verify]\n"+
-		"  rover policy init [--force]\n  rover policy validate [--policy FILE]\n  rover policy test <audit.jsonl>\n  rover policy apply")
+		"  rover policy init [--force]\n  rover policy validate [--policy FILE]\n  rover policy test <audit.jsonl>\n  rover policy apply\n"+
+		"  rover pin list [server]\n  rover pin approve <server> <tool>\n  rover pin reset <server>")
 	os.Exit(2)
 }
 
