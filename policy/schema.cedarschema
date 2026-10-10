@@ -1,0 +1,61 @@
+// Rover gate Cedar schema (plan §5.1).
+//
+// Every policy is validated against this file in strict mode when it is
+// loaded. A policy that names an unknown entity type, action, attribute or
+// context key is rejected, so a typo cannot silently turn into "never
+// matches" (which, for a forbid, would mean "never blocks").
+//
+// Adjustments to the §5.1 text, made so that cedar-go v1.8.0 x/exp/schema
+// parses and resolves it, and so strict validation can type-check policies:
+//  1. CallContext and BaseContext were comments in §5.1. They are real
+//     `type` declarations here. Cedar types cannot extend each other, so
+//     CallContext repeats the four BaseContext fields and adds args and norm.
+//  2. "args: Record" and "norm: Record" are not valid Cedar: Cedar has no
+//     open record type. Args and Norm below list the attributes a policy may
+//     use. To use another argument in a policy, add it here.
+//     They are required (no "?") so a policy can write
+//     `context.norm.path.under_projects` without a `has` guard. At run time
+//     an argument the call did not send is missing; reading it is an
+//     evaluation error. Cedar then skips that policy: a permit does not
+//     apply (default deny) and Rover treats an erroring forbid as a deny
+//     (fail closed). Write `context.norm has path && ...` in a forbid if the
+//     argument is genuinely optional for the tools it covers.
+//  3. under_projects / all_under_projects assume a root named "projects".
+//     Each root in config.yaml produces under_<name>; declare one attribute
+//     per root you use in policies.
+//  4. Common types (Session, Device, ...) name the nested records.
+
+entity Client   { name: String, version: String };               // e.g. "claude-code"
+entity Server   { name: String, transport: String, pinned: Bool };
+entity Tool in [Server] { name: String, labels: Set<String> };    // labels: reads_private | reads_untrusted | egress | destructive
+entity Resource in [Server] { uri: String };
+
+type Session   = { touched_private: Bool, saw_untrusted: Bool, calls: Long };
+type Device    = { managed: Bool, healthy: Bool, quarantined: Bool, tags: Set<String> };
+type Time      = { hour: Long, weekday: Long };                    // weekday 0 = Sunday
+type Detection = { max_score: Long, findings: Set<String> };
+
+// context.args: the converted tool arguments (§5.2). Raw text: prefer norm.
+type Args = { path: String, url: String, owner: String, repo: String };
+
+// context.norm: the normalised arguments (§5.3).
+type NormPath  = { path: String, under_projects: Bool };
+type NormPaths = { paths: Set<String>, count: Long, all_under_projects: Bool };
+type NormURL   = { scheme: String, host: String, port: String, has_query: Bool };
+type Norm = {
+  path: NormPath, source: NormPath, destination: NormPath, repo_path: NormPath,
+  paths: NormPaths, files: NormPaths,
+  url: NormURL
+};
+
+type BaseContext = { session: Session, device: Device, time: Time, detection: Detection };
+type CallContext = {
+  session: Session, device: Device, time: Time, detection: Detection,
+  args: Args, norm: Norm
+};
+
+action "call_tool"          appliesTo { principal: Client, resource: Tool,     context: CallContext };
+action "list_tools"         appliesTo { principal: Client, resource: Server,   context: BaseContext };
+action "read_resource"      appliesTo { principal: Client, resource: Resource, context: BaseContext };
+action "server_sampling"    appliesTo { principal: Client, resource: Server,   context: BaseContext }; // server->client sampling/createMessage
+action "server_elicitation" appliesTo { principal: Client, resource: Server,   context: BaseContext }; // server->client elicitation/create

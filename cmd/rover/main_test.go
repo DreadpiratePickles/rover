@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -53,13 +54,32 @@ func env(dir string, extra ...string) []string {
 	return append(append(os.Environ(), "ROVER_DIR="+dir), extra...)
 }
 
-// startDaemon runs `rover daemon` as a subprocess and waits for its socket.
-func startDaemon(t *testing.T, dir string) *exec.Cmd {
+// lockedBuf collects a subprocess's stderr; tests read it while it runs.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// startDaemon runs `rover daemon` as a subprocess, waits for its socket and
+// returns its stderr.
+func startDaemon(t *testing.T, dir string, args ...string) *lockedBuf {
 	t.Helper()
-	cmd := exec.Command(bins.rover, "daemon") //nolint:gosec // G204: test runs the binary it just built
+	cmd := exec.Command(bins.rover, append([]string{"daemon"}, args...)...) //nolint:gosec // G204: test runs the binary it just built
 	cmd.Env = env(dir)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &lockedBuf{}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +93,7 @@ func startDaemon(t *testing.T, dir string) *exec.Cmd {
 	sock := filepath.Join(dir, "run", "roverd.sock")
 	for i := 0; i < 100; i++ {
 		if _, err := os.Stat(sock); err == nil {
-			return cmd
+			return stderr
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -84,6 +104,8 @@ func startDaemon(t *testing.T, dir string) *exec.Cmd {
 // Acceptance (M1): the A1 end-to-end test passes through roverd.
 func TestEndToEndThroughDaemon(t *testing.T) {
 	dir := roverDir(t)
+	// From M2 an unpoliced tools/call is blocked (no_policy); permit echo.
+	usePolicy(t, dir, `@id("echo") permit (principal, action == Action::"call_tool", resource == Tool::"echo/echo");`, "enforce")
 	startDaemon(t, dir)
 
 	cmd := exec.Command(bins.rover, "wrap", "--name", "echo", "--", bins.echo) //nolint:gosec // G204: test runs the binaries it just built
@@ -252,4 +274,30 @@ func mode(t *testing.T, path string) os.FileMode {
 		t.Fatal(err)
 	}
 	return fi.Mode().Perm()
+}
+
+// Review L4: a server name with "/" would make "<server>/<tool>" ambiguous,
+// so `rover wrap --name` refuses it before contacting roverd or starting
+// the server.
+func TestWrapRejectsBadServerName(t *testing.T) {
+	dir := roverDir(t)
+	marker := filepath.Join(dir, "server-ran")
+	script := filepath.Join(dir, "server.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \""+marker+"\"\ncat\n"), 0o700); err != nil { //nolint:gosec // G306: test script must be executable
+		t.Fatal(err)
+	}
+	for _, name := range []string{"evil/echo", "has space"} {
+		cmd := exec.Command(bins.rover, "wrap", "--name", name, "--", script) //nolint:gosec // G204: test runs its own script
+		cmd.Env = env(dir)
+		out, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "invalid --name") || !strings.Contains(string(out), "A-Za-z0-9_.-") {
+			t.Fatalf("--name %q: want an early error, got %v:\n%s", name, err, out)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("the MCP server was started despite a bad --name")
+		}
+		if _, err := os.Stat(filepath.Join(dir, "run", "roverd.pid")); err == nil {
+			t.Fatal("roverd was auto-started despite a bad --name")
+		}
+	}
 }

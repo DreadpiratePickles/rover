@@ -23,14 +23,18 @@ const autostartWait = 3 * time.Second
 
 func wrap(args []string) int {
 	fs := flag.NewFlagSet("wrap", flag.ExitOnError)
-	name := fs.String("name", "", "server name for the audit log (default: the command's base name)")
+	name := fs.String("name", "", "server name for policy and the audit log, [A-Za-z0-9_.-] (default: the command's base name)")
 	_ = fs.Parse(args)
 	server := fs.Args()
 	if len(server) == 0 {
 		usage()
 	}
 	if *name == "" {
-		*name = filepath.Base(server[0])
+		*name = ipc.SanitizeServerName(filepath.Base(server[0]))
+	} else if err := ipc.ValidServerName(*name); err != nil {
+		// Before roverd or the server: a bad name must not start anything.
+		errf("invalid --name: %v", err)
+		return 2
 	}
 
 	dirs, err := paths.Resolve()

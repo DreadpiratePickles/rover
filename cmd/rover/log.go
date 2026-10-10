@@ -103,11 +103,17 @@ func showLog(args []string) int {
 		if e.ToolError {
 			extra += " TOOL-ERROR"
 		}
+		if len(e.RuleIDs) > 0 {
+			extra += " rules=" + strings.Join(e.RuleIDs, ",")
+		}
+		if e.Reason != "" {
+			extra += " (" + e.Reason + ")"
+		}
 		action := e.Action
 		if action == "" {
 			action = "-"
 		}
-		fmt.Printf("%s %s %-10s %s %-12s %-7s id=%s %s%s\n",
+		fmt.Printf("%s %s %-10s %s %-12s %-10s id=%s %s%s\n",
 			e.Time.Local().Format("15:04:05.000"), e.Session, e.Server, arrow, e.Kind, action, string(e.ID), what, extra)
 	}
 	return 0

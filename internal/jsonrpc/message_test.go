@@ -17,8 +17,8 @@ func TestParse(t *testing.T) {
 		{"error", `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"nope"}}`, KindError, "", ""},
 		{"error with null id", `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse"}}`, KindError, "", ""},
 		// Ambiguous / hostile shapes must never classify as something harmless.
-		{"wrong version", `{"jsonrpc":"1.0","id":1,"method":"x"}`, KindInvalid, "", ""},
-		{"method and result", `{"jsonrpc":"2.0","id":1,"method":"x","result":{}}`, KindInvalid, "", ""},
+		{"wrong version", `{"jsonrpc":"1.0","id":1,"method":"x"}`, KindInvalid, "x", ""},
+		{"method and result", `{"jsonrpc":"2.0","id":1,"method":"x","result":{}}`, KindInvalid, "x", ""},
 		{"result and error", `{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"m"}}`, KindInvalid, "", ""},
 		{"not json", `hello`, KindInvalid, "", ""},
 		{"batch array", `[{"jsonrpc":"2.0","id":1,"method":"x"}]`, KindInvalid, "", ""},
@@ -44,8 +44,24 @@ func TestParse(t *testing.T) {
 func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}}`))
 	f.Add([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
-	f.Fuzz(func(_ *testing.T, b []byte) {
+	f.Add([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","Name":"x"}}`))
+	f.Add([]byte(`{"jsonrpc":"2.0","id":1,"result":{},"Result":{}}`))
+	f.Add([]byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse"}}`))
+	f.Fuzz(func(t *testing.T, b []byte) {
 		m := Parse(b)
 		_ = m.ToolName()
+		_ = m.ToolArguments()
+		if m.Kind == KindInvalid {
+			if m.Invalid == "" {
+				t.Fatalf("invalid message without a reason: %q", b)
+			}
+			return
+		}
+		// A valid classification must be stable: the bytes we forward
+		// re-parse to the same shape, method, id and tool.
+		again := Parse(m.Raw)
+		if again.Kind != m.Kind || again.Method != m.Method || string(again.ID) != string(m.ID) || again.ToolName() != m.ToolName() {
+			t.Fatalf("re-parse of %q differs: %+v vs %+v", m.Raw, again, m)
+		}
 	})
 }

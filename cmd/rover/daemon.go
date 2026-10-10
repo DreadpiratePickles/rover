@@ -68,6 +68,19 @@ func runDaemon(args []string) int {
 	defer func() { _ = log.Close() }()
 	log.AnchorPath = anchorPath(logPath)
 
+	// Install the SIGHUP handler before the pid file exists: `rover policy
+	// apply` must never hit the default action, which would kill roverd.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	pol, cfg, err := loadAll(dirs)
+	if err != nil {
+		logf("POLICY NOT LOADED: %v; every tools/call, tools/list, resources/read, sampling and elicitation request is blocked (no_policy)", err)
+		pol = nil
+	} else {
+		logf("policy loaded (mode %s)", cfg.Mode)
+	}
+
 	sock, err := paths.SocketPath(dirs)
 	if err != nil {
 		logf("%v", err)
@@ -81,7 +94,10 @@ func runDaemon(args []string) int {
 		PeerCreds:  ipc.PeerCreds,
 		ParentPID:  ipc.ParentPID,
 		Logf:       logf,
+		Policy:     pol,
+		Config:     cfg,
 	})
+	go reloadOnHUP(hup, dirs, srv, logf)
 	if err := srv.Listen(); err != nil {
 		logf("%v", err)
 		return 1
@@ -101,4 +117,23 @@ func runDaemon(args []string) int {
 	}
 	logf("stopped")
 	return 0
+}
+
+// reloadOnHUP reloads config.yaml and policy.cedar on every SIGHUP. A
+// failed reload keeps whatever was running before (a policy, or none), and
+// so does a reload that would switch enforce to observe (daemon.ErrModeDowngrade).
+// TODO(M9): policy changes must be confirmed with OS authentication.
+func reloadOnHUP(hup <-chan os.Signal, dirs paths.Dirs, srv *daemon.Server, logf func(string, ...any)) {
+	for range hup {
+		pol, cfg, err := loadAll(dirs)
+		if err != nil {
+			logf("policy reload FAILED, keeping the previous policy: %v", err)
+			continue
+		}
+		if err := srv.Reload(pol, cfg); err != nil {
+			logf("policy reload %v; keeping the previous policy and mode", err)
+			continue
+		}
+		logf("policy reloaded (mode %s)", cfg.Mode)
+	}
 }

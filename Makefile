@@ -31,12 +31,17 @@ race:
 # internal/jsonrpc/testdata/fuzz/). Finding no new coverage is not a failure.
 # One fuzz run per parser of attacker-controlled input (plan §0.5): the
 # JSON-RPC classifier, the wrapper<->roverd frame parser, the audit-log
-# verifier and the line reader under all of them.
+# verifier, the line reader under all of them, and (M2) tool-argument
+# conversion, path normalisation, the policy decision and tools/list filtering.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/audit -run='^$$' -fuzz=FuzzVerify -fuzztime=$(FUZZTIME)
 	go test ./internal/framing -run='^$$' -fuzz=FuzzReadLine -fuzztime=$(FUZZTIME)
+	go test ./internal/policy/convert -run='^$$' -fuzz=FuzzArgs -fuzztime=$(FUZZTIME)
+	go test ./internal/policy/normalize -run='^$$' -fuzz=FuzzPath -fuzztime=$(FUZZTIME)
+	go test ./internal/policy -run='^$$' -fuzz=FuzzDecide -fuzztime=$(FUZZTIME)
+	go test ./internal/policy -run='^$$' -fuzz=FuzzFilterToolsList -fuzztime=$(FUZZTIME)
 
 lint:
 	golangci-lint run ./...
