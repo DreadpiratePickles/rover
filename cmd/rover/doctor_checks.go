@@ -115,8 +115,12 @@ func checkPolicy(load func() (mode, note string, err error)) []check {
 // checkClients reports, per config file, whether every server runs through
 // this rover binary.
 func checkClients(env clients.Env, adapters []clients.Adapter, rover string) []check {
-	installed, _ := clients.InstalledFiles(env.BackupDir)
+	installed, errs := clients.InstalledFiles(env.BackupDir)
 	var out []check
+	for _, err := range errs {
+		out = append(out, fail("client", "backup manifest unreadable, the config it records is unknown: %v", err))
+	}
+	found := false
 	for _, a := range adapters {
 		files, err := a.Detect()
 		if errors.Is(err, clients.ErrUnsupported) {
@@ -135,29 +139,35 @@ func checkClients(env clients.Env, adapters []clients.Adapter, rover string) []c
 			if _, err := os.Stat(f.Path); err != nil {
 				continue
 			}
+			found = true
 			out = append(out, checkClientFile(a, f, rover))
 		}
 	}
-	if len(out) == 0 {
-		return []check{warn("client", "no client configs found; nothing is wrapped (`rover install`)")}
+	if !found {
+		out = append(out, warn("client", "no client configs found; nothing is wrapped (`rover install`)"))
 	}
 	return out
 }
 
+// checkClientFile fails on any server that does not run through rover:
+// unwrapped, wrapped by another binary, or not understood (a server rover
+// cannot parse is one it cannot vouch for). Every problem is listed.
 func checkClientFile(a clients.Adapter, f clients.ConfigFile, rover string) check {
 	where := a.Name() + " " + f.Path
 	doc, err := a.Read(f)
 	if err != nil {
 		return fail("client", "%s: does not parse: %v", where, err)
 	}
-	var unwrapped, foreign, remote []string
+	var problems, remote []string
 	wrapped := 0
 	for _, s := range doc.Servers {
 		switch {
 		case s.Status == clients.StatusStdio:
-			unwrapped = append(unwrapped, s.Key)
+			problems = append(problems, "not wrapped: "+s.Key)
+		case s.Status == clients.StatusUnknown:
+			problems = append(problems, "not understood: "+s.Key+" ("+s.Problem+")")
 		case s.Status == clients.StatusWrapped && !s.WrappedBy(rover):
-			foreign = append(foreign, s.Key+" ("+s.Command+")")
+			problems = append(problems, "wrapped by "+s.Command+", not "+rover+": "+s.Key)
 		case s.Status == clients.StatusWrapped:
 			wrapped++
 		case s.Status == clients.StatusRemote:
@@ -165,10 +175,8 @@ func checkClientFile(a clients.Adapter, f clients.ConfigFile, rover string) chec
 		}
 	}
 	switch {
-	case len(foreign) > 0:
-		return fail("client", "%s: wrapped by another binary, not %s: %s", where, rover, cell(strings.Join(foreign, ", ")))
-	case len(unwrapped) > 0:
-		return fail("client", "%s: not wrapped: %s; run `rover install`", where, cell(strings.Join(unwrapped, ", ")))
+	case len(problems) > 0:
+		return fail("client", "%s: %s; check it, then run `rover install`", where, cell(strings.Join(problems, "; ")))
 	case len(remote) > 0:
 		return warn("client", "%s: %d wrapped; remote, not covered until M11: %s", where, wrapped, cell(strings.Join(remote, ", ")))
 	}

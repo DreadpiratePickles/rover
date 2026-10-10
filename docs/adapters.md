@@ -18,7 +18,7 @@ changing the adapter.
 | Claude Code server fields | https://code.claude.com/docs/en/mcp | stdio: `type` (`"stdio"` or absent), `command`, `args`, `env`. Remote: `type` (`http`, `sse`, `ws`), `url`, `headers`. |
 | Claude Code `permissions.deny` syntax | https://code.claude.com/docs/en/permissions | Confirmed. `Edit(path)` rules use gitignore patterns; `~/path` is anchored at the home directory and `//path` at the file-system root; rules are evaluated deny first, then ask, then allow, and a deny in any scope beats an allow in any other. |
 | Claude Code settings file and strictness | https://code.claude.com/docs/en/settings | `~/.claude/settings.json` is the user file. It is strict JSON: a `//` comment or a trailing comma is a syntax error. |
-| Cursor: `~/.cursor/mcp.json` (global) and `.cursor/mcp.json` (project), key `mcpServers` | https://cursor.com/docs/context/mcp | Confirmed. stdio: `command`, `args`, `env` (`type: "stdio"` optional); remote: `url`, `headers`. |
+| Cursor: `~/.cursor/mcp.json` (global) and `.cursor/mcp.json` (project), key `mcpServers` | https://cursor.com/docs/context/mcp | Confirmed. The field list marks `type` as required (`"stdio"` for local servers), though its examples omit it; stdio: `command`, `args`, `env`; remote: `url`, `headers`. Rover follows the field list: a `url` with no `type` is refused (see below). |
 | Claude Desktop config path | https://modelcontextprotocol.io/docs/develop/connect-local-servers | macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`. Windows: `%APPDATA%\Claude\claude_desktop_config.json`. **No Linux path is documented** ("available for macOS and Windows"). |
 | VS Code workspace config | https://code.visualstudio.com/docs/copilot/customization/mcp-servers and https://code.visualstudio.com/docs/agents/reference/mcp-configuration | `.vscode/mcp.json`, top-level `servers`, `type` required (`stdio`, `http`, `sse`); stdio adds `command`, `args`, `env`, `envFile`; remote adds `url`, `headers`. The user-profile `mcp.json` is opened with a command and has no documented fixed path. |
 
@@ -50,6 +50,10 @@ The rewrite of one server, the same for every adapter:
 {"command": "npx", "args": ["-y", "pkg"], "env": {...}}
 ->
 {"command": "/abs/path/rover", "args": ["wrap", "--name", "<key>", "--", "npx", "-y", "pkg"], "env": {...}}
+
+{"command": "npx"}                      (no args member)
+->
+{"command": "/abs/path/rover", "args": ["wrap", "--name=<key>", "--", "npx"]}
 ```
 
 - `env` and every other member are untouched. `<key>` is the server's key,
@@ -58,10 +62,14 @@ The rewrite of one server, the same for every adapter:
   so a second install changes nothing.
 - A server wrapped by a *different* binary called `rover` is left alone
   with a warning, and `rover doctor` fails on it.
-- Remote servers (`url`, or `type` `http`/`sse`/`ws`) are left alone with a
-  warning until `rover bridge` (M11).
-- Anything not understood (no `command`, a non-string argument) is left
-  alone with a warning.
+- An explicit `type` decides: `stdio` is local; `http`, `sse`, `ws` are
+  remote and left alone with a warning until `rover bridge` (M11).
+- Anything not understood (no `command`, a non-string argument, a `url`
+  with no `type`, an unknown `type`, keys that differ only in case) makes
+  install **refuse the whole file**, naming the servers: rover does not wrap
+  part of a file it cannot fully read. Two keys that become the same
+  `--name` after sanitising are refused the same way.
+- Every diff shows `env` and `headers` values as `"[redacted]"`.
 
 ### Byte preservation
 
@@ -71,8 +79,14 @@ folding refused, every value's byte offsets known). Comments and trailing
 commas are first blanked to spaces in a working copy, so offsets still point
 into the original. Then only two spans change per server: the `command`
 value is replaced, and the wrap prefix is inserted at the start of `args`
-(or a new `args` member is added after `command`). Unknown keys, key order,
-spacing and comments survive, and the unwrap is the exact inverse.
+(or a new `args` member is added after `command`, written with
+`--name=<key>` as one element so the unwrap knows the member was not there
+before: without that marker `{"command":"x"}` and `{"command":"x","args":[]}`
+would wrap to the same bytes). The unwrap reads the fixed positions of
+`wrap [--name K | --name=K] -- <command> <args...>` (so a server called
+`--` is no problem), puts back the command's original bytes, and removes
+exactly the prefix and separator install inserted, or the whole member when
+install added it. Unknown keys, key order, spacing and comments survive.
 
 ### Writes and backups
 

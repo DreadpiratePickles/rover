@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/xml"
 	"errors"
@@ -116,14 +117,20 @@ var runCmd = func(argv []string) ([]byte, error) {
 	return exec.Command(argv[0], argv[1:]...).CombinedOutput() //nolint:gosec // G204: fixed launchctl/systemctl argument vectors built above
 }
 
-func installService(out io.Writer, cf clientFlags, rover string) int {
+// installService shows the file and the commands, and only with --yes (or
+// a y on a terminal) writes the file and runs them. Otherwise nothing is
+// written: a login service runs every time you log in, so it is never set
+// up as a side effect of looking.
+func installService(out io.Writer, in *bufio.Reader, cf clientFlags, rover string) int {
 	sp, err := currentService(rover)
 	if err != nil {
 		_, _ = fmt.Fprintln(out, "rover install --service:", err)
 		return 1
 	}
 	_, _ = fmt.Fprintf(out, "%s:\n%s", sp.path, sp.content)
-	if cf.dryRun {
+	printCmds(out, "then load it with", sp.load)
+	if !confirm(out, in, cf, "write "+sp.path+" and load it?") {
+		_, _ = fmt.Fprintln(out, "nothing written (rerun with --yes, or answer y on a terminal)")
 		return 0
 	}
 	if err := os.MkdirAll(filepath.Dir(sp.path), 0o700); err != nil {
@@ -135,10 +142,10 @@ func installService(out io.Writer, cf clientFlags, rover string) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(out, "ok    wrote %s (0600)\n", sp.path)
-	return runService(out, cf, sp.load, "load it")
+	return runCmds(out, sp.load)
 }
 
-func uninstallService(out io.Writer, cf clientFlags) int {
+func uninstallService(out io.Writer, in *bufio.Reader, cf clientFlags) int {
 	sp, err := currentService("rover")
 	if err != nil {
 		_, _ = fmt.Fprintln(out, "rover uninstall --service:", err)
@@ -148,11 +155,12 @@ func uninstallService(out io.Writer, cf clientFlags) int {
 		_, _ = fmt.Fprintf(out, "ok    %s does not exist\n", sp.path)
 		return 0
 	}
-	if cf.dryRun {
-		_, _ = fmt.Fprintf(out, "would stop the service and remove %s\n", sp.path)
+	printCmds(out, "to stop it, rover runs", sp.unload)
+	if !confirm(out, in, cf, "stop the service and remove "+sp.path+"?") {
+		_, _ = fmt.Fprintln(out, "nothing changed (rerun with --yes, or answer y on a terminal)")
 		return 0
 	}
-	if rc := runService(out, cf, sp.unload, "stop it"); rc != 0 || !cf.yes {
+	if rc := runCmds(out, sp.unload); rc != 0 {
 		return rc
 	}
 	if err := os.Remove(sp.path); err != nil {
@@ -175,15 +183,14 @@ func currentService(rover string) (serviceSpec, error) {
 	return serviceFor(runtime.GOOS, home, rover, dirs)
 }
 
-// runService runs cmds only with --yes; otherwise it prints them.
-func runService(out io.Writer, cf clientFlags, cmds [][]string, what string) int {
-	if !cf.yes {
-		_, _ = fmt.Fprintf(out, "to %s, run (or rerun with --yes):\n", what)
-		for _, c := range cmds {
-			_, _ = fmt.Fprintf(out, "  %s\n", strings.Join(c, " "))
-		}
-		return 0
+func printCmds(out io.Writer, what string, cmds [][]string) {
+	_, _ = fmt.Fprintf(out, "%s:\n", what)
+	for _, c := range cmds {
+		_, _ = fmt.Fprintf(out, "  %s\n", strings.Join(c, " "))
 	}
+}
+
+func runCmds(out io.Writer, cmds [][]string) int {
 	for _, c := range cmds {
 		if b, err := runCmd(c); err != nil {
 			_, _ = fmt.Fprintf(out, "fail  %s: %v %s\n", strings.Join(c, " "), err, strings.TrimSpace(string(b)))

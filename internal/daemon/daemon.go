@@ -66,10 +66,11 @@ type Options struct {
 	// a test can measure what detection adds to a decision (plan §6 M5).
 	DisableDetection bool
 
-	// TamperFiles are the client configs roverd watches for servers that
-	// stop being wrapped (M7, tamper.go); empty means no watch.
-	TamperFiles []clients.ConfigFile
-	// TamperDebounce is how long a burst of changes settles (default 500 ms).
+	// TamperFiles are the client configs roverd watches (M7, tamper.go),
+	// RoverPath the binary their servers must run, TamperDebounce the
+	// settle time of a burst of changes (default 500 ms).
+	TamperFiles    []clients.ConfigFile
+	RoverPath      string
 	TamperDebounce time.Duration
 }
 

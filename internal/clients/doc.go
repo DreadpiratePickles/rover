@@ -141,7 +141,7 @@ func parseDoc(s spec, cf ConfigFile, orig []byte) (Doc, error) {
 	if err != nil {
 		return Doc{}, err
 	}
-	conts, err := s.containers(src, top)
+	conts, err := s.containers(src, top, cf.Scope)
 	if err != nil {
 		return Doc{}, err
 	}
@@ -161,9 +161,25 @@ func classify(src []byte, scope string, m field) Server {
 		sv.Problem = "not a JSON object: " + err.Error()
 		return sv
 	}
-	typ, _ := stringOf(obj, "type")
-	if _, hasURL := obj.get("url"); hasURL || remoteTypes[typ] {
-		sv.Status = StatusRemote
+	// An explicit type decides (every client documents one); a url with no
+	// type is a configuration error in Claude Code's words, so it is not
+	// guessed to be remote.
+	_, hasURL := obj.get("url")
+	if t, ok := obj.get("type"); ok {
+		typ, isStr := stringValue(t.Value)
+		switch {
+		case !isStr:
+			sv.Problem = "type is not a string"
+			return sv
+		case remoteTypes[typ]:
+			sv.Status = StatusRemote
+			return sv
+		case typ != "stdio":
+			sv.Problem = fmt.Sprintf("unknown type %q", typ)
+			return sv
+		}
+	} else if hasURL {
+		sv.Problem = `"url" without a "type"`
 		return sv
 	}
 	cmd, ok := obj.get("command")
@@ -197,29 +213,46 @@ func classify(src []byte, scope string, m field) Server {
 }
 
 // IsRoverForm reports whether command and args look like `rover wrap ...
-// -- <server>`: a binary named rover whose first argument is "wrap" and
-// that names a server after "--". Whether it is *this* rover is a separate
-// question (Server.WrappedBy).
+// -- <server>`: a binary named rover whose arguments parse as wrap's own
+// (wrapSplit). Whether it is *this* rover is a separate question
+// (Server.WrappedBy).
 func IsRoverForm(command string, args []string) bool {
 	base := filepath.Base(command)
 	if base != "rover" && base != "rover.exe" {
 		return false
 	}
-	if len(args) < 3 || args[0] != "wrap" {
-		return false
-	}
-	i := dashIndex(args)
-	return i > 0 && i+1 < len(args)
+	_, ok := wrapSplit(args)
+	return ok
 }
 
-// dashIndex is the index of the "--" that ends rover wrap's own flags.
-func dashIndex(args []string) int {
-	for i, a := range args {
-		if a == "--" {
-			return i
-		}
+// wrapForm is how a wrapped server's args are laid out.
+type wrapForm struct {
+	sep int // index of the "--" that ends wrap's flags; the server command follows
+	// argsAdded: the server had no args member and install added one. That
+	// form writes "--name=<key>" as one element instead of "--name", "<key>",
+	// so the unwrap knows to remove the member again; without the marker
+	// {"command":"x"} and {"command":"x","args":[]} wrap to the same bytes.
+	argsAdded bool
+}
+
+// wrapSplit parses args in the forms rover writes or accepts:
+// wrap -- cmd..., wrap --name K -- cmd..., wrap --name=K -- cmd... The
+// positions are fixed, so a server named "--" is no problem.
+func wrapSplit(args []string) (wrapForm, bool) {
+	if len(args) < 3 || args[0] != "wrap" {
+		return wrapForm{}, false
 	}
-	return -1
+	f := wrapForm{sep: 1}
+	switch {
+	case args[1] == "--name":
+		f.sep = 3
+	case strings.HasPrefix(args[1], "--name="):
+		f.sep, f.argsAdded = 2, true
+	}
+	if f.sep+1 >= len(args) || args[f.sep] != "--" {
+		return wrapForm{}, false
+	}
+	return f, true
 }
 
 // WrappedBy says whether a wrapped server runs through roverPath (true) or
@@ -231,14 +264,6 @@ func (s Server) WrappedBy(roverPath string) bool {
 
 // Label is "<scope>/<key>" for messages.
 func (s Server) Label() string { return s.Scope + "/" + s.Key }
-
-func stringOf(obj fields, key string) (string, bool) {
-	f, ok := obj.get(key)
-	if !ok {
-		return "", false
-	}
-	return stringValue(f.Value)
-}
 
 func stringValue(raw []byte) (string, bool) {
 	var s string

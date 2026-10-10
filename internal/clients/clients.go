@@ -88,7 +88,8 @@ type spec struct {
 	// files lists candidate config files; Detect keeps those that exist.
 	files func(Env) ([]ConfigFile, error)
 	// containers finds the server maps in a parsed top-level object.
-	containers func(src []byte, top fields) ([]container, error)
+	// scope is the file's; servers at its top level are labelled with it.
+	containers func(src []byte, top fields, scope string) ([]container, error)
 }
 
 // container is one JSON object of servers (key -> server definition).

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/DreadpiratePickles/rover/internal/clients"
+	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
 )
 
@@ -136,7 +137,7 @@ func runInstall(args []string) int {
 		return 1
 	}
 	if cf.service {
-		return installService(os.Stdout, cf, rover)
+		return installService(os.Stdout, bufio.NewReader(os.Stdin), cf, rover)
 	}
 	env, dirs, err := clientEnv()
 	if err != nil {
@@ -198,6 +199,7 @@ func installOne(out io.Writer, in *bufio.Reader, cf clientFlags, a clients.Adapt
 	}
 	if !p.HasChanges() {
 		_, _ = fmt.Fprintf(out, "ok    nothing to do (%d servers)\n", len(doc.Servers))
+		tellRoverd(out, f, ipc.OpTamperResolve)
 		return true
 	}
 	_, _ = fmt.Fprint(out, p.Diff)
@@ -209,7 +211,30 @@ func installOne(out io.Writer, in *bufio.Reader, cf clientFlags, a clients.Adapt
 		return false
 	}
 	_, _ = fmt.Fprintf(out, "ok    wrapped %d server(s); the original is kept as a backup (rover uninstall)\n", len(p.Changed))
+	tellRoverd(out, f, ipc.OpTamperResolve)
 	return true
+}
+
+// tellRoverd tells a running roverd that rover itself just changed f, so
+// its tamper watch takes the new state as the baseline (install) or stops
+// watching the file (uninstall) instead of alerting. No roverd is fine: it
+// reads the manifests when it starts.
+func tellRoverd(out io.Writer, f clients.ConfigFile, op string) {
+	dirs, err := paths.Resolve()
+	if err != nil {
+		return
+	}
+	sock, err := paths.SocketPath(dirs)
+	if err != nil {
+		return
+	}
+	req := ipc.Frame{Op: op, Path: f.Path}
+	if op == ipc.OpTamperResolve {
+		req.Adapter, req.Scope = f.Adapter, f.Scope
+	}
+	if _, err := ipc.Admin(sock, req); err != nil && !errors.Is(err, ipc.ErrNoDaemon) {
+		_, _ = fmt.Fprintf(out, "warn  roverd's tamper watch was not updated: %v\n", err)
+	}
 }
 
 // installDeny proposes the Claude Code permissions.deny hardening.

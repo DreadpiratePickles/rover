@@ -98,7 +98,9 @@ func ApplyPlan(env Env, p Plan) error {
 		return err
 	}
 	m.Adapter, m.Path, m.Scope = p.File.Adapter, p.File.Path, p.File.Scope
-	e := backupEntry{Time: env.now().UTC(), WrittenSHA256: sum(p.New), Created: p.Created}
+	// An undo (in-place unwrap) keeps its backup but is never restored by
+	// uninstall: putting back the wrapped file would undo the uninstall.
+	e := backupEntry{Time: env.now().UTC(), WrittenSHA256: sum(p.New), Created: p.Created, Restored: p.Undo}
 	if !p.Created {
 		e.Backup = strconv.FormatInt(e.Time.UnixNano(), 10) + ".json"
 		if err := writeExclusive(filepath.Join(dir, e.Backup), p.Orig); err != nil {
@@ -215,7 +217,7 @@ func RestorePreview(env Env, cf ConfigFile) (string, error) {
 	if sum(b) != e.BackupSHA256 {
 		return "", fmt.Errorf("%s: %w", cf.Path, ErrBackupCorrupt)
 	}
-	return wholeDiff(cf.Path, cur, b), nil
+	return wholeDiff(cf.Path, redactAll(cur), redactAll(b)), nil
 }
 
 // HasBackup reports whether cf has a backup that was not restored yet.
@@ -233,24 +235,29 @@ func latest(m manifest) int {
 	return -1
 }
 
-// InstalledFiles lists every config file rover has written (from the
-// manifests). roverd watches these for tampering.
-func InstalledFiles(backupRoot string) ([]ConfigFile, error) {
+// InstalledFiles lists every config file rover has installed into and not
+// fully uninstalled since (from the manifests). roverd watches these for tampering, and doctor checks them.
+// A manifest that cannot be read is returned as an error naming it, and
+// the others are still listed: one bad file must not hide the rest.
+func InstalledFiles(backupRoot string) ([]ConfigFile, []error) {
 	ms, err := filepath.Glob(filepath.Join(backupRoot, "*", "*", "manifest.json"))
 	if err != nil {
-		return nil, err
+		return nil, []error{err}
 	}
 	var out []ConfigFile
+	var errs []error
 	for _, p := range ms {
 		m, err := readManifest(filepath.Dir(p))
 		if err != nil {
-			return nil, err
+			errs = append(errs, fmt.Errorf("%s: %w", p, err))
+			continue
 		}
-		if _, ok := specs[m.Adapter]; ok && m.Path != "" {
+		// latest < 0: every backup was used, i.e. the file was uninstalled.
+		if _, ok := specs[m.Adapter]; ok && m.Path != "" && latest(m) >= 0 {
 			out = append(out, ConfigFile{Adapter: m.Adapter, Path: m.Path, Scope: m.Scope})
 		}
 	}
-	return out, nil
+	return out, errs
 }
 
 // prune keeps the newest KeepBackups entries and deletes older backups.

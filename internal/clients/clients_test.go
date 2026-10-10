@@ -231,9 +231,9 @@ func TestBackupsKeepLastFive(t *testing.T) {
 			t.Errorf("%s mode %v", f, fi.Mode().Perm())
 		}
 	}
-	got, err := InstalledFiles(env.BackupDir)
-	if err != nil || len(got) != 1 || got[0].Path != cf.Path {
-		t.Fatalf("InstalledFiles = %v, %v", got, err)
+	got, errs := InstalledFiles(env.BackupDir)
+	if len(errs) != 0 || len(got) != 1 || got[0].Path != cf.Path {
+		t.Fatalf("InstalledFiles = %v, %v", got, errs)
 	}
 }
 

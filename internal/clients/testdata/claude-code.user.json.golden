@@ -13,7 +13,7 @@
       "env": {"DEBUG": "1"}
     },
     "git":{"command":"/opt/rover/bin/rover","args":["wrap", "--name", "git", "--", "uvx", "mcp-server-git"]},
-    "noargs": {"command": "/opt/rover/bin/rover", "args": ["wrap", "--name", "noargs", "--", "/usr/local/bin/my-server"]},
+    "noargs": {"command": "/opt/rover/bin/rover", "args": ["wrap", "--name=noargs", "--", "/usr/local/bin/my-server"]},
     "emptyargs": { "command" : "/opt/rover/bin/rover" , "args" : ["wrap", "--name", "emptyargs", "--", "echo-server" ] },
     "stripe": {
       "type": "http",

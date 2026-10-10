@@ -1,53 +1,66 @@
 package daemon
 
 import (
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	bolt "go.etcd.io/bbolt"
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/pin"
-	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
 // Tamper watch (M7). `rover install` puts every stdio server behind
-// `rover wrap`; an agent (or anything else running as the user) can undo
+// `rover wrap`; anything running as the user (the agent included) can undo
 // that by editing the client's config, and the next time the client starts
 // the server runs with no gateway at all. roverd cannot prevent the edit,
-// but it can notice it: it watches the config files, and when a server that
-// was wrapped is no longer wrapped, or now runs a different rover binary, it
-// writes an audit entry, shows a desktop notification and remembers the
-// alert (in memory and in the state database) for `rover doctor`.
+// but it notices: it watches the DIRECTORY of each config rover installed
+// into (so a file that is replaced, or removed and written again, is still
+// seen), and on every change, and at start, it checks every server:
+//
+//   - a stdio server not running through RoverPath: "unwrapped" if it was
+//     wrapped before, "unwrapped_server_added" if it is new (a rename is a
+//     removal plus an addition);
+//   - a server wrapped by another binary called rover: "rover_path_changed";
+//   - a server rover cannot parse: "not_understood";
+//   - a wrapped server that is gone: "server_removed".
+//
+// The baseline (which servers were wrapped, by which command) is saved in
+// the state database, so an edit made while roverd was down is reported
+// when it starts. Each alert is written to the audit log, notified once,
+// and kept (in memory and in state meta/tamper) for `rover doctor` until
+// the condition is gone or `rover install`/`uninstall` resolves it.
 const (
-	// AuditKindTamper is the audit "kind" of tamper alerts.
+	// AuditKindTamper is the audit "kind" of tamper events.
 	AuditKindTamper = "tamper"
-	// AuditTamperAlert is their action.
-	AuditTamperAlert = "alert"
-	// TamperUnwrapped: the server no longer runs through rover wrap.
-	TamperUnwrapped = "unwrapped"
-	// TamperRoverPathChanged: it still says `rover wrap`, but through a
-	// different binary (a look-alike path, or a stale install).
+	// Audit actions of tamper events.
+	AuditTamperAlert   = "alert"
+	AuditTamperResolve = "resolve"
+	AuditTamperForget  = "forget"
+
+	TamperUnwrapped        = "unwrapped"
+	TamperAdded            = "unwrapped_server_added"
+	TamperRemoved          = "server_removed"
 	TamperRoverPathChanged = "rover_path_changed"
+	TamperNotUnderstood    = "not_understood"
+
 	// DefaultTamperDebounce lets a burst of writes settle before re-reading.
 	DefaultTamperDebounce = 500 * time.Millisecond
 
 	tamperSession = "tamper"
 )
 
-// metaTamper is the key of the alerts in the state bucket "meta".
-var metaTamper = []byte("tamper")
-
-// TamperAlert is one server found unwrapped.
+// TamperAlert is one server in a state rover did not leave it in.
 type TamperAlert struct {
 	File    string    `json:"file"`
 	Server  string    `json:"server"` // scope/key
@@ -58,18 +71,22 @@ type TamperAlert struct {
 
 type tamperState struct {
 	mu       sync.Mutex
-	files    map[string]clients.ConfigFile
-	baseline map[string]map[string]string // file -> server -> rover command
-	alerts   map[string]TamperAlert       // file + "\x00" + server
+	files    map[string]clients.ConfigFile // by path
+	dirs     map[string]bool               // watched directory -> watch added
+	baseline map[string]map[string]string  // path -> server -> sha256 of its rover command
+	alerts   map[string]TamperAlert        // path + "\x00" + server
 	timers   map[string]*time.Timer
 	watcher  *fsnotify.Watcher
 	notes    *pin.Coalescer
 }
 
-// startTamperWatch reads every watched file once (the baseline of wrapped
-// servers), restores earlier alerts from the state database, and starts
-// watching. A file that cannot be watched is logged and skipped: the watch
-// is an alarm, not a gate, and doctor reports the config as it is anyway.
+func digest(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+// startTamperWatch restores the saved baseline and alerts, watches every
+// config's directory and checks every config once.
 func (s *Server) startTamperWatch() error {
 	if len(s.o.TamperFiles) == 0 {
 		return nil
@@ -80,24 +97,52 @@ func (s *Server) startTamperWatch() error {
 	}
 	t := &s.tamper
 	t.mu.Lock()
-	t.files, t.baseline, t.alerts, t.timers, t.watcher = map[string]clients.ConfigFile{}, map[string]map[string]string{}, map[string]TamperAlert{}, map[string]*time.Timer{}, w
+	t.files, t.dirs, t.timers, t.watcher = map[string]clients.ConfigFile{}, map[string]bool{}, map[string]*time.Timer{}, w
+	t.baseline, t.alerts = s.loadTamper()
 	t.notes = pin.NewCoalescer(tamperNotifier{s.o.Notifier}, s.o.Now)
-	for _, a := range s.loadTamperAlerts() {
-		t.alerts[a.File+"\x00"+a.Server] = a
+	for _, cf := range s.o.TamperFiles {
+		s.watchFileLocked(cf)
+	}
+	paths := make([]string, 0, len(t.files))
+	for p := range t.files {
+		paths = append(paths, p)
 	}
 	t.mu.Unlock()
-	for _, cf := range s.o.TamperFiles {
-		t.mu.Lock()
-		t.files[cf.Path] = cf
-		t.mu.Unlock()
-		if err := w.Add(cf.Path); err != nil {
-			s.o.Logf("tamper watch: cannot watch %s: %v", cf.Path, err)
-			continue
-		}
-		s.checkTamper(cf.Path)
+	sort.Strings(paths)
+	for _, p := range paths {
+		s.checkTamper(p)
 	}
 	go s.tamperLoop(w)
 	return nil
+}
+
+// watchFileLocked adds cf and its directory to the watch (t.mu held). A
+// directory that cannot be watched is logged and retried on every later
+// event and check, never silently dropped.
+func (s *Server) watchFileLocked(cf clients.ConfigFile) {
+	t := &s.tamper
+	path := filepath.Clean(cf.Path)
+	cf.Path = path
+	t.files[path] = cf
+	dir := filepath.Dir(path)
+	if _, known := t.dirs[dir]; !known {
+		t.dirs[dir] = false
+	}
+	s.retryDirsLocked()
+}
+
+func (s *Server) retryDirsLocked() {
+	t := &s.tamper
+	for dir, ok := range t.dirs {
+		if ok || t.watcher == nil {
+			continue
+		}
+		if err := t.watcher.Add(dir); err != nil {
+			s.o.Logf("tamper watch: cannot watch %s (will retry): %v", dir, err)
+			continue
+		}
+		t.dirs[dir] = true
+	}
 }
 
 func (s *Server) tamperLoop(w *fsnotify.Watcher) {
@@ -111,15 +156,22 @@ func (s *Server) tamperLoop(w *fsnotify.Watcher) {
 			if !ok {
 				return
 			}
-			s.tamper.mu.Lock()
-			if _, watched := s.tamper.files[ev.Name]; watched {
-				if tm := s.tamper.timers[ev.Name]; tm != nil {
+			name := filepath.Clean(ev.Name)
+			t := &s.tamper
+			t.mu.Lock()
+			if ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename) {
+				if _, isDir := t.dirs[name]; isDir {
+					t.dirs[name] = false // the directory itself went away
+				}
+			}
+			s.retryDirsLocked()
+			if _, watched := t.files[name]; watched {
+				if tm := t.timers[name]; tm != nil {
 					tm.Stop()
 				}
-				name := ev.Name
-				s.tamper.timers[name] = time.AfterFunc(debounce, func() { s.checkTamper(name) })
+				t.timers[name] = time.AfterFunc(debounce, func() { s.checkTamper(name) })
 			}
-			s.tamper.mu.Unlock()
+			t.mu.Unlock()
 		case err, ok := <-w.Errors:
 			if !ok {
 				return
@@ -142,7 +194,7 @@ func (s *Server) stopTamperWatch() {
 	}
 }
 
-// checkTamper re-reads one file and compares it with the baseline.
+// checkTamper re-reads one config and updates its alerts and baseline.
 func (s *Server) checkTamper(path string) {
 	t := &s.tamper
 	t.mu.Lock()
@@ -151,74 +203,100 @@ func (s *Server) checkTamper(path string) {
 	if !ok || t.watcher == nil {
 		return
 	}
-	// An atomic replace (rename over the file) ends the old watch; watch the
-	// new file before reading it, so no later change is missed.
-	_ = t.watcher.Remove(path)
-	_ = t.watcher.Add(path)
+	s.retryDirsLocked()
 	doc, err := clients.ReadConfig(cf)
-	if errors.Is(err, os.ErrNotExist) {
-		return // a removed config starts no servers at all
-	}
-	if err != nil {
-		s.o.Logf("tamper watch: %s does not parse (%v); its servers are not checked until it does", path, err)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		doc = clients.Doc{File: cf} // no file: every wrapped server is gone
+	case err != nil:
+		s.o.Logf("tamper watch: %s does not parse (%v); its servers are checked again when it changes", path, err)
 		return
 	}
-	now := map[string]clients.Server{}
-	for _, sv := range doc.Servers {
-		now[sv.Label()] = sv
-	}
-	base := t.baseline[path]
-	if base == nil {
-		base = map[string]string{}
-		t.baseline[path] = base
-	}
+	want, base := s.evaluate(path, doc)
+	t.baseline[path] = base
 	var fresh []TamperAlert
-	changed := false
-	for label, cmd := range base {
-		sv, ok := now[label]
-		key := path + "\x00" + label
-		switch {
-		case !ok:
-			delete(base, label) // removed: nothing runs, nothing to alert
-		case sv.Status == clients.StatusWrapped && sv.Command == cmd:
-			if _, had := t.alerts[key]; had {
-				delete(t.alerts, key)
-				changed = true
-				s.o.Logf("tamper watch: %s in %s is wrapped again", label, path)
+	for k, a := range t.alerts {
+		if a.File != path {
+			continue
+		}
+		if n, still := want[a.Server]; !still || n.Kind != a.Kind || n.Command != a.Command {
+			delete(t.alerts, k)
+			if !still {
+				s.o.Logf("tamper watch: %s in %s is fine again", pin.TerminalSafe(a.Server), path)
 			}
-		default:
-			kind := TamperUnwrapped
-			if sv.Status == clients.StatusWrapped {
-				kind = TamperRoverPathChanged
-			}
-			if a, had := t.alerts[key]; had && a.Kind == kind && a.Command == sv.Command {
-				continue
-			}
-			a := TamperAlert{File: path, Server: label, Kind: kind, Command: sv.Command, At: s.o.Now().UTC()}
-			t.alerts[key] = a
+		}
+	}
+	for server, a := range want {
+		k := path + "\x00" + server
+		if _, had := t.alerts[k]; !had {
+			a.At = s.o.Now().UTC()
+			t.alerts[k] = a
 			fresh = append(fresh, a)
-			changed = true
 		}
 	}
-	for label, sv := range now {
-		if _, known := base[label]; !known && sv.Status == clients.StatusWrapped {
-			base[label] = sv.Command
-		}
-	}
-	if changed {
-		s.saveTamperAlerts(t.alertList())
-	}
+	s.saveTamperLocked()
+	sort.Slice(fresh, func(i, j int) bool { return fresh[i].Server < fresh[j].Server })
 	for _, a := range fresh {
 		s.reportTamper(a)
 	}
 }
 
-// reportTamper logs, audits and notifies one alert. Names in the config are
-// the user's file, but an agent may have written them: the log and the
-// notification get them sanitised.
+// evaluate returns the alerts doc deserves and its new baseline (t.mu held).
+func (s *Server) evaluate(path string, doc clients.Doc) (map[string]TamperAlert, map[string]string) {
+	old := s.tamper.baseline[path]
+	want := map[string]TamperAlert{}
+	base := map[string]string{}
+	present := map[string]bool{}
+	alert := func(sv clients.Server, kind string) {
+		want[sv.Label()] = TamperAlert{File: path, Server: sv.Label(), Kind: kind, Command: sv.Command}
+	}
+	for _, sv := range doc.Servers {
+		label := sv.Label()
+		present[label] = true
+		_, wasWrapped := old[label]
+		if wasWrapped {
+			base[label] = old[label] // stays in the baseline while it exists
+		}
+		switch {
+		case sv.Status == clients.StatusWrapped && s.expectedRover(sv.Command, old[label]):
+			base[label] = digest(sv.Command)
+		case sv.Status == clients.StatusWrapped:
+			alert(sv, TamperRoverPathChanged)
+		case sv.Status == clients.StatusUnknown:
+			alert(sv, TamperNotUnderstood)
+		case sv.Status == clients.StatusStdio && !wasWrapped:
+			alert(sv, TamperAdded)
+		case sv.Status == clients.StatusStdio, wasWrapped: // stdio, or a wrapped server turned remote
+			alert(sv, TamperUnwrapped)
+		}
+	}
+	// A removed server stays in the baseline (and reported) until it is
+	// back or install/uninstall resolves it, so a later re-add of it
+	// unwrapped is "unwrapped", not a new server.
+	for label, d := range old {
+		if !present[label] {
+			want[label] = TamperAlert{File: path, Server: label, Kind: TamperRemoved}
+			base[label] = d
+		}
+	}
+	return want, base
+}
+
+// expectedRover: the command is RoverPath, or with no RoverPath configured
+// (tests, offline admin) the command the baseline recorded.
+func (s *Server) expectedRover(cmd, baseDigest string) bool {
+	if s.o.RoverPath != "" {
+		return cmd == s.o.RoverPath
+	}
+	return baseDigest == "" || baseDigest == digest(cmd)
+}
+
+// reportTamper logs, audits and notifies one alert. Names in a config may
+// have been written by an agent: the log and notification get them
+// sanitised.
 func (s *Server) reportTamper(a TamperAlert) {
 	key := a.Server[strings.IndexByte(a.Server, '/')+1:]
-	s.o.Logf("TAMPER: %s in %s is %s (command %q); run `rover doctor`", pin.TerminalSafe(a.Server), a.File, a.Kind, pin.TerminalSafe(a.Command))
+	s.o.Logf("TAMPER: %s in %s: %s (command %q); run `rover doctor`", pin.TerminalSafe(a.Server), a.File, a.Kind, pin.TerminalSafe(a.Command))
 	e := audit.Entry{Time: a.At, Session: tamperSession, Server: ipc.SanitizeServerName(key), Kind: AuditKindTamper,
 		Action: AuditTamperAlert, Reason: a.Kind + ":" + a.File, Findings: []string{a.Server}}
 	if err := s.writeAudit(e); err != nil {
@@ -226,91 +304,4 @@ func (s *Server) reportTamper(a TamperAlert) {
 	}
 	msg := fmt.Sprintf("%s in %s is no longer wrapped by rover (%s). run `rover doctor`.", ipc.SanitizeServerName(key), a.File, a.Kind)
 	s.tamper.notes.Add("tamper:"+a.File, 1, msg)
-}
-
-// alertList returns the alerts sorted (t.mu held).
-func (t *tamperState) alertList() []TamperAlert {
-	out := make([]TamperAlert, 0, len(t.alerts))
-	for _, a := range t.alerts {
-		out = append(out, a)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].File+out[i].Server < out[j].File+out[j].Server })
-	return out
-}
-
-// TamperAlerts returns the current alerts (for doctor and tests).
-func (s *Server) TamperAlerts() []TamperAlert {
-	s.tamper.mu.Lock()
-	defer s.tamper.mu.Unlock()
-	return s.tamper.alertList()
-}
-
-func (s *Server) saveTamperAlerts(as []TamperAlert) {
-	if s.o.State == nil {
-		return
-	}
-	b, err := json.Marshal(as)
-	if err == nil {
-		err = s.o.State.Update(func(tx *bolt.Tx) error { return tx.Bucket(state.BucketMeta).Put(metaTamper, b) })
-	}
-	if err != nil {
-		s.o.Logf("tamper watch: saving alerts: %v", err)
-	}
-}
-
-func (s *Server) loadTamperAlerts() []TamperAlert {
-	if s.o.State == nil {
-		return nil
-	}
-	var as []TamperAlert
-	err := s.o.State.View(func(tx *bolt.Tx) error {
-		if b := tx.Bucket(state.BucketMeta).Get(metaTamper); b != nil {
-			return json.Unmarshal(b, &as)
-		}
-		return nil
-	})
-	if err != nil {
-		s.o.Logf("tamper watch: reading saved alerts: %v", err)
-	}
-	return as
-}
-
-// DoctorState is the doctor_state admin result.
-type DoctorState struct {
-	Mode          string        `json:"mode"`
-	PolicyLoaded  bool          `json:"policy_loaded"`
-	WatchedFiles  int           `json:"watched_files"`
-	TamperAlerts  []TamperAlert `json:"tamper_alerts"`
-	AuditHealthy  bool          `json:"audit_healthy"`
-	ServerVersion int           `json:"protocol_version"`
-}
-
-func (s *Server) doctorState() ipc.Frame {
-	l := s.pol.Load()
-	s.mu.Lock()
-	healthy := !s.unhealthy
-	s.mu.Unlock()
-	s.tamper.mu.Lock()
-	n := len(s.tamper.files)
-	alerts := s.tamper.alertList()
-	s.tamper.mu.Unlock()
-	if alerts == nil && n == 0 {
-		alerts = s.loadTamperAlerts() // no watch running: report what was saved
-	}
-	return adminResult(DoctorState{Mode: string(l.cfg.Mode), PolicyLoaded: l.pol != nil, WatchedFiles: n,
-		TamperAlerts: alerts, AuditHealthy: healthy, ServerVersion: ipc.Version}, "")
-}
-
-// tamperNotifier gives tamper notifications their own title. The pin
-// coalescer's summary text ("N tools changed on ...") is about tools, so a
-// coalesced burst is replaced with a tamper summary.
-type tamperNotifier struct{ next pin.Notifier }
-
-const tamperTitle = "rover: client config changed"
-
-func (n tamperNotifier) Notify(_, msg string) {
-	if !strings.Contains(msg, "no longer wrapped by rover") {
-		msg = "several mcp servers are no longer wrapped by rover. run `rover doctor`."
-	}
-	n.next.Notify(tamperTitle, msg)
 }

@@ -18,32 +18,30 @@ import (
 
 const tamperRover = "/opt/rover/bin/rover"
 
-func wrappedConfig(cmd string) string {
-	return `{"mcpServers": {"fs": {"command": "` + cmd + `", "args": ["wrap", "--name", "fs", "--", "npx", "fs"]}, "other": {"url": "https://x"}}}`
+func wrappedServer(key, cmd string) string {
+	return `"` + key + `": {"command": "` + cmd + `", "args": ["wrap", "--name", "` + key + `", "--", "npx", "fs"]}`
 }
 
-// waitAlerts polls until n alerts exist (the watch is asynchronous).
-func waitAlerts(t *testing.T, s *Server, n int) []TamperAlert {
+func mcpConfig(servers ...string) string {
+	return `{"mcpServers": {` + strings.Join(append(servers, `"other": {"type": "http", "url": "https://x"}`), ", ") + `}}`
+}
+
+const unwrappedFS = `"fs": {"command": "npx", "args": ["fs"]}`
+
+// tamperRig is a roverd with a tamper watch on one config in a temp dir.
+type tamperRig struct {
+	cfg   string
+	db    *state.DB
+	log   *lockedWriter
+	notes *recordingNotifier
+	s     *Server
+}
+
+func newTamperRig(t *testing.T, content string) *tamperRig {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if as := s.TamperAlerts(); len(as) == n {
-			return as
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("want %d tamper alerts, have %v", n, s.TamperAlerts())
-	return nil
-}
-
-// Acceptance (M7): a hand edit that unwraps a server is noticed (real
-// fsnotify, a fixture config in a temp dir), audited, notified and saved
-// for `rover doctor`; a look-alike rover path is noticed too; re-wrapping
-// clears the alert.
-func TestTamperWatchDetectsUnwrap(t *testing.T) {
 	dir := shortTempDir(t)
-	cfg := filepath.Join(dir, "mcp.json")
-	if err := os.WriteFile(cfg, []byte(wrappedConfig(tamperRover)), 0o600); err != nil {
+	r := &tamperRig{cfg: filepath.Join(dir, "mcp.json"), log: &lockedWriter{w: &bytes.Buffer{}}, notes: &recordingNotifier{}}
+	if err := os.WriteFile(r.cfg, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	db, err := state.Open(filepath.Join(dir, "state.db"))
@@ -51,46 +49,147 @@ func TestTamperWatchDetectsUnwrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	var log bytes.Buffer
-	lw := &lockedWriter{w: &log}
-	notes := &recordingNotifier{}
-	s := start(t, Options{Audit: audit.New(lw), State: db, Notifier: notes,
-		TamperFiles:    []clients.ConfigFile{{Adapter: clients.NameCursor, Path: cfg, Scope: "global"}},
-		TamperDebounce: 50 * time.Millisecond})
+	r.db = db
+	r.s = start(t, r.options())
+	return r
+}
 
-	// Unwrap by hand, in place.
-	if err := os.WriteFile(cfg, []byte(`{"mcpServers": {"fs": {"command": "npx", "args": ["fs"]}, "other": {"url": "https://x"}}}`), 0o600); err != nil {
-		t.Fatal(err)
+func (r *tamperRig) options() Options {
+	return Options{Audit: audit.New(r.log), State: r.db, Notifier: r.notes, RoverPath: tamperRover,
+		TamperFiles:    []clients.ConfigFile{{Adapter: clients.NameCursor, Path: r.cfg, Scope: "global"}},
+		TamperDebounce: 50 * time.Millisecond}
+}
+
+// waitKinds polls until the alerts have exactly these kinds (sorted by server).
+func waitKinds(t *testing.T, s *Server, kinds ...string) []TamperAlert {
+	t.Helper()
+	var as []TamperAlert
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		as = s.TamperAlerts()
+		got := make([]string, len(as))
+		for i, a := range as {
+			got[i] = a.Kind
+		}
+		if strings.Join(got, ",") == strings.Join(kinds, ",") {
+			return as
+		}
 	}
-	as := waitAlerts(t, s, 1)
-	if as[0].Kind != TamperUnwrapped || as[0].Server != "global/fs" || as[0].File != cfg {
+	t.Fatalf("want tamper alerts %v, have %+v", kinds, as)
+	return nil
+}
+
+// Acceptance (M7): a hand edit that unwraps a server is noticed (real
+// fsnotify), audited, notified and saved for `rover doctor`; re-wrapping
+// clears it; a look-alike rover path is its own kind.
+func TestTamperWatchDetectsUnwrap(t *testing.T) {
+	r := newTamperRig(t, mcpConfig(wrappedServer("fs", tamperRover)))
+	writeInPlace(t, r.cfg, mcpConfig(unwrappedFS))
+	as := waitKinds(t, r.s, TamperUnwrapped)
+	if as[0].Server != "global/fs" || as[0].File != r.cfg {
 		t.Fatalf("alert %+v", as[0])
 	}
-	if !strings.Contains(lw.String(), `"kind":"tamper"`) || !strings.Contains(lw.String(), `"action":"alert"`) {
-		t.Fatalf("no tamper audit entry:\n%s", lw.String())
+	if l := r.log.String(); !strings.Contains(l, `"kind":"tamper"`) || !strings.Contains(l, `"action":"alert"`) {
+		t.Fatalf("no tamper audit entry:\n%s", l)
 	}
-	if m := notes.all(); len(m) != 1 || !strings.Contains(m[0], "no longer wrapped") {
+	if m := r.notes.all(); len(m) != 1 || !strings.Contains(m[0], "no longer wrapped") {
 		t.Fatalf("notifications %v", m)
 	}
-	// doctor_state reports it, and so does the state database.
-	r := s.Admin(ipc.Frame{Type: ipc.TypeAdmin, Op: ipc.OpDoctorState})
+	res := r.s.Admin(ipc.Frame{Type: ipc.TypeAdmin, Op: ipc.OpDoctorState})
 	var ds DoctorState
-	if err := json.Unmarshal(r.Result, &ds); err != nil || len(ds.TamperAlerts) != 1 || ds.WatchedFiles != 1 {
-		t.Fatalf("doctor_state %s %v", r.Result, err)
+	if err := json.Unmarshal(res.Result, &ds); err != nil || len(ds.TamperAlerts) != 1 || ds.WatchedFiles != 1 {
+		t.Fatalf("doctor_state %s %v", res.Result, err)
 	}
-	if saved := s.loadTamperAlerts(); len(saved) != 1 {
-		t.Fatalf("saved alerts %v", saved)
-	}
-
-	// Re-wrap with an atomic replace: the alert clears.
-	writeReplace(t, cfg, wrappedConfig(tamperRover))
-	waitAlerts(t, s, 0)
-
-	// A look-alike rover binary is an alert of its own kind.
-	writeReplace(t, cfg, wrappedConfig("/tmp/evil/rover"))
-	as = waitAlerts(t, s, 1)
-	if as[0].Kind != TamperRoverPathChanged || as[0].Command != "/tmp/evil/rover" {
+	writeReplace(t, r.cfg, mcpConfig(wrappedServer("fs", tamperRover)))
+	waitKinds(t, r.s)
+	writeReplace(t, r.cfg, mcpConfig(wrappedServer("fs", "/tmp/evil/rover")))
+	if as := waitKinds(t, r.s, TamperRoverPathChanged); as[0].Command != "/tmp/evil/rover" {
 		t.Fatalf("alert %+v", as[0])
+	}
+}
+
+// H1a: deleting a wrapped server, then adding it back unwrapped, alerts
+// both times; so does renaming its key.
+func TestTamperDeleteThenReAdd(t *testing.T) {
+	r := newTamperRig(t, mcpConfig(wrappedServer("fs", tamperRover)))
+	writeInPlace(t, r.cfg, mcpConfig())
+	waitKinds(t, r.s, TamperRemoved)
+	writeInPlace(t, r.cfg, mcpConfig(unwrappedFS))
+	waitKinds(t, r.s, TamperUnwrapped)
+}
+
+func TestTamperKeyRename(t *testing.T) {
+	r := newTamperRig(t, mcpConfig(wrappedServer("fs", tamperRover)))
+	writeReplace(t, r.cfg, mcpConfig(`"fs2": {"command": "npx", "args": ["fs"]}`))
+	as := waitKinds(t, r.s, TamperRemoved, TamperAdded)
+	if as[0].Server != "global/fs" || as[1].Server != "global/fs2" {
+		t.Fatalf("%+v", as)
+	}
+}
+
+// H1b: removing the file and writing it again later is still watched.
+func TestTamperRemoveThenRewrite(t *testing.T) {
+	r := newTamperRig(t, mcpConfig(wrappedServer("fs", tamperRover)))
+	if err := os.Remove(r.cfg); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	writeInPlace(t, r.cfg, mcpConfig(unwrappedFS))
+	waitKinds(t, r.s, TamperUnwrapped)
+}
+
+// H1: a new stdio server in a watched config is an alert of its own.
+func TestTamperNewUnwrappedServer(t *testing.T) {
+	r := newTamperRig(t, mcpConfig(wrappedServer("fs", tamperRover)))
+	writeInPlace(t, r.cfg, mcpConfig(wrappedServer("fs", tamperRover), `"sneaky": {"command": "sh"}`))
+	waitKinds(t, r.s, TamperAdded)
+}
+
+// H1: a server unwrapped while roverd was down is alerted at start, from
+// the saved baseline.
+func TestTamperWhileDown(t *testing.T) {
+	r := newTamperRig(t, mcpConfig(wrappedServer("fs", tamperRover)))
+	r.s.Close()
+	writeInPlace(t, r.cfg, mcpConfig())
+	o := r.options()
+	o.SocketPath = filepath.Join(shortTempDir(t), "d2.sock")
+	s2 := New(o)
+	if err := s2.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if as := s2.TamperAlerts(); len(as) != 1 || as[0].Kind != TamperRemoved {
+		t.Fatalf("alerts at start: %+v", as)
+	}
+}
+
+// LOW: install and uninstall tell roverd, which re-baselines (or stops
+// watching) and clears the alerts they cause; both are audited.
+func TestTamperResolveAndForget(t *testing.T) {
+	r := newTamperRig(t, mcpConfig(wrappedServer("fs", tamperRover)))
+	writeInPlace(t, r.cfg, mcpConfig(unwrappedFS))
+	waitKinds(t, r.s, TamperUnwrapped)
+	writeInPlace(t, r.cfg, mcpConfig(wrappedServer("fs", tamperRover)))
+	if f := r.s.Admin(ipc.Frame{Type: ipc.TypeAdmin, Op: ipc.OpTamperResolve, Path: r.cfg, Adapter: clients.NameCursor, Scope: "global"}); f.Type != ipc.TypeAdminResult {
+		t.Fatalf("resolve: %+v", f)
+	}
+	waitKinds(t, r.s)
+	if f := r.s.Admin(ipc.Frame{Type: ipc.TypeAdmin, Op: ipc.OpTamperForget, Path: r.cfg}); f.Type != ipc.TypeAdminResult {
+		t.Fatalf("forget: %+v", f)
+	}
+	writeInPlace(t, r.cfg, mcpConfig(unwrappedFS)) // what uninstall does
+	time.Sleep(300 * time.Millisecond)
+	if as := r.s.TamperAlerts(); len(as) != 0 {
+		t.Fatalf("alerts after forget: %+v", as)
+	}
+	if l := r.log.String(); !strings.Contains(l, `"action":"resolve"`) || !strings.Contains(l, `"action":"forget"`) {
+		t.Fatalf("not audited:\n%s", l)
+	}
+}
+
+func writeInPlace(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -17,9 +17,9 @@ var claudeCodeSpec = spec{
 		}
 		return out, nil
 	},
-	containers: func(src []byte, top fields) ([]container, error) {
+	containers: func(src []byte, top fields, scope string) ([]container, error) {
 		var out []container
-		c, err := serversIn(src, top, "mcpServers", "user")
+		c, err := serversIn(src, top, "mcpServers", scope)
 		if err != nil {
 			return nil, err
 		}
@@ -64,7 +64,7 @@ var cursorSpec = spec{
 		}
 		return out, nil
 	},
-	containers: mcpServersOnly("mcpServers", "global"),
+	containers: mcpServersOnly("mcpServers"),
 }
 
 // Claude Desktop: macOS only. Anthropic documents macOS and Windows paths and
@@ -78,7 +78,7 @@ var claudeDesktopSpec = spec{
 		}
 		return []ConfigFile{file(NameClaudeDesktop, "user", e.Home, "Library", "Application Support", "Claude", "claude_desktop_config.json")}, nil
 	},
-	containers: mcpServersOnly("mcpServers", "user"),
+	containers: mcpServersOnly("mcpServers"),
 }
 
 // VS Code (best effort): the workspace file .vscode/mcp.json, whose servers
@@ -93,11 +93,13 @@ var vscodeSpec = spec{
 		}
 		return []ConfigFile{file(NameVSCode, "project", e.Cwd, ".vscode", "mcp.json")}, nil
 	},
-	containers: mcpServersOnly("servers", "project"),
+	containers: mcpServersOnly("servers"),
 }
 
-func mcpServersOnly(key, scope string) func([]byte, fields) ([]container, error) {
-	return func(src []byte, top fields) ([]container, error) { return serversIn(src, top, key, scope) }
+func mcpServersOnly(key string) func([]byte, fields, string) ([]container, error) {
+	return func(src []byte, top fields, scope string) ([]container, error) {
+		return serversIn(src, top, key, scope)
+	}
 }
 
 // serversIn returns the server map under key, if there is one.

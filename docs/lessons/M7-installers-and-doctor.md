@@ -46,9 +46,9 @@ rover doctor ◄── admin "doctor_state" ── + local checks (socket, dirs,
   `~/Library/LaunchAgents/net.rover.roverd.plist`, RunAtLoad + KeepAlive) or
   a systemd user unit (Linux, `~/.config/systemd/user/roverd.service`), both
   0600. The `launchctl`/`systemctl` commands run only with `--yes`.
-- **Tamper watch** (`internal/daemon/tamper.go`): roverd watches every config
-  it found at start plus every file `install` wrote (from the backup
-  manifests).
+- **Tamper watch** (`internal/daemon/tamper.go`): roverd watches the
+  directory of every config `install` wrote (from the backup manifests, and
+  `install` tells a running roverd at once).
 - **`rover doctor [--json]`**: `PASS|WARN|FAIL  name  detail`, exit 1 on any
   FAIL.
 - **`rover version`** and **`.goreleaser.yaml`** + `make snapshot`.
@@ -76,10 +76,17 @@ review. Rover instead uses the same technique roverd uses on `tools/list`
 since M2: read the file with the strict reader, which knows the byte offsets
 of every value, and splice new bytes into exactly two places per server.
 Everything else is the original bytes. That is what makes the acceptance test
-possible: install then uninstall is **byte-identical**, and the unwrap is the
-exact inverse of the wrap. The strict reader also refuses duplicate keys
+possible: install then uninstall is **byte-identical**. For the in-place
+unwrap to be the exact inverse too, the wrapped form has to say how it was
+made: a server that had no `args` gets `--name=<key>` (one element) instead
+of `--name`, `<key>`, because otherwise `{"command":"x"}` and
+`{"command":"x","args":[]}` would wrap to the same bytes and no program could
+tell which one to give back. The strict reader also refuses duplicate keys
 (`"command"` twice, or `"Command"` beside `"command"`): if two readers could
-disagree about which command runs, rover will not guess.
+disagree about which command runs, rover will not guess, and install
+refuses the whole file rather than wrap the parts it understood. Diffs show
+`env` and `headers` values as `"[redacted]"`: a diff is printed to a
+terminal, and terminals are scrolled back, logged and screen-shared.
 
 ### 3. Atomic writes and backups
 
@@ -112,8 +119,11 @@ command text, so `rm` and `/bin/rm` and `sh -c 'rm ...'` are different
 strings: a rule can be **rephrased around**. That is why this is layer two of
 three: (1) the deny rules make the easy path fail, (2) the tamper watch
 notices when a harder path succeeded, (3) doctor shows the state any time.
-None of them is the boundary on its own. The real boundary for "the agent
-cannot rewrite files" is an OS sandbox, which Claude Code also offers.
+None of them is the boundary on its own. In particular, Claude Code's
+`bypassPermissions` mode skips its permission prompts, and the deny rules
+only help while the agent runs in a mode that consults them. The real
+boundary for "the agent cannot rewrite files" is an OS sandbox, which Claude
+Code also offers.
 
 ### 5. Tamper watch: noticing is not preventing
 
@@ -121,17 +131,24 @@ roverd cannot stop a process running as you from editing your files. What it
 can do is notice within half a second and make noise that cannot be missed:
 an audit entry (hash-chained, so it cannot be quietly removed later), a
 desktop notification, and an alert that `rover doctor` reports until the
-server is wrapped again. The watch remembers which servers were wrapped by
-which binary, so it distinguishes **unwrapped** (`command` is no longer
-rover) from **rover_path_changed** (still says `rover wrap`, but runs a
-different file). It debounces for 500 ms because editors write files in
-several steps, and it re-adds its watch after each change because an atomic
-rename replaces the file the watch was attached to.
+server is wrapped again. Every server in a watched config must run through
+this rover binary, so the kinds are: **unwrapped** (it was wrapped, now it is
+not), **unwrapped_server_added** (a new server, or a renamed key, that never
+went through rover), **rover_path_changed** (still says `rover wrap`, but
+runs a different file), **not_understood**, and **server_removed** (a wrapped
+server is gone: harmless by itself, but deleting and re-adding is how the
+first version of this watch was fooled). It watches each config's
+*directory*, because an atomic rename, or `rm` followed by writing the file
+again, replaces the file a file-level watch was attached to. It keeps its
+baseline (which servers were wrapped, by which command) in the state
+database, so an edit made while roverd was down is reported when it starts.
+It debounces for 500 ms because editors write files in several steps.
+`rover install` and `uninstall` tell roverd what they changed, so they do
+not set off the alarm themselves; that message is audited too.
 
-Limits worth knowing: a project config is watched only once `rover install`
-has written it (roverd has no idea which project directories you use), and
-only from roverd's next start. A server *removed* from the config is not an
-alarm: removing a server cannot route around rover.
+Limits worth knowing: only configs rover installed into are watched (roverd
+has no idea which project directories you use), and a config that is a
+symlink is watched at the link, not at its target.
 
 ### 6. What doctor proves, and what it does not
 

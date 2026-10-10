@@ -107,6 +107,25 @@ func TestDoctorClientsDetectsManualUnwrap(t *testing.T) {
 	if c := checkClients(env, []clients.Adapter{a}, rover); c[0].Status != statusFail || !strings.Contains(c[0].Detail, "/tmp/x/rover") {
 		t.Fatalf("look-alike: %+v", c)
 	}
+	// LOW: both problems are listed. H2: a server rover cannot parse fails,
+	// named, instead of passing.
+	write(`{"mcpServers":{"fs":{"command":"/tmp/x/rover","args":["wrap","--","npx","fs"]},"git":{"command":"uvx"},"dup":{"command":"a","Command":"b"}}}`)
+	c := checkClients(env, []clients.Adapter{a}, rover)
+	for _, want := range []string{"/tmp/x/rover", "not wrapped: git", "not understood: dup"} {
+		if c[0].Status != statusFail || !strings.Contains(c[0].Detail, want) {
+			t.Fatalf("want %q in %+v", want, c)
+		}
+	}
+	// M2: a bad manifest is a FAIL naming it, and the config is still checked.
+	bad := filepath.Join(env.BackupDir, "cursor", "deadbeef")
+	_ = os.MkdirAll(bad, 0o700)
+	if err := os.WriteFile(filepath.Join(bad, "manifest.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c = checkClients(env, []clients.Adapter{a}, rover)
+	if len(c) != 2 || !strings.Contains(c[0].Detail, bad) || c[0].Status != statusFail || !strings.Contains(c[1].Detail, "not wrapped: git") {
+		t.Fatalf("bad manifest: %+v", c)
+	}
 }
 
 func TestDoctorOutputFormat(t *testing.T) {
@@ -134,8 +153,12 @@ func TestDoctorEndToEnd(t *testing.T) {
 	home := filepath.Join(dir, "home")
 	cfg := filepath.Join(home, ".cursor", "mcp.json")
 	_ = os.MkdirAll(filepath.Dir(cfg), 0o700)
-	if err := os.WriteFile(cfg, []byte(`{"mcpServers":{"fs":{"command":"`+bins.rover+`","args":["wrap","--name","fs","--","npx","fs"]}}}`), 0o600); err != nil {
+	if err := os.WriteFile(cfg, []byte(`{"mcpServers":{"fs":{"command":"npx","args":["fs"]}}}`), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	// roverd watches the configs rover installed into.
+	if out, err := run(dir, "install", "--client", "cursor", "--yes"); err != nil {
+		t.Fatalf("install: %v\n%s", err, out)
 	}
 	stop := startDaemonStoppable(t, dir)
 	out, err := run(dir, "doctor", "--json")

@@ -11,6 +11,7 @@
         },
         "py":{"command":"/opt/rover/bin/rover","args":["wrap", "--name", "py", "--", "python", "mcp-server.py"]},
         "remote": {
+            "type": "http",
             "url": "http://localhost:3000/mcp",
             "headers": {"API_KEY": "value"}
         }
