@@ -1,8 +1,6 @@
 package daemon
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -176,17 +174,17 @@ func planToolResult(m jsonrpc.Message) (resultPlan, error) {
 		}
 	}
 	if sc, ok := field(fs, "structuredContent"); ok {
-		var buf bytes.Buffer
-		if err := json.Compact(&buf, sc.Value); err != nil {
+		text, err := decodedText(m.Raw, sc.Start, sc.End)
+		if err != nil {
 			return plan, fmt.Errorf("structuredContent: %w", err)
 		}
-		found := detect.NewRules().Scan(detect.KindToolResult, buf.Bytes())
+		found := detect.NewRules().Scan(detect.KindToolResult, text)
 		plan.findings = append(plan.findings, found...)
 		switch detect.Max(found) {
 		case detect.High:
 			whole := `{"content":[{"type":"text","text":` + string(mustJSON(removedText(detect.Score(found).IDs))) + `}],"isError":false}`
 			plan.edits, plan.warned = []edit{{m.ResultAt[0], m.ResultAt[1], []byte(whole)}}, false
-			plan.removed = append(plan.removed, sha(buf.Bytes()))
+			plan.removed = append(plan.removed, sha(sc.Value))
 			return plan, nil
 		case detect.Medium:
 			plan.warned = true

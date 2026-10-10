@@ -73,7 +73,7 @@ func TestPoisonedToolIsRemovedAuditedAndBlockedInEveryMode(t *testing.T) {
 			if !strings.Contains(strings.Join(listEntry.Findings, ","), "sensitive_path") {
 				t.Fatalf("the medium finding belongs on the list entry: %+v", listEntry)
 			}
-			if n := notes.all(); len(n) != 1 || !strings.Contains(n[0], "2 tools removed on echo") {
+			if n := notes.all(); len(n) != 1 || !strings.Contains(n[0], "2 tools blocked on echo") {
 				t.Fatalf("notifications %q", n)
 			}
 		})

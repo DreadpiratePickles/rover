@@ -113,7 +113,7 @@ func (s *scan) sensitivePath(word []byte, ws, we int) string {
 			return "credentials file"
 		}
 	case "aws", "kube", "docker", "cursor":
-		if s.dotted(ws) && (s.byteAt(we) == '/' || s.byteAt(we) == '\\') {
+		if s.dotted(ws) && (s.byteAt(we) == '/' || s.byteAt(we) == '\\' || s.homePath(ws) && !isWordByte(s.byteAt(we))) {
 			return "~/." + tok
 		}
 	case "gnupg", "npmrc", "netrc", "pgpass", "pypirc", "bash_history", "zsh_history":
@@ -146,6 +146,12 @@ var sensitiveWords = func() map[string]string {
 	}
 	return m
 }()
+
+// homePath reports a dot-directory written as a path from a home directory:
+// "~/.aws", "$HOME/.aws", "%USERPROFILE%\.aws" (not ".aws" in prose).
+func (s *scan) homePath(ws int) bool {
+	return s.at(ws-3, "~/.") || s.at(ws-7, "$home/.") || s.at(ws-15, "%userprofile%\\.")
+}
 
 // pubKeyAfter reports whether ".ssh/" is followed by a public key file.
 func (s *scan) pubKeyAfter(we int) bool {
@@ -203,7 +209,7 @@ func (s *scan) knownTools() {
 			continue
 		}
 		sev := s.pick(Medium, "", Low, Low)
-		if phrase || s.instructedBefore(ws) {
+		if !s.rules.provisional && (phrase || s.instructedBefore(ws)) {
 			sev = s.pick(High, "", Low, Low)
 		}
 		s.emit(RuleCrossTool, sev, ws, ws+len(name), "names "+servers[0]+"/"+name)

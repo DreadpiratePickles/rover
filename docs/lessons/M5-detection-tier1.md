@@ -137,7 +137,8 @@ sibling tools stays fine; real servers do it all the time ("use
 But this cuts both ways: an evil server can register tools called
 `pull_request` or `file_path` so that GitHub's own descriptions "mention
 another server's tool". So the names are remembered per agent session and
-per server, only distinctive names count (6+ characters with `_`, `-` or
+per server (a server's own names are everything it ever listed or pinned,
+and while a paged list is incomplete a bare name mention stays medium), only distinctive names count (6+ characters with `_`, `-` or
 `.`), and a bare mention is only medium (annotated). It is high, and the
 tool removed, only when the mention is an instruction: a verb right before
 it ("call send_email"), a condition in the same sentence ("when ...
@@ -292,9 +293,9 @@ With bodies off (the default) the removed text is not in the log, but its
 SHA-256 is: if the text turns up later, you can prove it is what Rover
 removed. With `rover daemon --log-bodies` the entry's body is the
 **original** line, as the server sent it, and the reason carries the
-SHA-256 of the line as forwarded. A desktop notification "1 tool removed on
-lab" appeared (one per server per 10 seconds, however many tools a server
-poisons), and `daemon.err` has `TOOL POISONING lab: 1 tool(s) removed ...:
+SHA-256 of the line as forwarded. A desktop notification "Rover blocked a tool" appeared (pins and detection
+share one budget: at most one notification per server per 10 seconds,
+however many tools a server poisons or changes), and `daemon.err` has `TOOL POISONING lab: 1 tool(s) removed ...:
 weather`. Note the findings on `weather`: the phrase list read "ignore
 previous instructions" through the zero-width characters, because they are
 removed before phrases are matched.

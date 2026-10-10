@@ -53,7 +53,6 @@ const (
 
 // Keys whose strings are scanned in schemas and in server requests.
 var (
-	schemaKeys  = map[string]bool{"description": true, "title": true, "default": true, "enum": true}
 	elicitKeys  = map[string]bool{"message": true, "text": true, "systemPrompt": true, "description": true, "title": true}
 	noticeBlock = mustJSON(struct {
 		Type string `json:"type"`
@@ -173,13 +172,16 @@ func poisonEntries(msg audit.Entry, events []poisonEvent) []audit.Entry {
 	return out
 }
 
-// removedMessage is the coalesced notification text (pin.Coalescer).
-func removedMessage(server string, n int) string {
+// blockedMessage is the coalesced notification text: pins and detection
+// share one coalescer, so one server causes at most one notification per
+// pin.NotifyWindow, whatever it does.
+func blockedMessage(server string, n int) string {
 	tools := "tools"
 	if n == 1 {
 		tools = "tool"
 	}
-	return fmt.Sprintf("%d %s removed on %s: possible tool poisoning. See `rover log`.", n, tools, pin.TerminalSafe(server))
+	srv := pin.TerminalSafe(server)
+	return fmt.Sprintf("%d %s blocked on %s (changed since pinned, or possible tool poisoning). Review with `rover pin list %s` and `rover log`.", n, tools, srv, srv)
 }
 
 // notifyPoison logs one line per list and notifies through the coalescer:
@@ -203,7 +205,7 @@ func (s *Server) notifyPoison(events []poisonEvent) {
 		single = fmt.Sprintf("%s/%s: possible tool poisoning (%s). It was removed from the tool list.",
 			pin.TerminalSafe(server), pin.TerminalSafe(events[0].tool), strings.Join(events[0].ids, ", "))
 	}
-	s.detNotes.Add(server, len(events), single)
+	s.notes.Add(server, len(events), single)
 }
 
 // detectRequest scans a request's text: tools/call arguments (tool_args) or

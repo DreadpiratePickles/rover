@@ -79,8 +79,7 @@ type Server struct {
 	unhealthy bool
 
 	pins           *pin.Checker
-	notes          *pin.Coalescer
-	detNotes       *pin.Coalescer // tools removed by detection, coalesced the same way
+	notes          *pin.Coalescer // pins and detection: one notification budget per server
 	det            detectState    // detection's memory (detect.go)
 	pol            atomic.Pointer[loaded]
 	noPolicyWarned atomic.Int64 // unix nanos of the last "no policy" warning
@@ -108,8 +107,7 @@ func New(o Options) *Server {
 		store = pin.NewBoltStore(o.State)
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
-		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescer(o.Notifier, o.Now),
-		detNotes: pin.NewCoalescerWith(o.Notifier, o.Now, removedMessage)}
+		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescerWith(o.Notifier, o.Now, blockedMessage)}
 	s.pol.Store(&loaded{pol: o.Policy, cfg: o.Config}) // startup: any mode (D6)
 	return s
 }

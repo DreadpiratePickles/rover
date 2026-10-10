@@ -56,8 +56,22 @@ func (s *Server) detectList(sess *Session, server string, result []byte, cursor 
 		tools = append(tools, listTool{at: e, name: name, fields: fs})
 		names = append(names, name)
 	}
-	known := sess.noteTools(server, names, cursor == "")
-	rules := detect.NewRules(detect.WithKnownTools(known), detect.WithServer(server))
+	// Own names: everything this server ever listed in the session, and
+	// every tool it has pinned. Until a paged listing is complete, its
+	// later pages may still hold the name a description refers to, so a
+	// bare name mention cannot be high yet (review N2).
+	own := names
+	if pinned, perr := s.pins.List(server); perr == nil {
+		for _, p := range pinned {
+			own = append(own, p.Tool)
+		}
+	}
+	known := sess.noteTools(server, own)
+	opts := []detect.Option{detect.WithKnownTools(known), detect.WithServer(server)}
+	if cursor != "" || next != "" {
+		opts = append(opts, detect.WithProvisionalNames())
+	}
+	rules := detect.NewRules(opts...)
 	kept := make([][]byte, 0, len(tools))
 	var all []detect.Finding
 	for _, t := range tools {
@@ -85,8 +99,8 @@ func (s *Server) detectList(sess *Session, server string, result []byte, cursor 
 }
 
 // scanTool scans every string of a tool the model may read: name, title,
-// description, annotations.title, and the description, title, default and
-// enum strings of inputSchema and outputSchema (review M3).
+// description, annotations.title, and every key and string of inputSchema
+// and outputSchema, each decoded and scanned on its own (reviews M3, N1).
 func scanTool(rules detect.Scanner, b []byte, t listTool) ([]detect.Finding, error) {
 	fs := rules.Scan(detect.KindToolDescription, []byte(t.name))
 	scan := func(text []byte) { fs = append(fs, rules.Scan(detect.KindToolDescription, text)...) }
@@ -112,7 +126,9 @@ func scanTool(rules detect.Scanner, b []byte, t listTool) ([]detect.Finding, err
 	}
 	for _, key := range []string{"inputSchema", "outputSchema"} {
 		if f, ok := field(t.fields, key); ok {
-			if err := walk(b, f.Start, f.End, "", schemaKeys, scan, 0); err != nil {
+			// every key and string, decoded: property names and enum
+			// values reach the model as much as descriptions do
+			if err := walkAll(b, f.Start, f.End, scan, 0); err != nil {
 				return nil, fmt.Errorf("%s: %w", key, err)
 			}
 		}

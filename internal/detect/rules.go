@@ -48,6 +48,14 @@ func WithKnownTools(tools map[string][]string) Option {
 	}
 }
 
+// WithProvisionalNames caps a bare mention of another server's tool at
+// medium, even inside an instruction: the scanned server's own list is not
+// complete yet (a paged tools/list), so the name may still turn out to be
+// its own. Phrases and the shadowing patterns are unaffected.
+func WithProvisionalNames() Option {
+	return func(r *Rules) { r.provisional = true }
+}
+
 // WithServer names the server whose texts are scanned; its own tools are
 // not "another server's tool".
 func WithServer(name string) Option {
@@ -57,8 +65,9 @@ func WithServer(name string) Option {
 // Rules is detection tier 1. It is immutable after NewRules and safe for
 // concurrent use; the compiled expressions are shared by every Rules.
 type Rules struct {
-	server string
-	tools  map[string][]string // lower-case tool name -> servers offering it
+	server      string
+	tools       map[string][]string // lower-case tool name -> servers offering it
+	provisional bool                // WithProvisionalNames
 }
 
 // NewRules returns the tier-1 scanner. It is cheap: the expressions are

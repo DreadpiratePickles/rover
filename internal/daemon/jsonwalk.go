@@ -327,6 +327,56 @@ func walk(b []byte, start, end int, key string, keys map[string]bool, fn func([]
 	return nil
 }
 
+// decodedText returns every object key and string value of the JSON value
+// b[start:end], decoded (escapes undone: "https:\/\/" is "https://"),
+// one per line, so detection reads what the client will read.
+func decodedText(b []byte, start, end int) ([]byte, error) {
+	var out []byte
+	add := func(t []byte) {
+		out = append(append(out, t...), '\n')
+	}
+	err := walkAll(b, start, end, add, 0)
+	return out, err
+}
+
+func walkAll(b []byte, start, end int, fn func([]byte), depth int) error {
+	if depth > maxWalkDepth {
+		return errTooDeep
+	}
+	i := skipSpace(b, start, end)
+	if i >= end {
+		return nil
+	}
+	switch b[i] {
+	case '"':
+		if t, ok := textValue(b[i:end]); ok {
+			fn(t)
+		}
+	case '{':
+		fs, err := splitObject(b, i, end)
+		if err != nil {
+			return err
+		}
+		for _, f := range fs {
+			fn([]byte(f.Key))
+			if err := walkAll(b, f.Start, f.End, fn, depth+1); err != nil {
+				return err
+			}
+		}
+	case '[':
+		els, err := splitArray(b, i, end)
+		if err != nil {
+			return err
+		}
+		for _, e := range els {
+			if err := walkAll(b, e[0], e[1], fn, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // edit replaces raw[start:end] with with.
 type edit struct {
 	start, end int

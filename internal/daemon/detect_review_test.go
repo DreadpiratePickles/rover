@@ -39,7 +39,7 @@ func TestPoisonNotificationsAreCoalesced(t *testing.T) {
 	listOnce(t, c, "2", tools...)
 
 	// Assert
-	if n := notes.all(); len(n) != 1 || !strings.Contains(n[0], "2000 tools removed on echo") {
+	if n := notes.all(); len(n) != 1 || !strings.Contains(n[0], "2000 tools blocked on echo") {
 		t.Fatalf("notifications (%d): %.200q", len(n), n)
 	}
 	mu.Lock()

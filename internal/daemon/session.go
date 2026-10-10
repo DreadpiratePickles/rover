@@ -31,7 +31,7 @@ type Session struct {
 	flags policy.SessionCtx
 	// tools is each server's tool names as this agent saw them listed, for
 	// detection's cross_tool_reference (review M4: per session, per server).
-	tools map[string][]string
+	tools map[string]map[string]bool
 }
 
 type pendingReq struct {
@@ -45,23 +45,27 @@ func newSession(id string, clientPID int, now time.Time) *Session {
 	return &Session{ID: id, ClientPID: clientPID, Created: now, servers: map[string]int{}, pending: map[string]pendingReq{}}
 }
 
-// noteTools records server's tool names from one tools/list page (fresh:
-// the first page of a listing, which replaces what was known) and returns
-// a copy of every server's names in this session.
-func (s *Session) noteTools(server string, names []string, fresh bool) map[string][]string {
+// noteTools adds names to everything server has ever listed in this
+// session (every page of every listing; a name is never forgotten, so a
+// server's own tool never becomes "another server's tool" because it sits
+// on a later page) and returns a copy of every server's names.
+func (s *Session) noteTools(server string, names []string) map[string][]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.tools == nil {
-		s.tools = map[string][]string{}
+		s.tools = map[string]map[string]bool{}
 	}
-	if fresh {
-		s.tools[server] = append([]string(nil), names...)
-	} else {
-		s.tools[server] = append(s.tools[server], names...)
+	if s.tools[server] == nil {
+		s.tools[server] = map[string]bool{}
+	}
+	for _, n := range names {
+		s.tools[server][n] = true
 	}
 	snap := make(map[string][]string, len(s.tools))
-	for k, v := range s.tools {
-		snap[k] = v
+	for srv, set := range s.tools {
+		for n := range set {
+			snap[srv] = append(snap[srv], n)
+		}
 	}
 	return snap
 }

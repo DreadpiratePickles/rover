@@ -22,8 +22,8 @@ const (
 	GateRecall = 0.90 // attack cases detected, overall
 	GateFPRate = 0.05 // benign cases with a medium or high finding, overall
 	// MinAttack and MinBenign are the plan's floor for the corpus size;
-	// MinBenign benign cases must come from real servers (source not
-	// "synthetic").
+	// MinBenign benign cases must come from real servers (an https://
+	// source URL).
 	MinAttack = 40
 	MinBenign = 60
 	// maxCaseBytes bounds one case file.
@@ -234,7 +234,7 @@ func (r Report) Gates() []string {
 	}
 	fromServers := 0
 	for _, o := range r.Outcomes {
-		if !o.Case.Attack() && o.Case.Source != "synthetic" {
+		if !o.Case.Attack() && strings.HasPrefix(o.Case.Source, "https://") {
 			fromServers++
 		}
 	}
