@@ -155,3 +155,14 @@ func (s *Session) forget(server, dir string, id []byte) {
 	delete(s.pending, server+":"+dir+":"+string(id))
 	s.mu.Unlock()
 }
+
+// take removes and reports the pending entry of the request sent in dir
+// with this id, if there is one.
+func (s *Session) take(server, dir string, id []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := server + ":" + dir + ":" + string(id)
+	_, ok := s.pending[key]
+	delete(s.pending, key)
+	return ok
+}

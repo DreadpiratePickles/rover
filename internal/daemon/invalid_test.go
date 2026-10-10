@@ -89,3 +89,36 @@ func TestInitializeWithCollidingClientInfoIsBlocked(t *testing.T) {
 		t.Fatalf("good %+v, client %q %q", good, name, ver)
 	}
 }
+
+// An invalid server reply to a pending agent request is not forwarded, but
+// the agent is answered with -32001 so it does not wait for that id forever.
+// An invalid reply to nothing pending is still dropped.
+func TestInvalidReplyToPendingRequestAnswersAgent(t *testing.T) {
+	// Arrange
+	log := &syncBuf{}
+	s := start(t, Options{Audit: audit.New(log), Policy: engine(t, hidingPolicy), Config: enforce()})
+	c := dial(t, s)
+	if v := decide(t, c, "c2s", `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`); v.Action != ipc.ActionForward {
+		t.Fatalf("tools/list verdict %+v", v)
+	}
+
+	// Act
+	v := decide(t, c, "s2c", `{"jsonrpc":"2.0","id":3,"result":{"tools":[]},"Result":{"tools":[]}}`)
+	again := decide(t, c, "s2c", `{"jsonrpc":"2.0","id":3,"result":{"tools":[]},"Result":{"tools":[]}}`)
+	orphan := decide(t, c, "s2c", `{"jsonrpc":"2.0","id":99,"result":{"tools":[]},"Result":{"tools":[]}}`)
+
+	// Assert
+	if v.Action != ipc.ActionReplace || len(v.ResponseRaw) != 0 ||
+		!bytes.HasPrefix(v.ReplacementRaw, []byte(`{"jsonrpc":"2.0","id":3,"error":{"code":-32001,"message":"blocked by rover: invalid_jsonrpc: `)) {
+		t.Fatalf("verdict %+v replacement %s", v, v.ReplacementRaw)
+	}
+	for _, d := range []ipc.Frame{again, orphan} { // the pending entry was used up
+		if d.Action != ipc.ActionBlock || len(d.ResponseRaw) != 0 || len(d.ReplacementRaw) != 0 {
+			t.Fatalf("uncorrelated invalid reply: verdict %+v", d)
+		}
+	}
+	e := log.entries(t)[1]
+	if e.Action != ipc.ActionBlock || e.Kind != "invalid" || !strings.HasPrefix(e.Reason, ReasonInvalidJSONRPC+": ") || string(e.ID) != "3" {
+		t.Fatalf("audit = %+v", e)
+	}
+}

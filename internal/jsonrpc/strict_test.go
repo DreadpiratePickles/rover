@@ -117,6 +117,25 @@ func TestParseKeepsIDOfInvalidRequest(t *testing.T) {
 	}
 }
 
+// An invalid response still names the request it answers, so roverd can
+// answer the agent instead of leaving it waiting (M2 re-verification, LOW).
+func TestParseKeepsIDOfInvalidResponse(t *testing.T) {
+	cases := []struct{ in, wantID string }{
+		{`{"id":3,"result":{},"Result":{}}`, "3"},
+		{`{"jsonrpc":"2.0","id":"a","result":{},"Result":{}}`, `"a"`},
+		{`{"jsonrpc":"2.0","id":null,"result":{},"Result":{}}`, ""},
+		{`{"jsonrpc":"2.0","id":3,"id":3,"result":{}}`, ""},
+		{`{"jsonrpc":"2.0","id":3,"Id":4,"result":{}}`, ""},
+		{`{"jsonrpc":"2.0","id":{},"result":{},"Result":{}}`, ""},
+	}
+	for _, c := range cases {
+		m := Parse([]byte(c.in))
+		if m.Kind != KindInvalid || string(m.ID) != c.wantID || m.Method != "" || m.InvalidRequest() {
+			t.Errorf("%s: kind %s id %q method %q", c.in, m.Kind, m.ID, m.Method)
+		}
+	}
+}
+
 func TestToolArguments(t *testing.T) {
 	m := Parse([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`))
 	if got := string(m.ToolArguments()); got != `{"text":"hi"}` {

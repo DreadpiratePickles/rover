@@ -32,7 +32,8 @@ race:
 # One fuzz run per parser of attacker-controlled input (plan §0.5): the
 # JSON-RPC classifier, the wrapper<->roverd frame parser, the audit-log
 # verifier, the line reader under all of them, and (M2) tool-argument
-# conversion, path normalisation, the policy decision and tools/list filtering.
+# conversion, path normalisation, the policy decision and tools/list filtering,
+# and (M3) the policy.yaml compiler.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
@@ -42,6 +43,7 @@ fuzz:
 	go test ./internal/policy/normalize -run='^$$' -fuzz=FuzzPath -fuzztime=$(FUZZTIME)
 	go test ./internal/policy -run='^$$' -fuzz=FuzzDecide -fuzztime=$(FUZZTIME)
 	go test ./internal/policy -run='^$$' -fuzz=FuzzFilterToolsList -fuzztime=$(FUZZTIME)
+	go test ./internal/policy/yaml2cedar -run='^$$' -fuzz=FuzzCompile -fuzztime=$(FUZZTIME)
 
 lint:
 	golangci-lint run ./...

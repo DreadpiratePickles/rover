@@ -1,0 +1,13 @@
+# The fetch server may only fetch from listed hosts.
+version: 1
+defaults: deny
+servers:
+  fetch:
+    labels: { fetch: [reads_untrusted, egress] }
+rules:
+  - id: fetch-docs
+    allow: fetch.fetch
+    when: { host_in: [docs.python.org, pkg.go.dev, developer.mozilla.org] }
+  - id: fetch-never-pastebin
+    deny: fetch.fetch
+    when: { host_in: [pastebin.com] }

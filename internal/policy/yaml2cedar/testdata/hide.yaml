@@ -1,0 +1,9 @@
+# A deny with hide: true removes the tool from tools/list as well.
+version: 1
+defaults: deny
+rules:
+  - id: fs-list
+    allow: filesystem.list_directory
+  - id: fs-no-write
+    deny: filesystem.write_file
+    hide: true

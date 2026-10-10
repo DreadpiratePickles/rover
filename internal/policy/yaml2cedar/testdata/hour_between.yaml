@@ -1,0 +1,14 @@
+# Office hours only for the git server; nothing at all at night.
+version: 1
+defaults: deny
+roots: { work: "~/work" }
+rules:
+  - id: git-commit-office-hours
+    allow: git.git_commit
+    when: { hour_between: [9, 18] }
+  - id: git-status-work
+    allow: git.git_status
+    when: { hour_between: [8, 20], path_under: work }
+  - id: nothing-before-six
+    deny: "*"
+    when: { hour_between: [0, 6] }

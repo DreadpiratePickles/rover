@@ -11,6 +11,7 @@ permit (principal, action == Action::"list_tools", resource == Server::"fetch");
 @id("fetch-allowed-hosts")
 permit (principal, action == Action::"call_tool", resource == Tool::"fetch/fetch")
 when {
+  context.norm has url &&
   context.norm.url.scheme == "https" &&
   ["docs.python.org", "pkg.go.dev", "developer.mozilla.org"].contains(context.norm.url.host)
 };

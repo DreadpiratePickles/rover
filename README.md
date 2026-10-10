@@ -25,7 +25,8 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | M0 | Repo hygiene: module rename, lint, CI, govulncheck | done |
 | M1 | `roverd` daemon, thin wrappers, peer-checked Unix socket, hash-chained audit log, auto-start | done |
 | M2 | Cedar policy engine: default deny, hidden tools, argument normalisers, `rover policy init/validate/test/apply` | done |
-| M3 | YAML → Cedar compiler | next |
+| M3 | YAML → Cedar compiler (`rover policy compile`, `policy init --yaml`), schema generated from config | done |
+| M4 | Tool pinning (rug-pull defence) | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -41,6 +42,12 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover policy validate  # type-check it against the schema (and run `cedar validate` if installed)
 ./bin/rover policy apply     # ask a running roverd to reload it (enforce -> observe is refused until M9)
 
+# or write the policy in YAML (plan §5.4) and read the Cedar it compiles to
+./bin/rover policy init --yaml          # policy.yaml instead of policy.cedar
+./bin/rover policy compile ~/Library/Application\ Support/Rover/policy.yaml
+./bin/rover policy validate ~/Library/Application\ Support/Rover/policy.yaml
+./bin/rover policy validate --print-schema   # the schema generated from your roots
+
 # wrap any stdio MCP server; roverd starts itself the first time
 # (--name may only use A-Za-z0-9_.-)
 ./bin/rover wrap --name filesystem -- npx -y @modelcontextprotocol/server-filesystem ~/lab
@@ -50,7 +57,7 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover policy test audit.jsonl  # replay a log (recorded with --log-bodies) through the current policy
 ```
 
-Rover denies by default: with no `policy.cedar`, roverd blocks every
+Rover denies by default: with no `policy.cedar` or `policy.yaml`, roverd blocks every
 `tools/call`, `tools/list`, `resources/read`, sampling and elicitation request
 (reason `no_policy`). `config.yaml` starts in `mode: observe`, where a denied
 message is still forwarded and logged as `would_deny`; switch to
@@ -59,12 +66,18 @@ to reload from enforce back to observe (that will need OS authentication, M9).
 Lines that are not unambiguous JSON-RPC (unknown members, duplicate keys or
 keys that differ only in case, such as `name` and `Name`) are blocked as
 `invalid_jsonrpc` in every mode. Every server you permit
-also needs a `list_tools` permit, or the agent never sees its tools.
+also needs a `list_tools` permit, or the agent never sees its tools (in
+`policy.yaml` the compiler adds it for you).
 
-Schema limitation until M3: a root you add under `roots:` in `config.yaml`
-(say `work`) is only usable in policies as `context.norm.<arg>.under_work`
-once `schema.cedarschema` in the config directory declares a matching
-`under_work: Bool` attribute next to `under_projects`.
+The schema is generated from the configuration: every root under `roots:`
+(say `work`) gives `context.norm.<arg>.under_work`, every attribute is
+optional, and a policy must test it with `has` first
+(`context.norm has path.under_work && context.norm.path.under_work`). A `has`
+on an attribute the schema does not declare is refused at load, because it
+would always be false. In a `policy.yaml`, every server with at least one
+`allow:` rule also gets an implied `list_tools` permit (id
+`<server>-list-tools`), so the agent can see the tools it may call; a server
+with only deny rules gets none.
 
 In an agent's MCP config, change
 
@@ -82,9 +95,16 @@ to
 
 | | macOS | Linux |
 | --- | --- | --- |
-| Config: `policy.cedar`, `config.yaml`, `schema.cedarschema`, `templates/` | `~/Library/Application Support/Rover/` | `$XDG_CONFIG_HOME/rover/` |
+| Config: `policy.cedar` or `policy.yaml`, `config.yaml`, `schema.cedarschema`, `templates/` | `~/Library/Application Support/Rover/` | `$XDG_CONFIG_HOME/rover/` |
 | State: `state.db`, `audit.jsonl`, `roverd.log` | `~/Library/Application Support/Rover/state/` | `$XDG_STATE_HOME/rover/` |
 | Socket, lock and pid files | `~/Library/Application Support/Rover/run/` | `$XDG_RUNTIME_DIR/rover/` |
+
+Which policy roverd loads: `policy.cedar` if it exists; otherwise
+`policy.yaml`, compiled to Cedar at load; otherwise none (`no_policy`, every
+policed message blocked). When `policy.yaml` is used, its `mode`, `roots` and
+`labels` override `config.yaml`'s; normalisers always come from `config.yaml`.
+roverd logs the choice at start. A `policy.yaml` that does not compile is
+logged with `file:line:col` and leaves the previous policy (or none) in force.
 
 `ROVER_DIR=/some/path` puts all three under one directory, which is how the
 tests and the lessons keep a lab separate from real use. Directories are `0700`
@@ -99,8 +119,9 @@ cmd/rover/             CLI: wrap, daemon, log, policy
 internal/policy/       the Cedar decision point: Decide, tools/list hiding (fuzzed)
 internal/policy/convert/    tool arguments -> Cedar values, with limits (fuzzed)
 internal/policy/normalize/  path/url/... normalisers run before the policy (fuzzed)
+internal/policy/yaml2cedar/ policy.yaml -> Cedar, strict, golden-tested (fuzzed)
 internal/config/       config.yaml: mode, roots, tool labels, normalisers
-policy/                the shipped schema, starter policy and templates (embedded)
+policy/                the shipped schema, starter policies (Cedar, YAML) and templates (embedded)
 internal/proxy/        the wrapper's pump: read, ask roverd, apply the verdict, forward the original bytes
 internal/daemon/       roverd: accept loop, peer check, sessions, the decision path
 internal/ipc/          wrapper <-> roverd protocol (fuzzed) and peer credentials

@@ -1,0 +1,20 @@
+version: 1
+mode: enforce            # observe | enforce
+defaults: deny
+servers:
+  filesystem:
+    labels: { read_file: [reads_private], write_file: [destructive] }
+rules:
+  - id: fs-read-projects
+    allow: filesystem.read_file
+    when: { path_under: projects }            # roots defined below
+  - id: gh-no-delete
+    deny: github.delete_repository
+    hide: true
+  - id: gh-push-needs-approval
+    allow: github.push_files
+    require: approval
+  - id: trifecta
+    deny: "*"
+    when: { session: { touched_private: true, saw_untrusted: true }, tool_label: egress }
+roots: { projects: "~/projects" }

@@ -1,6 +1,6 @@
 // Package policyfiles embeds the Cedar files Rover ships: the schema (plan
-// §5.1), the starter policy written by `rover policy init`, and the policy
-// templates. The files live next to this one so they can be read and edited
+// §5.1), the starter policies written by `rover policy init` (Cedar) and
+// `rover policy init --yaml` (YAML), and the policy templates. The files live next to this one so they can be read and edited
 // as plain Cedar; the Go package only makes them available to the binary.
 package policyfiles
 
@@ -20,6 +20,13 @@ var Schema []byte
 //
 //go:embed starter.cedar
 var Starter []byte
+
+// StarterYAML is the policy.yaml `rover policy init --yaml` writes: the
+// plan §5.4 example, in observe mode. roverd compiles it to Cedar on load
+// when no policy.cedar exists.
+//
+//go:embed starter.yaml
+var StarterYAML []byte
 
 //go:embed templates/*.cedar
 var templates embed.FS

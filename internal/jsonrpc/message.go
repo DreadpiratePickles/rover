@@ -38,7 +38,9 @@ const (
 //
 // For a KindInvalid message, Invalid says why, and ID and Method are still
 // filled in when the line had a usable exact "id" and "method", so the
-// requester can be told its request was refused (see InvalidRequest).
+// requester can be told its request was refused (see InvalidRequest). An
+// invalid line with no "method" keeps a usable, unambiguous "id" alone, so
+// roverd can answer the request it claims to answer (see salvage).
 type Message struct {
 	Kind    Kind
 	ID      json.RawMessage // nil for notifications; may be a number or a string
@@ -163,6 +165,11 @@ func (m *Message) classify(env envelope) string {
 // salvage keeps the exact id and method of an invalid message, when each
 // appears exactly once and is usable, so roverd can answer an invalid
 // request with -32600. They are never used to judge the message.
+//
+// Without a method the line may be an invalid response, and roverd answers
+// the request it names (if one is pending) with an error. The id is then kept
+// only when no key other than "id" folds to it ("Id", "ID"): a receiver that
+// reads keys case-insensitively must not see a different id than we do.
 func (m *Message) salvage() {
 	m.ID, m.Method = nil, ""
 	fields, err := object(m.Raw, false)
@@ -170,20 +177,30 @@ func (m *Message) salvage() {
 		return
 	}
 	var id, method json.RawMessage
-	var ids, methods int
+	var ids, idVariants, methods int
+	foldedID := FoldKey("id")
 	for _, f := range fields {
-		switch f.Key {
-		case "id":
+		switch {
+		case f.Key == "id":
 			id, ids = f.Value, ids+1
-		case "method":
+		case f.Key == "method":
 			method, methods = f.Value, methods+1
+		case FoldKey(f.Key) == foldedID:
+			idVariants++
 		}
+	}
+	usableID := ids == 1 && validID(id) && !bytes.Equal(id, []byte("null"))
+	if methods == 0 {
+		if usableID && idVariants == 0 {
+			m.ID = id
+		}
+		return
 	}
 	if methods != 1 || json.Unmarshal(method, &m.Method) != nil {
 		m.Method = ""
 		return
 	}
-	if ids == 1 && validID(id) && !bytes.Equal(id, []byte("null")) {
+	if usableID {
 		m.ID = id
 	}
 }

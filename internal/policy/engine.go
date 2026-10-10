@@ -14,8 +14,9 @@
 //     before Cedar runs, even in observe mode. A forbid that errors during
 //     evaluation counts as a forbid that fired.
 //   - Validate at load. Every policy is type-checked against the schema in
-//     strict mode; one bad policy fails the whole Load, so a typo can never
-//     silently disable a forbid.
+//     strict mode, and every `has` test must name a declared attribute
+//     (hascheck.go); one bad policy fails the whole Load, so a typo can
+//     never silently disable a forbid. The schema comes from SchemaFor.
 package policy
 
 import (
@@ -131,7 +132,7 @@ func Load(policySrc []byte, policyName string, schemaSrc []byte) (*Engine, error
 	if len(schemaSrc) > MaxSchemaBytes {
 		return nil, fmt.Errorf("%w: schema is %d bytes, limit %d", ErrLoad, len(schemaSrc), MaxSchemaBytes)
 	}
-	v, err := newValidator(schemaSrc)
+	v, hc, err := newValidator(schemaSrc)
 	if err != nil {
 		return nil, err
 	}
@@ -146,29 +147,29 @@ func Load(policySrc []byte, policyName string, schemaSrc []byte) (*Engine, error
 		hidden:   map[string]map[string]bool{},
 	}
 	for i, p := range list {
-		if err := e.add(i, p, v); err != nil {
+		if err := e.add(i, p, v, hc); err != nil {
 			return nil, fmt.Errorf("%w: %s: %w", ErrLoad, policyName, err)
 		}
 	}
 	return e, nil
 }
 
-func newValidator(schemaSrc []byte) (*validate.Validator, error) {
+func newValidator(schemaSrc []byte) (*validate.Validator, *hasChecker, error) {
 	var s schema.Schema
 	s.SetFilename("schema.cedarschema")
 	if err := s.UnmarshalCedar(schemaSrc); err != nil {
-		return nil, fmt.Errorf("%w: schema: %w", ErrLoad, err)
+		return nil, nil, fmt.Errorf("%w: schema: %w", ErrLoad, err)
 	}
 	r, err := s.Resolve()
 	if err != nil {
-		return nil, fmt.Errorf("%w: schema: %w", ErrLoad, err)
+		return nil, nil, fmt.Errorf("%w: schema: %w", ErrLoad, err)
 	}
-	return validate.New(r, validate.WithStrict()), nil
+	return validate.New(r, validate.WithStrict()), newHasChecker(r), nil
 }
 
 // add validates policy number i, works out its id and indexes its
 // annotations.
-func (e *Engine) add(i int, p *cedar.Policy, v *validate.Validator) error {
+func (e *Engine) add(i int, p *cedar.Policy, v *validate.Validator, hc *hasChecker) error {
 	id := policyID(i, p)
 	if _, dup := e.policies[id]; dup {
 		return fmt.Errorf("duplicate policy id %q", id)
@@ -176,6 +177,9 @@ func (e *Engine) add(i int, p *cedar.Policy, v *validate.Validator) error {
 	tree := (*xast.Policy)(p.AST())
 	if err := v.Policy(string(id), tree); err != nil {
 		return fmt.Errorf("policy %q (line %d) does not match the schema: %w", id, p.Position().Line, err)
+	}
+	if err := hc.check(tree); err != nil {
+		return fmt.Errorf("policy %q (line %d): %w", id, p.Position().Line, err)
 	}
 	meta, err := readAnnotations(id, p.Annotations(), tree)
 	if err != nil {

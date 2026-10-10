@@ -1,0 +1,23 @@
+# Break the lethal trifecta: private data + untrusted content + a way out.
+version: 1
+mode: enforce
+defaults: deny
+servers:
+  filesystem:
+    labels: { read_file: [reads_private] }
+  fetch:
+    labels: { fetch: [reads_untrusted, egress] }
+  slack:
+    labels: { post_message: [egress] }
+rules:
+  - id: trifecta-no-egress
+    deny: "*"
+    when:
+      session: { touched_private: true, saw_untrusted: true }
+      tool_label: egress
+  - id: no-destructive
+    deny: "*"
+    when: { tool_label: destructive }
+  - id: untrusted-session-quiet
+    deny: "*"
+    when: { session: { saw_untrusted: true } }
