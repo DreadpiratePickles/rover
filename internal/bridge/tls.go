@@ -129,6 +129,9 @@ func CheckURL(raw string, pqRequired bool) (*url.URL, error) {
 	if u.Host == "" || u.User != nil || u.Fragment != "" {
 		return nil, fmt.Errorf("bad url %q: want scheme://host/path with no user info or fragment", raw)
 	}
+	if hasDotSegment(u.EscapedPath()) || strings.Contains(strings.ToUpper(u.EscapedPath()), "%2F") {
+		return nil, fmt.Errorf("bad url %q: no \".\" or \"..\" segments and no encoded slash in the path", raw)
+	}
 	switch u.Scheme {
 	case "https":
 		return u, nil
@@ -142,6 +145,19 @@ func CheckURL(raw string, pqRequired bool) (*url.URL, error) {
 		return u, nil
 	}
 	return nil, fmt.Errorf("bad url %q: want https", raw)
+}
+
+// hasDotSegment reports a "." or ".." path segment, literal or
+// percent-encoded, which would let one URL spell another (review L-2).
+func hasDotSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		s := strings.ToUpper(seg)
+		s = strings.ReplaceAll(s, "%2E", ".")
+		if s == "." || s == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func isLoopback(host string) bool {

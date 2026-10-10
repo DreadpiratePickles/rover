@@ -93,11 +93,10 @@ func bridgeConfig(dirs paths.Dirs, name, rawURL string, pqFlag bool) (bridgeSett
 	st := bridgeSettings{name: name, url: rawURL, pq: pqFlag}
 	st.cfg, st.inConfig = cfg.Bridges[name]
 	if st.inConfig {
-		if rawURL == "" {
-			st.url = st.cfg.URL
-		} else if !sameURL(rawURL, st.cfg.URL) {
+		if rawURL != "" && !sameURL(rawURL, st.cfg.URL) {
 			return bridgeSettings{}, fmt.Errorf("--url %q differs from bridges.%s.url in config.yaml; refusing", rawURL, name)
 		}
+		st.url = st.cfg.URL // the approved spelling goes on the wire, never argv's
 		st.pq = st.pq || st.cfg.PQRequired
 	}
 	if st.url == "" {

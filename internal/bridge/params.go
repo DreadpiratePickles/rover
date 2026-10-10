@@ -231,7 +231,7 @@ func valueAt(args json.RawMessage, path []string, levels map[string]map[string]j
 		if !ok {
 			return nil, false
 		}
-		cur, prefix = next, prefix+"\x00"+k
+		cur, prefix = next, fmt.Sprintf("%s\x00%d:%s", prefix, len(k), k)
 	}
 	return cur, true
 }

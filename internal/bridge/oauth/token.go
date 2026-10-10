@@ -28,9 +28,12 @@ const refreshEarly = time.Minute
 // "rover", account = the server name or the configured account). It is
 // stored as JSON and never written anywhere else. The refresh token lives
 // in its own item, account "<account>/refresh" (refreshAccount): the macOS
-// keychain holds about 4 KiB per item, and a rotated refresh token that
+// keychain holds about 3000 bytes per item, and a rotated refresh token that
 // did not fit next to a long access token was lost for good, the server
-// having already invalidated the old one (review MEDIUM-2).
+// having already invalidated the old one (review MEDIUM-2). An access
+// token over about 2700 bytes still does not fit on macOS: Save fails
+// closed with keychain.ErrTooBig and the user is told; a chunked layout
+// is a follow-up (M14).
 //
 // Resource is the canonical URL the token was issued for (RFC 8707). A
 // token is sent only to a URL equal to it or under it (Covers): a stored

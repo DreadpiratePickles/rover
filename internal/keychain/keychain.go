@@ -25,8 +25,10 @@ var ErrNoKeychain = errors.New("no keychain available; Rover will not store toke
 // ErrNotFound means nothing is stored under that service and account.
 var ErrNotFound = errors.New("no such keychain item")
 
-// ErrTooBig means one item does not fit the platform's limit (macOS: about
-// 4 KiB for service, account and secret together through /usr/bin/security).
+// ErrTooBig means one item does not fit the platform's limit. On macOS
+// go-keyring base64-encodes the secret and refuses when the whole
+// /usr/bin/security command exceeds 4096 bytes, which leaves about 3000
+// raw bytes for one secret (service and account included).
 var ErrTooBig = errors.New("keychain: the secret is too large for one keychain item")
 
 // Keyring is the small part of a keychain Rover needs.

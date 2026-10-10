@@ -78,6 +78,13 @@ func TestCheckURL(t *testing.T) {
 		{"https://user:pw@mcp.example.com/", false, false},
 		{"https://mcp.example.com/#frag", false, false},
 		{"ftp://mcp.example.com/", false, false},
+		// Review L-2: one URL must not spell another under Covers.
+		{"https://mcp.example.com/mcp/../evil", false, false},
+		{"https://mcp.example.com/mcp/%2e%2e/evil", false, false},
+		{"https://mcp.example.com/mcp/./x", false, false},
+		{"https://mcp.example.com/mcp%2Fx", false, false},
+		{"https://mcp.example.com/mcp%2fx", false, false},
+		{"https://mcp.example.com/m%63p/..x", false, true},
 	} {
 		if _, err := CheckURL(c.url, c.pq); (err == nil) != c.ok {
 			t.Errorf("CheckURL(%q, pq=%v) = %v", c.url, c.pq, err)

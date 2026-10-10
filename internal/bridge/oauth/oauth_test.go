@@ -406,12 +406,14 @@ func TestCovers(t *testing.T) {
 }
 
 // Review MEDIUM-2: access and refresh tokens are separate keychain items, so
-// a long pair survives a 4 KiB per-item keychain, and a rotation whose
-// access token does not fit still keeps the rotated refresh token.
+// a long pair survives the macOS per-item cap (about 3000 raw bytes once
+// go-keyring's base64 and the 4096-byte command limit are counted), and a
+// rotation whose access token does not fit still keeps the rotated
+// refresh token.
 func TestRefreshTokenSurvivesKeychainCap(t *testing.T) {
 	kr := keychain.NewMemory()
-	kr.Limit = 4096
-	rec := Record{Kind: KindOAuth, AccessToken: strings.Repeat("a", 3000), RefreshToken: strings.Repeat("r", 3000), //nolint:gosec // G101: made-up test tokens
+	kr.Limit = 3000
+	rec := Record{Kind: KindOAuth, AccessToken: strings.Repeat("a", 2500), RefreshToken: strings.Repeat("r", 2500), //nolint:gosec // G101: made-up test tokens
 		Resource: "https://a.example/mcp", TokenEndpoint: "https://as.example/token", ClientID: "c"}
 	if err := Save(kr, "x", rec); err != nil {
 		t.Fatal(err)
