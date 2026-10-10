@@ -48,7 +48,9 @@ race:
 # client-config reader, which roverd's tamper watch runs on files an agent
 # can write, (M9) the client's elicitation reply and the approval
 # page's request handling, (M10) the secret detectors and the JSON
-# redaction of results, and (M11) the bridge's SSE reader.
+# redaction of results, and (M11) the bridge's SSE reader, the x-mcp-header
+# annotations of a remote's tools/list, and the unbridging of a client
+# config.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
@@ -70,6 +72,8 @@ fuzz:
 	go test ./internal/dlp -run='^$$' -fuzz=FuzzFind -fuzztime=$(FUZZTIME)
 	go test ./internal/dlp -run='^$$' -fuzz=FuzzRedact -fuzztime=$(FUZZTIME)
 	go test ./internal/bridge -run='^$$' -fuzz=FuzzSSE -fuzztime=$(FUZZTIME)
+	go test ./internal/bridge -run='^$$' -fuzz=FuzzToolHeaders -fuzztime=$(FUZZTIME)
+	go test ./internal/clients -run='^$$' -fuzz=FuzzUnbridge -fuzztime=$(FUZZTIME)
 
 # The detection gates (plan §6 M5) and the DLP gates (M10): recall, false
 # positives and corpus size on testdata/corpus and testdata/corpus/dlp.

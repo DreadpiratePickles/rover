@@ -1,9 +1,10 @@
 # `rover bridge`: facts checked before building (M11)
 
-Checked on 2026-10-09 against the official MCP specification. The latest
-revision on modelcontextprotocol.io that day is **2026-07-28**; the previous
-one is **2025-11-25**. Remote servers in the wild speak either, so the bridge
-handles both (it forwards the client's bytes and does not pick a version).
+Checked on 2026-10-09 against the official MCP specification, and again on
+2026-10-10 for the review fixes. The latest revision on modelcontextprotocol.io
+on both days is **2026-07-28**; the previous one is **2025-11-25**. Remote
+servers in the wild speak either, so the bridge handles both (it forwards the
+client's bytes and does not pick a version).
 
 ## Streamable HTTP
 
@@ -19,9 +20,11 @@ Both revisions:
   answered `202 Accepted` with no body; refusal is an HTTP error status.
 - A request is answered with `Content-Type: application/json` (one JSON
   object) or `text/event-stream` (SSE); the client MUST support both.
-- `MCP-Protocol-Version: <version>` on requests. In 2025-11-25 it is the
-  version negotiated in `initialize` (absent header: server assumes
-  2025-03-26). In 2026-07-28 it MUST equal the body's
+- `MCP-Protocol-Version: <version>` on requests. In 2025-11-25 ("Protocol
+  Version Header") the client MUST include it on all requests after
+  `initialize`, SHOULD with the negotiated version (absent header: server
+  assumes 2025-03-26). In 2026-07-28 ("Request Metadata > Protocol Version
+  Header") every POST MUST carry it and it MUST equal the body's
   `_meta["io.modelcontextprotocol/protocolVersion"]`, else 400.
 - Servers MUST validate `Origin` (DNS rebinding); local servers SHOULD bind
   to 127.0.0.1.
@@ -48,7 +51,20 @@ Both revisions:
   `prompts/get`); values outside visible ASCII, with edge spaces or that look
   like the sentinel are sent as `=?base64?...?=`. Mismatch is 400 with
   JSON-RPC error -32020 (HeaderMismatch).
-- `x-mcp-header` tool parameters MUST be mirrored as `Mcp-Param-<Name>`.
+- `x-mcp-header` tool parameters ("Request Metadata > Custom Headers from
+  Tool Parameters", re-read 2026-10-10): a server MAY annotate a parameter
+  in `inputSchema` with `"x-mcp-header": "<Name>"`; clients MUST support
+  it and MUST mirror the argument's value as `Mcp-Param-<Name>` (string as
+  is, integer in decimal, boolean lower-case; the base64 sentinel for
+  anything not plain ASCII or shaped like the sentinel; omitted when the
+  argument is absent or null). The name MUST be a non-empty RFC 9110
+  token, unique ignoring case, on an integer/string/boolean parameter
+  (never `number`), reachable from the root only through `properties`
+  keys (not `items`, `oneOf`/`anyOf`/`allOf`/`not`, `if`/`then`/`else`,
+  `$ref`). Clients using Streamable HTTP MUST reject a tool definition that
+  breaks any of these by excluding it from `tools/list` (SHOULD log the
+  tool name and reason). On a `HeaderMismatch` for missing `Mcp-Param-*`
+  the client SHOULD re-run `tools/list` and retry.
 - Cancellation is closing the request's SSE stream.
 
 What the bridge does: POST with both Accept types; JSON or SSE; `id:` and
@@ -58,9 +74,20 @@ stream drops before its response; `Mcp-Session-Id` captured and replayed;
 after `initialize` (405 stops it); DELETE on exit; `MCP-Protocol-Version`
 from the body's `_meta` when present, else the version the server returned
 in `initialize`; `Mcp-Method` and `Mcp-Name` derived from the body with the
-base64 sentinel. Deviation: `Mcp-Param-*` (x-mcp-header) is **not**
-mirrored in M11; a 2026-07-28 server that uses it answers -32020 and the
-client sees that error (tracked for M12+).
+base64 sentinel; `MCP-Protocol-Version` also on the GET stream and the
+DELETE, and, if the server returned no `protocolVersion`, the version the
+client asked for. `x-mcp-header` (review MEDIUM-1): the bridge reads every
+`tools/list` result it carries (depth and count limited: 32 levels, 32
+annotations per tool, names up to 256 bytes), remembers each tool's
+annotated paths, removes the tools whose annotations break the rules
+(logging the name and the reason; the kept tools keep their original
+bytes), and adds `Mcp-Param-<Name>` to every `tools/call` with the value
+at each path. The rule is applied to every remote, whatever its revision: a
+2025-11-25 server ignores unknown headers (RFC 9110). Not done: the SHOULD
+to re-list and retry on `HeaderMismatch` (the error reaches the client,
+which can call `tools/list` itself), and a `tools/call` to a tool the
+bridge never saw listed carries no `Mcp-Param-*` (the server answers
+-32020 and the client sees it).
 
 ## Authorization
 

@@ -11,6 +11,7 @@ package keychain
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -24,6 +25,10 @@ var ErrNoKeychain = errors.New("no keychain available; Rover will not store toke
 // ErrNotFound means nothing is stored under that service and account.
 var ErrNotFound = errors.New("no such keychain item")
 
+// ErrTooBig means one item does not fit the platform's limit (macOS: about
+// 4 KiB for service, account and secret together through /usr/bin/security).
+var ErrTooBig = errors.New("keychain: the secret is too large for one keychain item")
+
 // Keyring is the small part of a keychain Rover needs.
 type Keyring interface {
 	Get(service, account string) (string, error)
@@ -33,6 +38,10 @@ type Keyring interface {
 
 // Memory is an in-memory Keyring for tests. It never touches the disk.
 type Memory struct {
+	// Limit, if set, is the largest secret one item holds (ErrTooBig
+	// above it), to play the macOS keychain.
+	Limit int
+
 	mu    sync.Mutex
 	items map[string]string
 }
@@ -57,6 +66,9 @@ func (m *Memory) Get(service, account string) (string, error) {
 func (m *Memory) Set(service, account, secret string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.Limit > 0 && len(secret) > m.Limit {
+		return fmt.Errorf("%w (%d bytes, limit %d)", ErrTooBig, len(secret), m.Limit)
+	}
 	m.items[memKey(service, account)] = secret
 	return nil
 }

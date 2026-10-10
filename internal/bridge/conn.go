@@ -33,6 +33,7 @@ type Conn struct {
 	logf func(format string, a ...any)
 
 	wg         sync.WaitGroup // in-flight requests
+	orderMu    sync.Mutex     // Write: one message at a time, in order
 	listenOnce sync.Once
 	listening  chan struct{} // closed when the GET stream goroutine ends
 	closeOnce  sync.Once
@@ -48,12 +49,17 @@ func NewConn(ctx context.Context, t *Transport, logf func(format string, a ...an
 // FromRemote is the reader of messages from the remote, one per line.
 func (c *Conn) FromRemote() io.Reader { return c.pr }
 
-// Write sends one line to the remote. The initialize request is POSTed
-// synchronously, up to the response headers, so the session id it returns
-// is in place before the next message; everything else is sent
-// concurrently, because a slow tool call must not hold up the client's
-// later messages (a cancel, say). JSON-RPC matches replies by id, so order
-// across requests does not matter. Replies are always read in the
+// Write sends one line to the remote. Everything that is not a request,
+// plus the initialize request, is POSTed synchronously and in order, up to
+// the response headers: a notification has no reply to wait for beyond its
+// HTTP status (202), and the remote must see it before anything the client
+// wrote after it. The one that matters is notifications/initialized: a
+// tools/call that overtook it would reach a session the server has not
+// finished setting up (review HIGH-3). Initialize is synchronous so the
+// session id it returns is in place for the next message. Other requests
+// are sent concurrently, because a slow tool call must not hold up the
+// client's later messages (a cancel, say); JSON-RPC matches replies by id,
+// so order across requests does not matter. Replies are always read in the
 // background: they go through a pipe the other pump drains.
 func (c *Conn) Write(p []byte) (int, error) {
 	line := bytes.Clone(bytes.TrimRight(p, "\r\n"))
@@ -61,18 +67,20 @@ func (c *Conn) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	m := jsonrpc.Parse(line)
+	c.orderMu.Lock()
+	defer c.orderMu.Unlock()
 	c.wg.Add(1)
-	if m.Kind == jsonrpc.KindRequest && m.Method == "initialize" {
-		ch, err := c.t.Send(c.ctx, line)
+	if m.Kind == jsonrpc.KindRequest && m.Method != "initialize" {
 		go func() {
 			defer c.wg.Done()
+			ch, err := c.t.Send(c.ctx, line)
 			c.collect(m, ch, err)
 		}()
 		return len(p), nil
 	}
+	ch, err := c.t.Send(c.ctx, line)
 	go func() {
 		defer c.wg.Done()
-		ch, err := c.t.Send(c.ctx, line)
 		c.collect(m, ch, err)
 	}()
 	return len(p), nil

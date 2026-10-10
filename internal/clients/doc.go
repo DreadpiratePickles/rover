@@ -111,6 +111,7 @@ type Server struct {
 	cmd, args  *field // offsets into Doc.Orig
 	argElems   []element
 	urlF, typF *field
+	obj        [2]int // the server object's own span in Doc.Orig
 }
 
 // Doc is a parsed config file: the original bytes, untouched, and the
@@ -162,7 +163,7 @@ func parseDoc(s spec, cf ConfigFile, orig []byte) (Doc, error) {
 }
 
 func classify(src []byte, scope string, m field) Server {
-	sv := Server{Scope: scope, Key: m.Key, Status: StatusUnknown}
+	sv := Server{Scope: scope, Key: m.Key, Status: StatusUnknown, obj: [2]int{m.Start, m.End}}
 	obj, err := objectAt(src, m)
 	if err != nil {
 		sv.Problem = "not a JSON object: " + err.Error()

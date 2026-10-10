@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -62,7 +63,19 @@ func runBridge(args []string) int {
 	if *remoteType == "sse" {
 		errf("bridge %s: the client config said legacy SSE; using Streamable HTTP", st.name)
 	}
-	return serveBridge(dirs, st)
+	pool, err := rootCAs(st)
+	if err != nil {
+		errf("bridge %s: %v", st.name, err)
+		return 1
+	}
+	// Credentials are settled before roverd is contacted and before any
+	// remote request: a token for another server refuses the start.
+	src, err := tokenSource(st, keychain.NewOS(), bridge.NewHTTPClient(bridge.ClientOptions{PQRequired: st.pq, RootCAs: pool}))
+	if err != nil {
+		errf("bridge %s: %v", st.name, err)
+		return 2
+	}
+	return serveBridge(dirs, st, pool, src)
 }
 
 // bridgeConfig merges the flags with config.yaml's bridges.<name>. The
@@ -121,37 +134,32 @@ func rootCAs(st bridgeSettings) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// tokenSource picks the bridge's credentials: none, a keychain bearer or
-// OAuth record (config auth), or, for an unconfigured bridge, whatever
-// `rover bridge login` stored under its name, if anything.
-func tokenSource(st bridgeSettings, hcOpts bridge.ClientOptions) bridge.TokenSource {
-	src := &oauth.Source{Keyring: keychain.NewOS(), Account: st.name, HTTP: bridge.NewHTTPClient(hcOpts)}
+// tokenSource picks the bridge's credentials. Only a bridge with a
+// `bridges:` entry in config.yaml (a file an agent cannot change without a
+// human approving it) gets a token, the keychain record of its auth.keychain
+// account, and only if that record was issued for the bridge's URL or one
+// above it (review HIGH-1: a stored token must never be attachable to a
+// request to some other URL by whoever controls the command line or the
+// client config). An unconfigured bridge runs with no credentials at all.
+// A missing token or keychain is not a refusal here: the first request then
+// fails with the login hint, and a later login is picked up.
+func tokenSource(st bridgeSettings, kr keychain.Keyring, hc *http.Client) (bridge.TokenSource, error) {
 	if !st.inConfig {
-		return optionalSource{src}
+		errf("bridge %s is not in config.yaml: running without credentials (a stored token is used only for a configured bridge); "+
+			"add bridges.%s: {url: %s} to config.yaml and run `rover policy apply`", st.name, st.name, st.url)
+		return nil, nil
 	}
 	if st.cfg.Auth.Type == config.AuthNone {
-		return nil
+		return nil, nil
 	}
-	src.Account = st.cfg.Auth.Keychain
-	return src
+	src := &oauth.Source{Keyring: kr, Account: st.cfg.Auth.Keychain, URL: st.url, HTTP: hc}
+	if err := src.Preflight(); err != nil && !errors.Is(err, oauth.ErrNoToken) && !errors.Is(err, keychain.ErrNoKeychain) {
+		return nil, fmt.Errorf("refusing to start: %w", err)
+	}
+	return src, nil
 }
 
-// optionalSource sends no Authorization header when the keychain has no
-// token for the bridge (or there is no keychain): a server that needs one
-// answers 401 and the client is told to run `rover bridge login`.
-type optionalSource struct{ s *oauth.Source }
-
-func (o optionalSource) Token(ctx context.Context) (string, error) {
-	tok, err := o.s.Token(ctx)
-	if errors.Is(err, oauth.ErrNoToken) || errors.Is(err, keychain.ErrNoKeychain) {
-		return "", nil
-	}
-	return tok, err
-}
-
-func (o optionalSource) ForceRefresh(ctx context.Context) error { return o.s.ForceRefresh(ctx) }
-
-func serveBridge(dirs paths.Dirs, st bridgeSettings) int {
+func serveBridge(dirs paths.Dirs, st bridgeSettings, pool *x509.CertPool, src bridge.TokenSource) int {
 	hello := ipc.Hello{WrapperPID: os.Getpid(), ClientPID: os.Getppid(), ServerName: st.name,
 		ServerCmdSHA: commandDigest([]string{"bridge", st.url, strconv.FormatBool(st.pq)}), Transport: "http"}
 	// roverd first: no daemon, no remote traffic (fail closed, as for wrap).
@@ -161,16 +169,11 @@ func serveBridge(dirs paths.Dirs, st bridgeSettings) int {
 		return 1
 	}
 	defer func() { _ = client.Close() }()
-	pool, err := rootCAs(st)
-	if err != nil {
-		errf("bridge %s: %v", st.name, err)
-		return 1
-	}
 	opts := bridge.ClientOptions{PQRequired: st.pq, RootCAs: pool, OnTLS: func(host, group string) {
 		client.SetTLSGroup(group)
 		errf("tls: %s negotiated %s", host, group)
 	}}
-	t := bridge.New(st.url, bridge.NewHTTPClient(opts), tokenSource(st, bridge.ClientOptions{PQRequired: st.pq, RootCAs: pool}))
+	t := bridge.New(st.url, bridge.NewHTTPClient(opts), src)
 	t.Logf = errf
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

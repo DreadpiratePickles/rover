@@ -30,6 +30,9 @@ type Remote struct {
 	AuthServer string
 	// Base is the server's own origin (set after it starts).
 	Base string
+	// ToolsJSON, if set, is the raw "tools" array of every tools/list
+	// result (a test's own tool definitions, byte for byte).
+	ToolsJSON string
 
 	mu       sync.Mutex
 	sessions map[string]bool
@@ -149,6 +152,9 @@ func (r *Remote) post(w http.ResponseWriter, req *http.Request, body []byte) {
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
+	}
+	if m.Method == "tools/list" && r.ToolsJSON != "" {
+		reply = []byte(`{"jsonrpc":"2.0","id":` + string(m.ID) + `,"result":{"tools":` + r.ToolsJSON + `}}`)
 	}
 	if !r.SSE {
 		w.Header().Set("Content-Type", "application/json")

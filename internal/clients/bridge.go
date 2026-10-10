@@ -88,17 +88,31 @@ func bridgeEdits(orig, src []byte, s Server, roverPath string) []edit {
 	return es
 }
 
-// unbridgeEdits is the exact inverse of bridgeEdits.
+// unbridgeEdits is the inverse of bridgeEdits, wherever a client that
+// rewrote its file has put the members (review HIGH-2: "args" before
+// "command", another member between them, any spacing): the "command" key
+// becomes "url" again with the url's original bytes as its value, the
+// "args" member goes with one separator, and a "type" gets its original
+// value back. When nothing else changed since install, the result is the
+// file install read, byte for byte.
 func unbridgeEdits(orig, src []byte, s Server) ([]edit, error) {
-	if !s.Bridged || s.cmd == nil || s.args == nil {
+	if !s.Bridged || s.cmd == nil || s.args == nil || len(s.argElems) < 5 {
 		return nil, fmt.Errorf("%s is not bridged", s.Label())
 	}
 	k, ok := keyStart(src, s.cmd.Start, "command")
-	if !ok || string(orig[s.cmd.End:s.args.Start]) != `, "args": ` {
-		return nil, fmt.Errorf("%s: the bridge entry was edited by hand; restore it from the backup or edit it yourself", s.Label())
+	if !ok {
+		return nil, fmt.Errorf("%s: the \"command\" key is written unusually; restore the entry from the backup or edit it yourself", s.Label())
+	}
+	from, to, err := memberCut(src, *s.args, "args")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w; restore the entry from the backup or edit it yourself", s.Label(), err)
 	}
 	url := s.argElems[len(s.argElems)-1]
-	es := []edit{{start: k, end: k + len(`"command"`), text: []byte(`"url"`)}, {start: s.cmd.Start, end: s.args.End, text: bytes.Clone(orig[url.Start:url.End])}}
+	es := []edit{
+		{start: k, end: k + len(`"command"`), text: []byte(`"url"`)},
+		{start: s.cmd.Start, end: s.cmd.End, text: bytes.Clone(orig[url.Start:url.End])},
+		{start: from, end: to},
+	}
 	if len(s.argElems) == 7 {
 		if s.typF == nil {
 			return nil, fmt.Errorf("%s: the bridge entry lost its \"type\"; restore it from the backup", s.Label())
@@ -107,6 +121,35 @@ func unbridgeEdits(orig, src []byte, s Server) ([]edit, error) {
 		es = append(es, edit{start: s.typF.Start, end: s.typF.End, text: bytes.Clone(orig[t.Start:t.End])})
 	}
 	return es, nil
+}
+
+// memberCut is the byte range that removes the member whose value is v and
+// whose key is key, with one separator: from the comma before the key to
+// the value's end, or, for a first member, from the key through the comma
+// after the value and the white space that follows it.
+func memberCut(src []byte, v field, key string) (int, int, error) {
+	k, ok := keyStart(src, v.Start, key)
+	if !ok {
+		return 0, 0, fmt.Errorf("the %q key is written unusually", key)
+	}
+	i := k
+	for i > 0 && isSpace(src[i-1]) {
+		i--
+	}
+	if i > 0 && src[i-1] == ',' {
+		return i - 1, v.End, nil
+	}
+	end := v.End
+	for end < len(src) && isSpace(src[end]) {
+		end++
+	}
+	if end < len(src) && src[end] == ',' {
+		end++
+		for end < len(src) && isSpace(src[end]) {
+			end++
+		}
+	}
+	return k, end, nil
 }
 
 // keyStart finds where the member whose value starts at valueStart begins:

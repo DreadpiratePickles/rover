@@ -2,17 +2,20 @@ package oauth
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,7 +95,7 @@ func TestLoginAndCallEndToEnd(t *testing.T) {
 		t.Fatalf("keychain: %v", err)
 	}
 
-	src := &Source{Keyring: w.kr, Account: "fake", HTTP: w.hc}
+	src := &Source{Keyring: w.kr, Account: "fake", URL: w.remote.URL(), HTTP: w.hc}
 	tr := bridge.New(w.remote.URL(), w.hc, src)
 	ch, err := tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`))
 	if err != nil {
@@ -160,7 +163,7 @@ func TestRefresh(t *testing.T) {
 	}
 	now := time.Now().Add(2 * time.Hour) // past the 1h expiry
 	w.as.Now = func() time.Time { return now }
-	src := &Source{Keyring: w.kr, Account: "fake", HTTP: w.hc, Now: func() time.Time { return now }}
+	src := &Source{Keyring: w.kr, Account: "fake", URL: w.remote.URL(), HTTP: w.hc, Now: func() time.Time { return now }}
 	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -269,18 +272,182 @@ func TestRefuseIssuerMismatch(t *testing.T) {
 
 func TestBearer(t *testing.T) {
 	kr := keychain.NewMemory()
-	if err := SaveBearer(kr, "gh", "ghp_abc\n"); err != nil {
+	const gh = "https://gh.example/mcp"
+	if err := SaveBearer(kr, "gh", "ghp_abc\n", gh); err != nil {
 		t.Fatal(err)
 	}
-	src := &Source{Keyring: kr, Account: "gh"}
+	src := &Source{Keyring: kr, Account: "gh", URL: gh}
 	if tok, err := src.Token(context.Background()); err != nil || tok != "ghp_abc" {
 		t.Fatalf("%q %v", tok, err)
 	}
-	if err := SaveBearer(kr, "gh", "two words"); err == nil {
+	if err := SaveBearer(kr, "gh", "two words", gh); err == nil {
 		t.Fatal("a token with a space must be refused")
 	}
-	if _, err := (&Source{Keyring: kr, Account: "none"}).Token(context.Background()); err == nil || !strings.Contains(err.Error(), "rover bridge login") {
+	if err := SaveBearer(kr, "gh", "ghp_abc", ""); err == nil {
+		t.Fatal("a bearer token without the server URL must be refused")
+	}
+	if _, err := (&Source{Keyring: kr, Account: "none", URL: gh}).Token(context.Background()); err == nil || !strings.Contains(err.Error(), "rover bridge login") {
 		t.Fatalf("missing token: %v", err)
+	}
+	if _, err := (&Source{Keyring: kr, Account: "gh"}).Token(context.Background()); err == nil {
+		t.Fatal("a Source without a URL must hand out nothing")
+	}
+}
+
+// Review HIGH-1: a stored token goes only to the URL it was issued for, or
+// one under it. Every host here is routed to one recording server, so the
+// proof is what the server saw in Authorization, not a unit check.
+func TestTokenOnlyForItsResource(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string][]string{}
+	record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		key := scheme + "://" + strings.ToLower(r.Host) + r.URL.Path
+		mu.Lock()
+		seen[key] = append(seen[key], r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+	})
+	tlsSrv := httptest.NewTLSServer(record)
+	defer tlsSrv.Close()
+	plainSrv := httptest.NewServer(record)
+	defer plainSrv.Close()
+	pool := x509.NewCertPool()
+	pool.AddCert(tlsSrv.Certificate())
+	tlsAddr, plainAddr := strings.TrimPrefix(tlsSrv.URL, "https://"), strings.TrimPrefix(plainSrv.URL, "http://")
+	hc := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "example.com", MinVersion: tls.VersionTLS13},
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			target := tlsAddr
+			if strings.HasSuffix(addr, ":80") {
+				target = plainAddr
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, target)
+		},
+	}}
+	kr := keychain.NewMemory()
+	if err := SaveBearer(kr, "a", "tok-for-a", "https://a.example/mcp"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		url  string
+		sent bool
+	}{
+		{"https://a.example/mcp", true},
+		{"https://a.example/mcp/sub", true},
+		{"https://A.EXAMPLE/mcp/", true},
+		{"https://b.example/mcp", false},
+		{"https://a.example.evil/", false},
+		{"https://a.example/mcpx", false},
+		{"http://a.example/mcp", false},
+		{"https://a.example:8443/mcp", false},
+	} {
+		src := &Source{Keyring: kr, Account: "a", URL: c.url, HTTP: hc}
+		tr := bridge.New(c.url, hc, src)
+		ch, err := tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		if c.sent {
+			if err != nil {
+				t.Fatalf("%s: %v", c.url, err)
+			}
+			for range ch {
+			}
+			continue
+		}
+		if !errors.Is(err, ErrResource) {
+			t.Errorf("%s: want ErrResource, got %v", c.url, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "tok-for-a") {
+			t.Errorf("%s: the error names the token", c.url)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for key, auths := range seen {
+		if strings.Join(auths, "|") != "Bearer tok-for-a" {
+			t.Errorf("%s saw Authorization %q", key, auths)
+		}
+	}
+	for _, want := range []string{"https://a.example/mcp", "https://a.example/mcp/sub", "https://a.example/mcp/"} {
+		if len(seen[want]) != 1 {
+			t.Errorf("%s was not called once with the token: %v", want, seen)
+		}
+	}
+	for _, never := range []string{"https://b.example/mcp", "https://a.example.evil/", "https://a.example/mcpx", "http://a.example/mcp", "https://a.example:8443/mcp"} {
+		if _, ok := seen[never]; ok {
+			t.Errorf("%s received a request at all", never)
+		}
+	}
+}
+
+func TestCovers(t *testing.T) {
+	for _, c := range []struct {
+		res, target string
+		want        bool
+	}{
+		{"https://a.example/mcp", "https://a.example/mcp", true},
+		{"https://a.example/mcp", "https://a.example/mcp/sub?x=1", true},
+		{"https://a.example", "https://a.example/anything", true},
+		{"https://a.example/mcp", "https://a.example/mcpx", false},
+		{"https://a.example/mcp", "https://a.example/", false},
+		{"https://a.example/mcp", "http://a.example/mcp", false},
+		{"https://a.example/mcp", "https://a.example:443/mcp", false},
+		{"", "https://a.example/mcp", false},
+		{"https://a.example/mcp", "", false},
+		{"a.example/mcp", "https://a.example/mcp", false},
+	} {
+		if got := Covers(c.res, c.target); got != c.want {
+			t.Errorf("Covers(%q, %q) = %v, want %v", c.res, c.target, got, c.want)
+		}
+	}
+}
+
+// Review MEDIUM-2: access and refresh tokens are separate keychain items, so
+// a long pair survives a 4 KiB per-item keychain, and a rotation whose
+// access token does not fit still keeps the rotated refresh token.
+func TestRefreshTokenSurvivesKeychainCap(t *testing.T) {
+	kr := keychain.NewMemory()
+	kr.Limit = 4096
+	rec := Record{Kind: KindOAuth, AccessToken: strings.Repeat("a", 3000), RefreshToken: strings.Repeat("r", 3000), //nolint:gosec // G101: made-up test tokens
+		Resource: "https://a.example/mcp", TokenEndpoint: "https://as.example/token", ClientID: "c"}
+	if err := Save(kr, "x", rec); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(kr, "x")
+	if err != nil || got != rec {
+		t.Fatalf("round trip: %v", err)
+	}
+	if item, _ := kr.Get(keychain.Service, "x"); strings.Contains(item, "rrr") {
+		t.Fatal("the main item must not hold the refresh token")
+	}
+	rotated := rec
+	rotated.AccessToken, rotated.RefreshToken = strings.Repeat("b", 5000), strings.Repeat("s", 100)
+	if serr := Save(kr, "x", rotated); !errors.Is(serr, keychain.ErrTooBig) {
+		t.Fatalf("want ErrTooBig, got %v", serr)
+	}
+	got, err = Load(kr, "x")
+	if err != nil || got.AccessToken != rec.AccessToken || got.RefreshToken != rotated.RefreshToken {
+		t.Fatalf("after a failed rotation: access old=%v refresh new=%v err=%v", got.AccessToken == rec.AccessToken, got.RefreshToken == rotated.RefreshToken, err)
+	}
+	tooBig := rec
+	tooBig.RefreshToken = strings.Repeat("t", 5000)
+	if err := Save(kr, "x", tooBig); !errors.Is(err, keychain.ErrTooBig) {
+		t.Fatalf("want ErrTooBig, got %v", err)
+	}
+	if again, _ := Load(kr, "x"); again != got {
+		t.Fatal("a refresh token that does not fit must change nothing")
+	}
+	if err := Save(kr, "x", Record{Kind: KindBearer, AccessToken: "static", Resource: "https://a.example/mcp"}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := Load(kr, "x"); b.RefreshToken != "" {
+		t.Fatal("a record without a refresh token must drop the old item")
+	}
+	if err := Save(kr, "y", Record{Kind: KindBearer, AccessToken: "static"}); err == nil {
+		t.Fatal("a record without a resource must be refused")
 	}
 }
 

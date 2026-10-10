@@ -41,14 +41,11 @@ func clampRetry(d time.Duration) time.Duration {
 // openGET opens the GET stream, resuming after lastID if set.
 func (t *Transport) openGET(ctx context.Context, lastID string) (*http.Response, error) {
 	return t.do(ctx, func() (*http.Request, error) {
-		req, err := t.newRequest(ctx, http.MethodGet, nil)
+		req, err := t.newRequest(ctx, http.MethodGet, nil, t.version())
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Accept", "text/event-stream")
-		if _, neg := t.state(); neg != "" {
-			req.Header.Set(hdrProtocol, neg)
-		}
 		if lastID != "" {
 			req.Header.Set(hdrLastEventID, lastID)
 		}
@@ -83,7 +80,7 @@ func (t *Transport) readStream(ctx context.Context, body io.Reader, lastID strin
 		if req.Kind == jsonrpc.KindRequest {
 			if m := jsonrpc.Parse(msg); (m.Kind == jsonrpc.KindResult || m.Kind == jsonrpc.KindError) && bytes.Equal(m.ID, req.ID) {
 				answered = true
-				t.noteInitialize(req, msg)
+				msg = t.noteReply(req, msg)
 			}
 		}
 		select {

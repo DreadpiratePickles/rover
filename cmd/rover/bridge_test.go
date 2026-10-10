@@ -3,18 +3,27 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/bridge"
 	"github.com/DreadpiratePickles/rover/internal/bridge/bridgetest"
+	"github.com/DreadpiratePickles/rover/internal/bridge/oauth"
+	"github.com/DreadpiratePickles/rover/internal/config"
+	"github.com/DreadpiratePickles/rover/internal/keychain"
 )
 
 const bridgePolicy = `
@@ -137,5 +146,61 @@ func TestBridgeRefusesBadURL(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "run", "roverd.pid")); err == nil {
 			t.Fatalf("%v: roverd was started", args)
 		}
+	}
+}
+
+// Review HIGH-1: a token is attached only for a bridge configured in
+// config.yaml, and only when the record was issued for that bridge's URL.
+// The recording server is the proof: an unconfigured bridge sends no
+// Authorization even with a token stored under its name, and a configured
+// bridge whose URL the token does not cover never starts (no request).
+func TestBridgeTokenOnlyForConfiguredMatchingURL(t *testing.T) {
+	var mu sync.Mutex
+	var auths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auths = append(auths, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+	}))
+	defer srv.Close()
+	mcp := srv.URL + "/mcp"
+	kr := keychain.NewMemory()
+	if err := oauth.SaveBearer(kr, "x", "stored-token", mcp); err != nil {
+		t.Fatal(err)
+	}
+	ping := func(src bridge.TokenSource) {
+		t.Helper()
+		ch, err := bridge.New(mcp, srv.Client(), src).Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range ch {
+		}
+	}
+	// Unconfigured: no token, whatever the keychain holds under the name.
+	src, err := tokenSource(bridgeSettings{name: "x", url: mcp}, kr, srv.Client())
+	if err != nil || src != nil {
+		t.Fatalf("unconfigured bridge: src=%v err=%v", src, err)
+	}
+	ping(src)
+	// Configured for another URL: refused before any request.
+	other := config.Bridge{Name: "x", URL: "https://other.example/mcp", Auth: config.BridgeAuth{Type: config.AuthBearer, Keychain: "x"}}
+	if _, terr := tokenSource(bridgeSettings{name: "x", url: other.URL, cfg: other, inConfig: true}, kr, srv.Client()); terr == nil ||
+		!errors.Is(terr, oauth.ErrResource) || !strings.Contains(terr.Error(), "other.example") || !strings.Contains(terr.Error(), "127.0.0.1") || strings.Contains(terr.Error(), "stored-token") {
+		t.Fatalf("configured for another URL: %v", terr)
+	}
+	// Configured for the URL the token is for: sent.
+	mine := config.Bridge{Name: "x", URL: mcp, Auth: config.BridgeAuth{Type: config.AuthBearer, Keychain: "x"}}
+	src, err = tokenSource(bridgeSettings{name: "x", url: mcp, cfg: mine, inConfig: true}, kr, srv.Client())
+	if err != nil || src == nil {
+		t.Fatalf("configured bridge: src=%v err=%v", src, err)
+	}
+	ping(src)
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(auths, "|") != "|Bearer stored-token" {
+		t.Fatalf("Authorization seen by the remote, per request: %q", auths)
 	}
 }

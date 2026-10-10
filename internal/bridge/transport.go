@@ -79,7 +79,9 @@ type Transport struct {
 
 	mu         sync.Mutex
 	session    string
-	negotiated string
+	negotiated string // protocolVersion the server returned from initialize
+	requested  string // protocolVersion the client asked for in initialize
+	tools      toolTable
 }
 
 // New returns a Transport for url using client.
@@ -100,8 +102,23 @@ func (t *Transport) state() (session, negotiated string) {
 	return t.session, t.negotiated
 }
 
+// version is the protocol version to put in MCP-Protocol-Version after
+// initialize: the one the server returned, else the one the client asked
+// for (a server that returned none still gets told which version the
+// client speaks; the spec wants the header on every later request).
+func (t *Transport) version() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.negotiated != "" {
+		return t.negotiated
+	}
+	return t.requested
+}
+
 // newRequest builds a request with Rover's own headers and nothing else.
-func (t *Transport) newRequest(ctx context.Context, method string, body []byte) (*http.Request, error) {
+// version, if not empty, is sent as MCP-Protocol-Version (GET and DELETE;
+// a POST derives it from its body in setMCPHeaders).
+func (t *Transport) newRequest(ctx context.Context, method string, body []byte, version string) (*http.Request, error) {
 	var r io.Reader
 	if body != nil {
 		r = bytes.NewReader(body)
@@ -112,6 +129,9 @@ func (t *Transport) newRequest(ctx context.Context, method string, body []byte) 
 	}
 	if s, _ := t.state(); s != "" {
 		req.Header.Set(hdrSession, s)
+	}
+	if version != "" {
+		req.Header.Set(hdrProtocol, version)
 	}
 	if t.Auth != nil {
 		tok, err := t.Auth.Token(ctx)
@@ -156,15 +176,20 @@ func (t *Transport) do(ctx context.Context, build func() (*http.Request, error))
 func (t *Transport) Send(ctx context.Context, line []byte) (<-chan []byte, error) {
 	body := bytes.TrimRight(line, "\r\n")
 	m := jsonrpc.Parse(body)
+	if m.Kind == jsonrpc.KindRequest && m.Method == "initialize" {
+		t.noteRequested(m)
+	}
 	resp, err := t.do(ctx, func() (*http.Request, error) {
-		req, err := t.newRequest(ctx, http.MethodPost, body)
+		req, err := t.newRequest(ctx, http.MethodPost, body, "")
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
-		_, neg := t.state()
-		setMCPHeaders(req.Header, m, neg)
+		setMCPHeaders(req.Header, m, t.version())
+		for _, kv := range t.paramHeaders(m) {
+			req.Header.Set(kv[0], kv[1])
+		}
 		return req, nil
 	})
 	if err != nil {
@@ -201,8 +226,7 @@ func (t *Transport) Send(ctx context.Context, line []byte) (<-chan []byte, error
 		if err != nil {
 			return nil, err
 		}
-		t.noteInitialize(m, msg)
-		out <- msg
+		out <- t.noteReply(m, msg)
 		close(out)
 	case "text/event-stream":
 		go t.pumpPOSTStream(ctx, resp, m, out)
@@ -234,15 +258,37 @@ func (t *Transport) clearSession(id string) {
 	t.mu.Unlock()
 }
 
-// noteInitialize records the protocol version from the reply to initialize.
-func (t *Transport) noteInitialize(req jsonrpc.Message, msg []byte) {
-	if req.Kind != jsonrpc.KindRequest || req.Method != "initialize" {
-		return
+// noteReply looks at one message answering req and returns what to forward:
+// the reply to initialize fixes the protocol version, and a tools/list
+// result teaches the Mcp-Param headers (and loses its invalid tools).
+func (t *Transport) noteReply(req jsonrpc.Message, msg []byte) []byte {
+	if req.Kind != jsonrpc.KindRequest {
+		return msg
 	}
 	r := jsonrpc.Parse(msg)
 	if r.Kind != jsonrpc.KindResult || !bytes.Equal(r.ID, req.ID) {
-		return
+		return msg
 	}
+	switch req.Method {
+	case "initialize":
+		t.noteInitialize(r)
+	case "tools/list":
+		return t.noteToolsList(req, r)
+	}
+	return msg
+}
+
+// noteRequested records the protocol version the client asked for.
+func (t *Transport) noteRequested(req jsonrpc.Message) {
+	if v := resultProtocolVersion(req.Params); v != "" {
+		t.mu.Lock()
+		t.requested = v
+		t.mu.Unlock()
+	}
+}
+
+// noteInitialize records the protocol version from the reply to initialize.
+func (t *Transport) noteInitialize(r jsonrpc.Message) {
 	if v := resultProtocolVersion(r.Result); v != "" {
 		t.mu.Lock()
 		t.negotiated = v
@@ -322,7 +368,7 @@ func (t *Transport) Close(ctx context.Context) {
 	if t.Session() == "" {
 		return
 	}
-	req, err := t.newRequest(ctx, http.MethodDelete, nil)
+	req, err := t.newRequest(ctx, http.MethodDelete, nil, t.version())
 	if err != nil {
 		t.Logf("ending the remote session: %v", err)
 		return

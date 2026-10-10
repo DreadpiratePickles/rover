@@ -23,7 +23,9 @@ import (
 // `rover bridge login --name N [--url URL] [--token -]` (M11). With
 // --token - it stores a static bearer token read from stdin (never from
 // argv: anything in argv is visible to every process in `ps`). Without it,
-// it runs the OAuth 2.1 login in the browser.
+// it runs the OAuth 2.1 login in the browser. Either way the URL the token
+// is for (from --url or config.yaml's bridges entry; both must agree) is
+// recorded with it, and the bridge sends it nowhere else.
 func bridgeLogin(args []string) int {
 	fs := flag.NewFlagSet("bridge login", flag.ExitOnError)
 	name := fs.String("name", "", "the bridge name (the keychain account unless config.yaml sets auth.keychain)")
@@ -39,25 +41,19 @@ func bridgeLogin(args []string) int {
 		errf("%v", err)
 		return 1
 	}
-	account := *name
-	if *token == "-" {
-		cfg, cerr := config.Load(dirs.Config)
-		if cerr != nil {
-			errf("bridge login: %v", cerr)
-			return 1
-		}
-		if b, ok := cfg.Bridges[*name]; ok {
-			account = b.Auth.Keychain
-		}
-		return storeBearer(*name, account)
-	}
 	st, err := bridgeConfig(dirs, *name, *rawURL, false)
 	if err != nil {
 		errf("bridge login: %v", err)
 		return 2
 	}
+	account := *name
 	if st.inConfig {
 		account = st.cfg.Auth.Keychain
+	} else {
+		errf("bridge login: %s is not in config.yaml; the token is stored but `rover bridge` uses it only once bridges.%s is configured", st.name, st.name)
+	}
+	if *token == "-" {
+		return storeBearer(st, account)
 	}
 	pool, err := rootCAs(st)
 	if err != nil {
@@ -85,21 +81,17 @@ func bridgeLogin(args []string) int {
 	return 0
 }
 
-func storeBearer(name, account string) int {
-	if name == "" {
-		errf("bridge login: --name is required")
-		return 2
-	}
+func storeBearer(st bridgeSettings, account string) int {
 	b, err := io.ReadAll(io.LimitReader(os.Stdin, 16<<10))
 	if err != nil {
 		errf("bridge login: reading the token: %v", err)
 		return 1
 	}
-	if err := oauth.SaveBearer(keychain.NewOS(), account, string(b)); err != nil {
+	if err := oauth.SaveBearer(keychain.NewOS(), account, string(b), st.url); err != nil {
 		errf("bridge login: %v", err)
 		return 1
 	}
-	errf("stored a bearer token for %s in the keychain (service %s, account %s)", name, keychain.Service, account)
+	errf("stored a bearer token for %s (%s) in the keychain (service %s, account %s)", st.name, st.url, keychain.Service, account)
 	return 0
 }
 

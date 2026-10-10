@@ -64,7 +64,7 @@ func mapErr(err error) error {
 	case errors.Is(err, keyring.ErrUnsupportedPlatform):
 		return fmt.Errorf("%w (%v)", ErrNoKeychain, err)
 	case errors.Is(err, keyring.ErrSetDataTooBig):
-		return fmt.Errorf("keychain: the secret is too large for this keychain (%w)", err)
+		return fmt.Errorf("%w (%v)", ErrTooBig, err)
 	}
 	if noService(err) {
 		return fmt.Errorf("%w (%v)", ErrNoKeychain, err)
