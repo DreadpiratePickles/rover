@@ -103,6 +103,20 @@ func IsInjectID(id json.RawMessage) bool {
 	return strings.HasPrefix(s, InjectIDPrefix)
 }
 
+// ValidTLSGroup accepts a key exchange group name: 1..32 of [A-Za-z0-9_-].
+func ValidTLSGroup(s string) bool {
+	if len(s) == 0 || len(s) > 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '_' && c != '-' && (c < '0' || c > '9') && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
 // MaxToolName bounds the tool named in an admin frame.
 const MaxToolName = 1024
 
@@ -136,6 +150,10 @@ type Frame struct {
 	Seq uint64 `json:"seq,omitempty"`
 	Dir string `json:"dir,omitempty"` // "c2s" or "s2c"
 	Raw []byte `json:"raw,omitempty"` // base64 on the wire
+	// TLSGroup, on a decide from a bridge (M11), names the key exchange of
+	// the bridge's newest TLS connection; roverd logs it as the audit
+	// finding "tls:<group>".
+	TLSGroup string `json:"tls_group,omitempty"`
 
 	// verdict, release
 	Action         string   `json:"action,omitempty"`
@@ -213,6 +231,9 @@ func (f Frame) Validate() error {
 	case TypeDecide:
 		if f.SessionID == "" || f.Seq == 0 || (f.Dir != "c2s" && f.Dir != "s2c") || len(f.Raw) == 0 {
 			return fmt.Errorf("%w: decide needs session_id, seq, dir and raw", ErrBadFrame)
+		}
+		if f.TLSGroup != "" && !ValidTLSGroup(f.TLSGroup) {
+			return fmt.Errorf("%w: bad tls_group", ErrBadFrame)
 		}
 	case TypeVerdict, TypeRelease:
 		if f.Seq == 0 {

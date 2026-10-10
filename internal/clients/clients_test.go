@@ -23,13 +23,13 @@ type fixture struct {
 }
 
 var fixtures = []fixture{
-	{NameClaudeCode, "claude-code.user.json", func(h, _ string) string { return filepath.Join(h, ".claude.json") }, 6, 1},
-	{NameClaudeCode, "claude-code.project.json", func(_, c string) string { return filepath.Join(c, ".mcp.json") }, 1, 1},
+	{NameClaudeCode, "claude-code.user.json", func(h, _ string) string { return filepath.Join(h, ".claude.json") }, 7, 0},
+	{NameClaudeCode, "claude-code.project.json", func(_, c string) string { return filepath.Join(c, ".mcp.json") }, 2, 0},
 	{NameCursor, "cursor.json", func(h, _ string) string { return filepath.Join(h, ".cursor", "mcp.json") }, 2, 1},
 	{NameClaudeDesktop, "claude-desktop.json", func(h, _ string) string {
 		return filepath.Join(h, "Library", "Application Support", "Claude", "claude_desktop_config.json")
 	}, 2, 0},
-	{NameVSCode, "vscode.json", func(_, c string) string { return filepath.Join(c, ".vscode", "mcp.json") }, 1, 1},
+	{NameVSCode, "vscode.json", func(_, c string) string { return filepath.Join(c, ".vscode", "mcp.json") }, 2, 0},
 }
 
 func testEnv(t *testing.T) Env {
@@ -84,7 +84,8 @@ func install(t *testing.T, env Env, cf ConfigFile) Plan {
 
 // Acceptance (M7): install then uninstall gives back the same bytes;
 // install twice equals install once; comments, odd spacing and unknown keys
-// survive; remote entries are left alone with a warning. The wrapped output
+// survive; remote entries become `rover bridge` entries (M11), except one
+// with its own headers, which is left alone with a warning. The output
 // is compared with a golden file.
 func TestInstallUninstallGolden(t *testing.T) {
 	for _, f := range fixtures {

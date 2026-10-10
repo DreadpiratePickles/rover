@@ -35,13 +35,14 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | M9 | Approvals and OS authentication: `@rover_require("approval")` holds a call until the macOS authentication dialog (LocalAuthentication) or polkit says yes; MCP elicitation and a read-only details page inform; `rover policy apply` and `rover pin approve/reset` need the dialog; roverd loads only an approved policy hash | done, pending the macOS dialog spike (Bobby, see docs/lessons/M9-approvals.md) |
 | M10 | Secrets and data-loss prevention: secrets in results and errors redacted before the model sees them, egress calls carrying a secret blocked, every audit entry and log line redacted (bodies now logged by default), egress allow-list template, DLP corpus and `rover eval` gates | done |
 | — | **Phase 2 complete: v0.2.0** (snapshot via `make snapshot`; tagging is Bobby's) | |
-| M11 | Remote servers through `rover bridge` | next |
+| M11 | Remote servers through `rover bridge`: Streamable HTTP (JSON and SSE, sessions, GET stream, resumption), OAuth 2.1 with PKCE, RFC 8707 resource and token audience check, tokens only in the OS keychain, never the client's own credentials, TLS 1.3 with `pq_required` (X25519MLKEM768 only), `rover doctor --remote`, `rover install` converts remote entries | done |
+| M12 | Detection tiers 2 and 3 | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
 
 ```bash
-make build          # -> bin/rover, bin/echo-server  (Go 1.25+)
+make build          # -> bin/rover, bin/echo-server, bin/fake-remote  (Go 1.25+)
 make test           # unit + end-to-end tests with the race detector
 make fuzz           # fuzz every parser of attacker input for 30s each
 
@@ -113,6 +114,17 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 # To limit egress tools to trusted hosts, uncomment the egress allow-list at
 # the end of policy.cedar (templates/egress-allowlist.cedar).
 
+# remote servers (M11): `rover bridge` is a stdio server toward the client and a
+# Streamable HTTP client toward the remote; every message goes through roverd.
+# Optional config.yaml (approved with `rover policy apply`):
+#   bridges:
+#     github: {url: https://api.githubcopilot.com/mcp, pq_required: true}
+./bin/rover bridge login --name github           # OAuth 2.1 + PKCE in the browser; tokens -> OS keychain only
+printf %s "$TOKEN" | ./bin/rover bridge login --name github --token -   # or a static bearer (stdin, never argv)
+./bin/rover bridge --name github --url https://api.githubcopilot.com/mcp --pq-required   # what install writes
+./bin/rover doctor --remote                      # handshake each bridge, print the TLS group
+./bin/fake-remote -as-http                       # local fake remote + OAuth server to try it (docs/lessons/M11-remote-bridge.md)
+
 # learn mode (M6): in observe mode roverd records the shape of every call
 # (resolved paths, hosts, short literals; never contents). Then:
 ./bin/rover policy propose --yaml    # Cedar (+ YAML) permitting what was seen; flagged calls
@@ -123,7 +135,8 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 # client installers (M7): wrap every stdio server of Claude Code, Cursor,
 # Claude Desktop (macOS) and VS Code (.vscode/mcp.json); each change is shown
 # as a diff and asked about (y/N), the original is backed up under the state
-# directory, and remote servers are left alone until M11
+# directory, and remote servers become `rover bridge` entries (M11; one with
+# its own "headers" is left alone with a warning)
 ./bin/rover install --dry-run        # show every diff, write nothing
 ./bin/rover install                  # or: --client claude-code --yes
 ./bin/rover uninstall                # restore the backups (byte-identical) or unwrap in place

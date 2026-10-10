@@ -1,6 +1,8 @@
 // Command rover is the Rover MCP security gateway.
 //
 //	rover wrap [--name NAME] -- <mcp server command> [args...]
+//	rover bridge --name NAME --url URL [--pq-required]
+//	rover bridge login --name NAME [--url URL] [--token -]
 //	rover daemon [--no-bodies]
 //	rover log [--log FILE] [--verify]
 //	rover policy init|validate|test|apply|propose|diff|labels
@@ -8,7 +10,7 @@
 //	rover eval [--corpus DIR]
 //	rover install|uninstall [--client NAME ...] [--yes] [--dry-run] [--service]
 //	rover install --polkit
-//	rover doctor [--json]
+//	rover doctor [--json] [--remote]
 //	rover version
 //
 // "wrap" starts the real MCP server as a child process and sits between it and
@@ -35,6 +37,8 @@ func main() {
 	switch os.Args[1] {
 	case "wrap":
 		os.Exit(wrap(os.Args[2:]))
+	case "bridge":
+		os.Exit(runBridge(os.Args[2:]))
 	case "daemon":
 		os.Exit(runDaemon(os.Args[2:]))
 	case "log":
@@ -61,12 +65,13 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage:\n  rover wrap [--name NAME] -- <server command> [args...]\n  rover daemon [--no-bodies]\n  rover log [--log FILE] [--verify]\n"+
+	fmt.Fprintln(os.Stderr, "usage:\n  rover wrap [--name NAME] -- <server command> [args...]\n  rover bridge --name NAME --url URL [--pq-required]\n"+
+		"  rover bridge login --name NAME [--url URL] [--token -]\n  rover daemon [--no-bodies]\n  rover log [--log FILE] [--verify]\n"+
 		"  rover policy init [--force]\n  rover policy validate [--policy FILE]\n  rover policy test <audit.jsonl>\n  rover policy apply\n"+
 		"  rover policy propose [--out FILE [--force]] [--yaml]\n  rover policy diff [FILE]\n  rover policy labels [server]\n"+
 		"  rover pin list [server]\n  rover pin approve <server> <tool> <digest>\n  rover pin reset <server>\n  rover approvals list\n  rover eval [--corpus DIR]\n"+
 		"  rover install [--client NAME ...] [--yes] [--dry-run] [--rover PATH]\n  rover install --service [--yes]\n  rover install --polkit\n"+
-		"  rover uninstall [--client NAME ...] [--yes] [--dry-run] [--service]\n  rover doctor [--json]\n  rover version")
+		"  rover uninstall [--client NAME ...] [--yes] [--dry-run] [--service]\n  rover doctor [--json] [--remote]\n  rover version")
 	os.Exit(2)
 }
 

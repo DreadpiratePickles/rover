@@ -29,12 +29,16 @@ const (
 func runDoctor(args []string) int {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "print the checks as JSON (for scripts)")
+	remote := fs.Bool("remote", false, "also handshake with every bridge in config.yaml and print the negotiated TLS group")
 	_ = fs.Parse(args)
 
 	checks, err := doctorChecks()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "rover doctor:", err)
 		return 1
+	}
+	if *remote {
+		checks = append(checks, remoteChecks(probeBridgeTLS)...)
 	}
 	if *asJSON {
 		err = writeDoctorJSON(os.Stdout, checks)

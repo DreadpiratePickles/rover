@@ -146,7 +146,7 @@ func replayResult(st *replaySession, e audit.Entry, m jsonrpc.Message) {
 		return
 	}
 	st.flags = daemon.AfterResult(st.flags, labels, daemon.ResultIsError(m.Result))
-	if e.Action == ipc.ActionReplace && len(e.Findings) > 0 {
+	if e.Action == ipc.ActionReplace && len(daemon.DetectionFindings(e.Findings)) > 0 {
 		st.flags.SawUntrusted = true
 	}
 }

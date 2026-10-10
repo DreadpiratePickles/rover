@@ -101,6 +101,13 @@ func argSep(ws []byte) string {
 // everything after it, so the inserted prefix and separator are cut out, or
 // the whole args member when install added it.
 func unwrapEdits(orig []byte, s Server) ([]edit, error) {
+	if s.Bridged {
+		src, err := blankJSONC(orig)
+		if err != nil {
+			return nil, err
+		}
+		return unbridgeEdits(orig, src, s)
+	}
 	f, ok := wrapSplit(s.Args)
 	if s.Status != StatusWrapped || s.args == nil || !ok {
 		return nil, fmt.Errorf("%s is not wrapped", s.Label())
@@ -175,13 +182,18 @@ var (
 	ErrNameCollision = errors.New("servers whose names collide after sanitising")
 )
 
-// planWrap wraps every unwrapped stdio server in doc. A server that is not
+// planWrap wraps every unwrapped stdio server in doc and converts every
+// remote one it can into a `rover bridge` entry (M11). A server that is not
 // understood, or two keys that become the same --name, refuse the file.
 func planWrap(doc Doc, roverPath string) (Plan, error) {
 	if err := checkServers(doc); err != nil {
 		return Plan{}, err
 	}
 	p := Plan{File: doc.File, Orig: doc.Orig}
+	src, err := blankJSONC(doc.Orig)
+	if err != nil {
+		return Plan{}, err
+	}
 	var edits []edit
 	for _, s := range doc.Servers {
 		switch {
@@ -191,7 +203,18 @@ func planWrap(doc Doc, roverPath string) (Plan, error) {
 		case s.Status == StatusWrapped && !s.WrappedBy(roverPath):
 			p.Warnings = append(p.Warnings, fmt.Sprintf("%s is wrapped by %q, not by this rover (%s); left alone, check it", s.Label(), s.Command, roverPath))
 		case s.Status == StatusRemote:
-			p.Warnings = append(p.Warnings, s.Label()+" is a remote server; not wrapped until `rover bridge` (M11)")
+			why, ok := bridgeable(src, s)
+			if !ok {
+				p.Warnings = append(p.Warnings, why)
+				continue
+			}
+			edits = append(edits, bridgeEdits(doc.Orig, src, s, roverPath)...)
+			p.Changed = append(p.Changed, s.Label())
+			if s.RemoteType == "sse" {
+				p.Warnings = append(p.Warnings, s.Label()+" uses the legacy HTTP+SSE transport; `rover bridge` speaks Streamable HTTP, converted anyway (it tries Streamable HTTP; a server that only speaks the old transport will fail and say so)")
+			}
+		case s.Status == StatusUnknown:
+			p.Warnings = append(p.Warnings, s.Label()+" was not understood ("+s.Problem+"); left alone")
 		}
 	}
 	return finish(p, edits)

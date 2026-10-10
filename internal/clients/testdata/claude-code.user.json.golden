@@ -16,8 +16,8 @@
     "noargs": {"command": "/opt/rover/bin/rover", "args": ["wrap", "--name=noargs", "--", "/usr/local/bin/my-server"]},
     "emptyargs": { "command" : "/opt/rover/bin/rover" , "args" : ["wrap", "--name", "emptyargs", "--", "echo-server" ] },
     "stripe": {
-      "type": "http",
-      "url": "https://mcp.stripe.com"
+      "type": "stdio",
+      "command": "/opt/rover/bin/rover", "args": ["bridge", "--name", "stripe", "--remote-type", "http", "--url", "https://mcp.stripe.com"]
     },
     "weird name!": {"command": "/opt/rover/bin/rover", "args": ["wrap", "--name", "weird_name_", "--", "srv", "--port", "8080"], "x-unknown": [1, {"a": null}]}
   },

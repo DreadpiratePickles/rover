@@ -228,7 +228,7 @@ func checkClientFile(a clients.Adapter, f clients.ConfigFile, rover string) chec
 	case len(problems) > 0:
 		return fail("client", "%s: %s; check it, then run `rover install`", where, cell(strings.Join(problems, "; ")))
 	case len(remote) > 0:
-		return warn("client", "%s: %d wrapped; remote, not covered until M11: %s", where, wrapped, cell(strings.Join(remote, ", ")))
+		return warn("client", "%s: %d wrapped; remote and not bridged (run `rover install`, or see its warning): %s", where, wrapped, cell(strings.Join(remote, ", ")))
 	}
 	return pass("client", "%s: all %d servers wrapped", where, wrapped)
 }

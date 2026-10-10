@@ -5,8 +5,8 @@
 	],
 	"servers": {
 		"github": {
-			"type": "http",
-			"url": "https://api.githubcopilot.com/mcp"
+			"type": "stdio",
+			"command": "/opt/rover/bin/rover", "args": ["bridge", "--name", "github", "--remote-type", "http", "--url", "https://api.githubcopilot.com/mcp"]
 		},
 		"playwright": {
 			"type": "stdio",

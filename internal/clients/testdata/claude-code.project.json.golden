@@ -8,8 +8,8 @@
       }
     },
     "shared-server": {
-      "type": "http",
-      "url": "https://example.com/mcp"
+      "type": "stdio",
+      "command": "/opt/rover/bin/rover", "args": ["bridge", "--name", "shared-server", "--remote-type", "http", "--url", "https://example.com/mcp"]
     }
   }
 }
