@@ -57,6 +57,8 @@ jobs:
           go vet -tags lab ./testdata/servers/...
       - name: go test -race
         run: go test -race ./...
+        env:
+          ROVER_TIMING_STRICT: "1" # quiet runners: timing budgets fail the build here
       # The detection gates (plan §6 M5), same as `make eval`: exits 1 if
       # recall, false positives or the corpus size fall below the gates.
       - name: rover eval (detection gates)
@@ -101,6 +103,8 @@ jobs:
         run: go test ./internal/daemon -run='^$' -fuzz=FuzzScanResult -fuzztime=30s
       - name: fuzz roverd JSON string decoding (30s)
         run: go test ./internal/daemon -run='^$' -fuzz=FuzzUnescape -fuzztime=30s
+      - name: fuzz propose.Build (30s)
+        run: go test ./internal/policy/propose -run='^$' -fuzz=FuzzBuild -fuzztime=30s
       # On a crash, keep the failing input so it can be reproduced locally
       # (copy it into internal/jsonrpc/testdata/fuzz/FuzzParse/ and run go test).
       - name: upload crashing input

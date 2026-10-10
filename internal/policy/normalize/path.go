@@ -108,10 +108,20 @@ func normPath(s string, roots []Root, fnd *findings) (string, []bool, error) {
 		fnd.add("path_lookalike_separator")
 	}
 	if len(roots) == 0 {
-		// Nothing to anchor to (e.g. GitHub repo-relative paths): clean only,
-		// and do not touch the local filesystem.
+		// Nothing to anchor to. A relative path (e.g. a GitHub
+		// repo-relative path) is cleaned only: there is no directory to
+		// resolve it against. An absolute path is resolved like in the
+		// rooted branch, so what is recorded (learn mode) and compared is
+		// the file the server will open, not the text with a symlink in it.
 		fnd.add("path_no_root")
-		return filepath.Clean(s), nil, nil
+		if !isAbs(s) {
+			return filepath.Clean(s), nil, nil
+		}
+		p, err := resolve(filepath.Clean(s))
+		if err != nil {
+			return "", nil, err
+		}
+		return p, nil, nil
 	}
 	if !isAbs(s) {
 		fnd.add("path_relative")

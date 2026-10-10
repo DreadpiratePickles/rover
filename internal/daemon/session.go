@@ -39,6 +39,7 @@ type pendingReq struct {
 	tool   string
 	cursor string // tools/list: params.cursor, for the pins' first-listing window
 	start  time.Time
+	obsKey string // learn mode: the request's observation, flagged by its result
 }
 
 func newSession(id string, clientPID int, now time.Time) *Session {
@@ -97,9 +98,10 @@ func (s *Session) Client() (name, version string) {
 // observe builds the audit entry for one message and updates the session's
 // request/response correlation. It is the logic that lived in the A1 proxy,
 // now owned by the daemon so the wrapper stays thin.
-// It also returns the cursor of the tools/list request a result answers.
-func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool, now time.Time) (audit.Entry, string) {
-	e := audit.Entry{
+// It also returns the cursor of the tools/list request a result answers and
+// the learn-mode observation key of the request a response answers.
+func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool, now time.Time) (e audit.Entry, cursor, obsKey string) {
+	e = audit.Entry{
 		Time:    now.UTC(),
 		Session: s.ID,
 		Server:  server,
@@ -113,7 +115,6 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 	if logBodies && json.Valid(m.Raw) {
 		e.Body = m.Raw
 	}
-	cursor := ""
 	if m.Kind == jsonrpc.KindRequest && m.Method == "tools/list" {
 		cursor = listCursor(m.Params)
 	}
@@ -121,7 +122,7 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 	defer s.mu.Unlock()
 	switch m.Kind {
 	case jsonrpc.KindRequest:
-		s.pending[server+":"+dir+":"+string(m.ID)] = pendingReq{m.Method, e.Tool, cursor, now}
+		s.pending[server+":"+dir+":"+string(m.ID)] = pendingReq{method: m.Method, tool: e.Tool, cursor: cursor, start: now}
 		if dir == "c2s" && m.Method == "initialize" {
 			// Read strictly (exact keys); Parse already refused an
 			// ambiguous clientInfo as invalid.
@@ -134,7 +135,7 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 		if p, ok := s.pending[key]; ok {
 			delete(s.pending, key)
 			ms := float64(now.Sub(p.start).Microseconds()) / 1000
-			e.LatencyMS, e.ReplyTo, e.Tool, cursor = &ms, p.method, p.tool, p.cursor
+			e.LatencyMS, e.ReplyTo, e.Tool, cursor, obsKey = &ms, p.method, p.tool, p.cursor, p.obsKey
 		}
 		if m.Kind == jsonrpc.KindResult {
 			var r struct {
@@ -144,7 +145,19 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 			e.ToolError = r.IsError
 		}
 	}
-	return e, cursor
+	return e, cursor, obsKey
+}
+
+// attachObservation remembers the observation key of a pending request, so
+// a flag on its result reaches the right observation.
+func (s *Session) attachObservation(server, dir string, id []byte, key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := server + ":" + dir + ":" + string(id)
+	if p, ok := s.pending[k]; ok {
+		p.obsKey = key
+		s.pending[k] = p
+	}
 }
 
 // listCursor is the exact params.cursor string of a tools/list request, read

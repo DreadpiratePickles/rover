@@ -62,7 +62,8 @@ func (s *Server) detectResult(m jsonrpc.Message, replyTo string) judgment {
 	if len(plan.findings) == 0 {
 		return forwardJ
 	}
-	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, findings: detect.Score(plan.findings).IDs, untrusted: true}
+	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, findings: detect.Score(plan.findings).IDs, untrusted: true,
+		learnFlags: flagIDs(plan.findings)}
 	if len(plan.edits) == 0 {
 		return j
 	}

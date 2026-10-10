@@ -26,6 +26,7 @@ import (
 	"github.com/DreadpiratePickles/rover/internal/framing"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
+	"github.com/DreadpiratePickles/rover/internal/learn"
 	"github.com/DreadpiratePickles/rover/internal/pin"
 	"github.com/DreadpiratePickles/rover/internal/state"
 )
@@ -83,6 +84,10 @@ type Server struct {
 	det            detectState    // detection's memory (detect.go)
 	pol            atomic.Pointer[loaded]
 	noPolicyWarned atomic.Int64 // unix nanos of the last "no policy" warning
+	// rec records learn-mode observations (M6); nil without a state DB.
+	rec        *learn.Recorder
+	taint      toolTaint     // learn mode: tools whose last listing was flagged
+	closedDone chan struct{} // closed when Close has finished (final flush)
 }
 
 // New prepares a Server; call Listen then Serve.
@@ -107,7 +112,11 @@ func New(o Options) *Server {
 		store = pin.NewBoltStore(o.State)
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
-		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescerWith(o.Notifier, o.Now, blockedMessage)}
+		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescerWith(o.Notifier, o.Now, blockedMessage),
+		closedDone: make(chan struct{})}
+	if o.State != nil {
+		s.rec = learn.NewRecorder(o.State, o.Logf)
+	}
 	s.pol.Store(&loaded{pol: o.Policy, cfg: o.Config}) // startup: any mode (D6)
 	return s
 }
@@ -149,6 +158,11 @@ func (s *Server) Serve(ctx context.Context) error {
 	if s.ln == nil {
 		return errors.New("Serve before Listen")
 	}
+	if s.rec != nil {
+		t := time.NewTicker(learn.FlushEvery)
+		defer t.Stop()
+		s.rec.Start(t.C)
+	}
 	go func() {
 		<-ctx.Done()
 		s.Close()
@@ -160,6 +174,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			closed := s.closed
 			s.mu.Unlock()
 			if closed {
+				<-s.closedDone // the final observation flush, before the caller closes the DB
 				return nil
 			}
 			return err
@@ -187,6 +202,12 @@ func (s *Server) Close() {
 	for _, c := range conns {
 		_ = c.Close()
 	}
+	if s.rec != nil {
+		if err := s.rec.Close(); err != nil {
+			s.o.Logf("learn: final write of observations failed: %v", err)
+		}
+	}
+	close(s.closedDone)
 }
 
 // Sessions returns a snapshot of live sessions (for tests and `rover top`).
@@ -329,7 +350,7 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	server := hello.ServerName
 	m := jsonrpc.Parse(f.Raw)
 	now := s.o.Now()
-	e, cursor := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
+	e, cursor, obsKey := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
 	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, cursor, now)
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
 	if j.audit != ipc.ActionForward {
@@ -357,6 +378,7 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	if j.untrusted {
 		sess.noteUntrusted()
 	}
+	s.learnAfter(sess, server, f.Dir, m, j, obsKey)
 	return ipc.Frame{
 		Type: ipc.TypeVerdict, Seq: f.Seq, Action: j.action, Reason: j.reason, RuleIDs: j.ruleIDs,
 		ResponseRaw: j.responseRaw, ReplacementRaw: j.replacement,

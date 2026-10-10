@@ -211,19 +211,20 @@ func (s *Server) notifyPoison(events []poisonEvent) {
 // detectRequest scans a request's text: tools/call arguments (tool_args) or
 // a server's elicitation/sampling request (elicitation_text). A high finding
 // blocks in every mode; anything else becomes context.detection.
-func (s *Server) detectRequest(dir string, m jsonrpc.Message) (detect.Summary, *judgment) {
+// It also returns the findings themselves, for learn mode's flags.
+func (s *Server) detectRequest(dir string, m jsonrpc.Message) (detect.Summary, []detect.Finding, *judgment) {
 	var kind detect.Kind
 	var raw []byte
 	var keys map[string]bool
 	switch {
 	case s.o.DisableDetection:
-		return detect.Summary{}, nil
+		return detect.Summary{}, nil, nil
 	case dir == policy.DirC2S && m.Method == "tools/call":
 		kind, raw = detect.KindToolArgs, m.ToolArguments()
 	case dir == policy.DirS2C && (m.Method == "elicitation/create" || m.Method == "sampling/createMessage"):
 		kind, raw, keys = detect.KindElicitationText, m.Params, elicitKeys
 	default:
-		return detect.Summary{}, nil
+		return detect.Summary{}, nil, nil
 	}
 	rules := detect.NewRules()
 	var fs []detect.Finding
@@ -231,14 +232,14 @@ func (s *Server) detectRequest(dir string, m jsonrpc.Message) (detect.Summary, *
 		fs = append(fs, rules.Scan(kind, text)...)
 	}); err != nil {
 		j := blockJ(m, ReasonDetectFailed+": "+err.Error(), nil, nil)
-		return detect.Summary{}, &j
+		return detect.Summary{}, nil, &j
 	}
 	sum := detect.Score(fs)
 	if detect.Max(fs) == detect.High {
 		j := blockJ(m, ReasonPromptInjection+": "+strings.Join(sum.IDs, ", "), nil, sum.IDs)
-		return sum, &j
+		return sum, fs, &j
 	}
-	return sum, nil
+	return sum, fs, nil
 }
 
 // removedText is what replaces a text with a high finding.
