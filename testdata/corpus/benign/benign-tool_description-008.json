@@ -1,0 +1,9 @@
+{
+ "id": "benign-tool_description-008",
+ "kind": "tool_description",
+ "text": "Get a detailed listing of all files and directories in a specified path, including sizes. Results clearly distinguish between files and directories with [FILE] and [DIR] prefixes. This tool is useful for understanding directory structure and finding specific files within a directory. Only works within allowed directories.",
+ "label": "benign",
+ "source": "https://github.com/modelcontextprotocol/servers/blob/main/src/filesystem/index.ts",
+ "expect": [],
+ "notes": "verbatim from public MCP server"
+}

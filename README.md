@@ -27,7 +27,8 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | M2 | Cedar policy engine: default deny, hidden tools, argument normalisers, `rover policy init/validate/test/apply` | done |
 | M3 | YAML → Cedar compiler (`rover policy compile`, `policy init --yaml`), schema generated from config | done |
 | M4 | Tool pinning (rug-pull defence): TOFU digests, changed/new tools filtered and blocked, `rover pin list/approve/reset` | done |
-| M5 | Detection tier 1 and the evaluation corpus | next |
+| M5 | Detection tier 1 (local rules: invisible characters, instruction phrases, exfil URLs, shadowing, ...), evaluation corpus, `rover eval` gates | done |
+| M6 | Learn mode and policy proposals | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -64,7 +65,20 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover pin approve filesystem read_file 3f2a9c01b7de   # the digest prefix pin list printed;
                                      # refused if the tool changed again since (TODO(M9): OS auth)
 ./bin/rover pin reset filesystem     # forget a server's pins; next list is trusted on first use
+
+# detection tier 1 (M5): always on, in every mode. A poisoned tool is removed
+# from tools/list; an injected result block is replaced or gets a warning.
+./bin/rover eval                     # precision/recall/false positives on testdata/corpus; exit 1 if a gate fails
 ```
+
+Detection tier 1 is a set of local rules (no model, nothing leaves the
+machine): invisible Unicode, ANSI escapes, hidden HTML, known instruction
+phrases, sensitive paths, markdown links that carry data out, base64 blobs,
+descriptions that name another server's tool. It catches the known tricks and
+their exact wording; it cannot catch a paraphrase ("pay no attention to what
+you were told earlier") or an attack in a language the phrase list does not
+speak. Tiers 2 (a local classifier) and 3 (an opt-in LLM judge) come in M12
+(decision D7); until then the policy and the pins remain the real walls.
 
 Rover denies by default: with no `policy.cedar` or `policy.yaml`, roverd blocks every
 `tools/call`, `tools/list`, `resources/read`, sampling and elicitation request
@@ -124,7 +138,7 @@ on for a lab).
 ## Layout
 
 ```
-cmd/rover/             CLI: wrap, daemon, log, policy, pin
+cmd/rover/             CLI: wrap, daemon, log, policy, pin, eval
 internal/policy/       the Cedar decision point: Decide, tools/list hiding (fuzzed)
 internal/policy/convert/    tool arguments -> Cedar values, with limits (fuzzed)
 internal/policy/normalize/  path/url/... normalisers run before the policy (fuzzed)
@@ -136,11 +150,13 @@ internal/daemon/       roverd: accept loop, peer check, sessions, the decision p
 internal/ipc/          wrapper <-> roverd protocol (fuzzed) and peer credentials
 internal/audit/        hash-chained JSONL audit log and its verifier
 internal/state/        bbolt database (pins from M4; approvals, ... from later milestones)
+internal/detect/       detection tier 1: rules (fuzzed), rules/*.txt phrase lists, corpus evaluation
 internal/pin/          tool pinning: canonical JSON + SHA-256 per tool (fuzzed), TOFU, mismatch tracking, diffs
 internal/paths/        where files go, and the permission checks
 internal/framing/      newline-delimited reading with a hard size limit
 internal/jsonrpc/      classify JSON-RPC messages (fuzzed)
 examples/echo-server/  A0: MCP server with no SDK (read_file is unsafe on purpose)
+testdata/corpus/       M5: the evaluation corpus (benign, poisoning, injection, exfil), MIN_COUNTS, CHANGES.md
 testdata/servers/rugpull/  M4 lab: evil server that changes a tool after its first list (build tag `lab`)
 docs/lessons/          one lesson per module
 ```
@@ -148,7 +164,7 @@ docs/lessons/          one lesson per module
 ## Development
 
 ```bash
-make ci             # everything CI runs: vet, lint, race tests, 30s fuzz per parser, govulncheck
+make ci             # everything CI runs: vet, lint, race tests, detection gates, 30s fuzz per parser, govulncheck
 make lint           # golangci-lint only
 make vuln           # govulncheck only
 make tools          # install the pinned govulncheck

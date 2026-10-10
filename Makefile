@@ -13,7 +13,7 @@ export GOTOOLCHAIN ?= $(shell awk '/^toolchain /{print $$2}' go.mod)
 
 FUZZTIME := 30s
 
-.PHONY: build test vet race fuzz lint vuln ci tools clean
+.PHONY: build test vet race fuzz eval lint vuln ci tools clean
 
 build:
 	go build -o bin/rover ./cmd/rover
@@ -36,7 +36,8 @@ race:
 # JSON-RPC classifier, the wrapper<->roverd frame parser, the audit-log
 # verifier, the line reader under all of them, and (M2) tool-argument
 # conversion, path normalisation, the policy decision and tools/list filtering,
-# (M3) the policy.yaml compiler, and (M4) the canonical JSON of tool pins.
+# (M3) the policy.yaml compiler, (M4) the canonical JSON of tool pins, and
+# (M5) the detection rules and roverd's rewriting of results.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
@@ -48,6 +49,14 @@ fuzz:
 	go test ./internal/policy -run='^$$' -fuzz=FuzzFilterToolsList -fuzztime=$(FUZZTIME)
 	go test ./internal/policy/yaml2cedar -run='^$$' -fuzz=FuzzCompile -fuzztime=$(FUZZTIME)
 	go test ./internal/pin -run='^$$' -fuzz=FuzzCanonical -fuzztime=$(FUZZTIME)
+	go test ./internal/detect -run='^$$' -fuzz=FuzzScan -fuzztime=$(FUZZTIME)
+	go test ./internal/daemon -run='^$$' -fuzz=FuzzScanResult -fuzztime=$(FUZZTIME)
+	go test ./internal/daemon -run='^$$' -fuzz=FuzzUnescape -fuzztime=$(FUZZTIME)
+
+# The detection gates (plan §6 M5): recall, false positives and corpus size
+# on testdata/corpus. Exits non-zero if a gate fails.
+eval:
+	go run ./cmd/rover eval --corpus testdata/corpus
 
 lint:
 	golangci-lint run ./...
@@ -60,6 +69,7 @@ ci:
 	@$(MAKE) --no-print-directory vet
 	@$(MAKE) --no-print-directory lint
 	@$(MAKE) --no-print-directory race
+	@$(MAKE) --no-print-directory eval
 	@$(MAKE) --no-print-directory fuzz
 	@$(MAKE) --no-print-directory vuln
 

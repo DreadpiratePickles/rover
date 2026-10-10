@@ -1,0 +1,9 @@
+{
+ "id": "benign-tool_description-033",
+ "kind": "tool_description",
+ "text": "Restore storage state (cookies, local storage) from a file. This clears existing cookies and local storage before restoring.",
+ "label": "benign",
+ "source": "https://github.com/microsoft/playwright-mcp/blob/main/README.md",
+ "expect": [],
+ "notes": "verbatim from public MCP server"
+}

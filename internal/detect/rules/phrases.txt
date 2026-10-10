@@ -1,0 +1,59 @@
+# instruction_phrase: words a tool description, a tool result or a server's
+# question to the user should not contain, because they talk to the model
+# instead of describing data. One RE2 regular expression per line; lines
+# starting with # and blank lines are ignored.
+#
+# How they are matched (internal/detect/anchored.go):
+#   - matching ignores case, but write the expression in lower case;
+#   - each line must START with a literal word (optionally after "<") that
+#     ends where the expression says (write "when" and "whenever" as two
+#     lines); the scanner finds candidates by that word and only then runs
+#     the regexp, which is what keeps a 64 KB result under a millisecond;
+#   - a match must fit in 256 bytes from its first character;
+#   - \s+ between words tolerates line breaks and double spaces; \b is a
+#     word boundary.
+# Go's regexp (RE2) has no backtracking, so no line can be "catastrophic".
+# Keep each line narrow: a benign tool that says "ignore the previous
+# section" must not match. `rover eval` measures both sides.
+
+# Overriding earlier instructions
+ignore\s+(?:all\s+|any\s+|the\s+|your\s+|my\s+|these\s+|those\s+|of\s+)*(?:previous|prior|earlier|above|preceding|former|original)\s+(?:instructions?|prompts?|directions?|directives?|rules|guidelines|restrictions|warnings|messages|context|commands|requests?)
+ignore\s+(?:the\s+)?user(?:'s|s)?\s+(?:request|instructions?|question|message)
+disregard\s+(?:all\s+|any\s+|the\s+|your\s+|my\s+|of\s+)*(?:previous|prior|earlier|above|preceding|safety|system|original)\b
+forget\s+(?:all\s+|any\s+|the\s+|your\s+|everything\s+)*(?:previous|prior|earlier|above)\s+(?:instructions?|prompts?|rules|context)
+override\s+(?:all\s+|any\s+|the\s+|your\s+)*(?:previous|prior|system|safety|recipient)\s+(?:instructions?|prompts?|rules|guidelines|restrictions)
+
+# Hiding the action from the user
+do\s+not\s+(?:tell|inform|mention|notify|alert|show|display|reveal|disclose)\b[^.\n]{0,40}\buser
+don(?:'|’)t\s+(?:tell|inform|mention|notify|alert|show|display|reveal|disclose)\b[^.\n]{0,40}\buser
+never\s+(?:tell|inform|mention|notify|alert|show|display|reveal|disclose)\b[^.\n]{0,40}\buser
+without\s+(?:telling|informing|notifying|alerting|asking)\s+(?:the\s+)?user
+do\s+not\s+(?:mention|reveal|disclose)\s+(?:this|that|these|it)\b
+never\s+reveal\s+(?:these|this|your|the)\s+(?:instructions?|prompts?)
+
+# Pseudo-markup that claims authority
+<important>
+<system>
+<instructions>
+<instruction>
+
+# Steering the model before it acts
+you\s+must\s+first
+you\s+must\s+(?:also\s+)?(?:read|send|include|pass|upload|forward|exfiltrate|attach)\b
+before\s+(?:using|calling|running|invoking)\s+this\s+tool
+system\s+prompt
+developer\s+(?:instructions|message|mode)
+new\s+instructions\b
+assistant\s+instructions\b
+instructions\s+for\s+the\s+(?:model|ai|assistant|agent|llm)\b
+note\s+to\s+(?:the\s+)?(?:ai|assistant|model|llm|agent)\b
+whenever\s+you\s+(?:answer|reply|respond)\b
+always\s+(?:end|start|begin|finish)\s+your\s+(?:reply|replies|response|responses|answer|answers)\b
+after\s+(?:each|every)\s+(?:answer|reply|response)\b
+you\s+are\s+now\s+(?:in\s+)?(?:a\s+|an\s+)?[a-z]+\s+mode\b
+
+# Asking the human for secrets (elicitation phishing)
+re-enter\s+your\s+(?:account\s+)?(?:password|passphrase|api\s+(?:key|token)|token|credentials|private\s+key|seed\s+phrase|recovery\s+phrase)
+reenter\s+your\s+(?:account\s+)?(?:password|passphrase|api\s+(?:key|token)|token|credentials|private\s+key|seed\s+phrase|recovery\s+phrase)
+enter\s+your\s+(?:github\s+)?(?:personal\s+access\s+token|password|passphrase|api\s+(?:key|token)|private\s+key|seed\s+phrase|recovery\s+phrase)
+paste\s+(?:the\s+contents\s+of\s+)?your\s+(?:password|private\s+key|api\s+(?:key|token)|token|credentials|~)

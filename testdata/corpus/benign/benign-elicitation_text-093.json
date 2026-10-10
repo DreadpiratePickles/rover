@@ -1,0 +1,8 @@
+{
+ "id": "benign-elicitation_text-093",
+ "kind": "elicitation_text",
+ "text": "Please confirm: delete the 3 build artifacts in /tmp/build? This cannot be undone.",
+ "label": "benign",
+ "source": "synthetic",
+ "notes": "M5 addition: an ordinary elicitation question, so the elicitation_text kind has benign data"
+}

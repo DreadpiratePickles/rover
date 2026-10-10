@@ -1,0 +1,9 @@
+{
+ "id": "benign-tool_description-025",
+ "kind": "tool_description",
+ "text": "Emulate CSS media features for the page, for example switch between the light and dark color scheme. Omitted parameters are left unchanged; null clears an override.",
+ "label": "benign",
+ "source": "https://github.com/microsoft/playwright-mcp/blob/main/README.md",
+ "expect": [],
+ "notes": "verbatim from public MCP server"
+}

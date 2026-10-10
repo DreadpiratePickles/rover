@@ -65,3 +65,15 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+func TestParseRecordsWhereResultAndErrorSit(t *testing.T) {
+	line := []byte(`  {"jsonrpc":"2.0","id":1,"result":{"a": [1, 2]}}`)
+	m := Parse(line)
+	if got := string(m.Raw[m.ResultAt[0]:m.ResultAt[1]]); got != `{"a": [1, 2]}` {
+		t.Fatalf("result at %v: %q", m.ResultAt, got)
+	}
+	e := Parse([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"x"}}`))
+	if got := string(e.Raw[e.ErrorAt[0]:e.ErrorAt[1]]); got != `{"code":1,"message":"x"}` {
+		t.Fatalf("error at %v: %q", e.ErrorAt, got)
+	}
+}

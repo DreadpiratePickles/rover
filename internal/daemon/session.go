@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"time"
@@ -27,6 +29,9 @@ type Session struct {
 	// flags is context.session for the policy: what this agent has done
 	// across every server it uses (plan §5.1).
 	flags policy.SessionCtx
+	// tools is each server's tool names as this agent saw them listed, for
+	// detection's cross_tool_reference (review M4: per session, per server).
+	tools map[string]map[string]bool
 }
 
 type pendingReq struct {
@@ -38,6 +43,31 @@ type pendingReq struct {
 
 func newSession(id string, clientPID int, now time.Time) *Session {
 	return &Session{ID: id, ClientPID: clientPID, Created: now, servers: map[string]int{}, pending: map[string]pendingReq{}}
+}
+
+// noteTools adds names to everything server has ever listed in this
+// session (every page of every listing; a name is never forgotten, so a
+// server's own tool never becomes "another server's tool" because it sits
+// on a later page) and returns a copy of every server's names.
+func (s *Session) noteTools(server string, names []string) map[string][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tools == nil {
+		s.tools = map[string]map[string]bool{}
+	}
+	if s.tools[server] == nil {
+		s.tools[server] = map[string]bool{}
+	}
+	for _, n := range names {
+		s.tools[server][n] = true
+	}
+	snap := make(map[string][]string, len(s.tools))
+	for srv, set := range s.tools {
+		for n := range set {
+			snap[srv] = append(snap[srv], n)
+		}
+	}
+	return snap
 }
 
 func (s *Session) join(server string) {
@@ -158,6 +188,14 @@ func (s *Session) noteForwardedCall(labels []string) {
 	s.mu.Unlock()
 }
 
+// noteUntrusted records that a result with a detection finding reached the
+// agent (plan M8: saw_untrusted is also set by any detection finding).
+func (s *Session) noteUntrusted() {
+	s.mu.Lock()
+	s.flags.SawUntrusted = true
+	s.mu.Unlock()
+}
+
 // NextFlags is context.session after one more forwarded tools/call of a tool
 // with these labels. `rover policy test` replays sessions with it.
 func NextFlags(f policy.SessionCtx, labels []string) policy.SessionCtx {
@@ -190,4 +228,39 @@ func (s *Session) take(server, dir string, id []byte) bool {
 	_, ok := s.pending[key]
 	delete(s.pending, key)
 	return ok
+}
+
+// join finds or creates the session for clientPID and attaches a wrapper to
+// it, atomically with release, so a wrapper arriving while the last one
+// leaves never lands on a session that is about to be deleted.
+func (s *Server) join(clientPID int, server string) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[clientPID]
+	if !ok {
+		sess = newSession(newID(), clientPID, s.o.Now())
+		s.sessions[clientPID] = sess
+	}
+	sess.join(server)
+	return sess
+}
+
+func (s *Server) release(sess *Session, server string) {
+	s.mu.Lock()
+	last := sess.leave(server)
+	if last {
+		if cur, ok := s.sessions[sess.ClientPID]; ok && cur == sess {
+			delete(s.sessions, sess.ClientPID)
+		}
+	}
+	s.mu.Unlock()
+	if last {
+		s.o.Logf("session %s: closed", sess.ID)
+	}
+}
+
+func newID() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

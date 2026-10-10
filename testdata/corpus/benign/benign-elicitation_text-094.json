@@ -1,0 +1,8 @@
+{
+ "id": "benign-elicitation_text-094",
+ "kind": "elicitation_text",
+ "text": "Enter a name for the new branch (letters, digits, '-' and '/' only), e.g. feature/login-form.",
+ "label": "benign",
+ "source": "synthetic",
+ "notes": "M5 addition: an ordinary elicitation question, so the elicitation_text kind has benign data"
+}

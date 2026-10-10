@@ -1,0 +1,8 @@
+{
+ "id": "benign-tool_description-099",
+ "kind": "tool_description",
+ "text": "Get current time in a specific timezone",
+ "label": "benign",
+ "source": "https://github.com/modelcontextprotocol/servers/blob/main/src/time/src/mcp_server_time/server.py",
+ "notes": "M5 review addition, verbatim: time get_current_time"
+}

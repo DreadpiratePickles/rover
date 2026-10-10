@@ -1,0 +1,9 @@
+{
+ "id": "benign-resource-087",
+ "kind": "resource",
+ "text": "# Contributing\n\nThanks for your interest! Please open an issue before large changes. Run `npm test` before submitting a pull request.\n",
+ "label": "benign",
+ "source": "synthetic",
+ "expect": [],
+ "notes": "ordinary resource text"
+}

@@ -12,8 +12,6 @@ package daemon
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -62,6 +60,9 @@ type Options struct {
 	// StateDBCreated (state.db did not exist) and AuditHadHistory (the audit
 	// anchor existed) together mean every pin was lost: see reportStateLoss.
 	StateDBCreated, AuditHadHistory bool
+	// DisableDetection turns detection tier 1 off. Tests only: it exists so
+	// a test can measure what detection adds to a decision (plan §6 M5).
+	DisableDetection bool
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -78,7 +79,8 @@ type Server struct {
 	unhealthy bool
 
 	pins           *pin.Checker
-	notes          *pin.Coalescer
+	notes          *pin.Coalescer // pins and detection: one notification budget per server
+	det            detectState    // detection's memory (detect.go)
 	pol            atomic.Pointer[loaded]
 	noPolicyWarned atomic.Int64 // unix nanos of the last "no policy" warning
 }
@@ -105,7 +107,7 @@ func New(o Options) *Server {
 		store = pin.NewBoltStore(o.State)
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
-		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescer(o.Notifier, o.Now)}
+		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescerWith(o.Notifier, o.Now, blockedMessage)}
 	s.pol.Store(&loaded{pol: o.Policy, cfg: o.Config}) // startup: any mode (D6)
 	return s
 }
@@ -333,7 +335,7 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
 	}
-	entries := append(pinEntries(e, j.pinEvents), e)
+	entries := append(append(pinEntries(e, j.pinEvents), poisonEntries(e, j.poisoned)...), e)
 	if j.action == ipc.ActionBlock && m.Kind == jsonrpc.KindRequest {
 		sess.forget(server, f.Dir, m.ID)
 	}
@@ -348,46 +350,15 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 		return ipc.Frame{Type: ipc.TypeVerdict, Seq: f.Seq, Action: ipc.ActionBlock, Reason: "audit log unavailable: " + err.Error()}
 	}
 	s.notifyPins(j.pinEvents)
+	s.notifyPoison(j.poisoned)
 	if j.call {
 		sess.noteForwardedCall(j.callLabels)
+	}
+	if j.untrusted {
+		sess.noteUntrusted()
 	}
 	return ipc.Frame{
 		Type: ipc.TypeVerdict, Seq: f.Seq, Action: j.action, Reason: j.reason, RuleIDs: j.ruleIDs,
 		ResponseRaw: j.responseRaw, ReplacementRaw: j.replacement,
 	}
-}
-
-// join finds or creates the session for clientPID and attaches a wrapper to
-// it, atomically with release, so a wrapper arriving while the last one
-// leaves never lands on a session that is about to be deleted.
-func (s *Server) join(clientPID int, server string) *Session {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[clientPID]
-	if !ok {
-		sess = newSession(newID(), clientPID, s.o.Now())
-		s.sessions[clientPID] = sess
-	}
-	sess.join(server)
-	return sess
-}
-
-func (s *Server) release(sess *Session, server string) {
-	s.mu.Lock()
-	last := sess.leave(server)
-	if last {
-		if cur, ok := s.sessions[sess.ClientPID]; ok && cur == sess {
-			delete(s.sessions, sess.ClientPID)
-		}
-	}
-	s.mu.Unlock()
-	if last {
-		s.o.Logf("session %s: closed", sess.ID)
-	}
-}
-
-func newID() string {
-	b := make([]byte, 6)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

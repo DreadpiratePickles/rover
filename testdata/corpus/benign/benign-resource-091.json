@@ -1,0 +1,9 @@
+{
+ "id": "benign-resource-091",
+ "kind": "resource",
+ "text": "Release notes 3.4.1\n- Fix: crash when path contains non-ASCII characters (\u65e5\u672c\u8a9e/\u00dcn\u00efc\u00f6d\u00e9)\n- Improve: faster startup\n",
+ "label": "benign",
+ "source": "synthetic",
+ "expect": [],
+ "notes": "ordinary resource text"
+}

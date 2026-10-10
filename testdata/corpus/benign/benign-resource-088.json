@@ -1,0 +1,9 @@
+{
+ "id": "benign-resource-088",
+ "kind": "resource",
+ "text": "Q4 report summary\nRevenue: $1.2M (+8% YoY)\nTop products: Alpha, Beta\nFootnote: figures exclude refunds.\n",
+ "label": "benign",
+ "source": "synthetic",
+ "expect": [],
+ "notes": "ordinary resource text"
+}

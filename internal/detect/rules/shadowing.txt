@@ -1,0 +1,20 @@
+# cross_tool_reference (generic part): a description that tries to change how
+# the agent uses some OTHER tool ("shadowing"). Same format and matching rules
+# as phrases.txt. The other half of this rule is exact: roverd tells the
+# scanner which tools every other server offers, and a description naming
+# one of them fires too (see WithKnownTools).
+#
+# Names that look like tool names are written [a-z0-9]+_[a-z0-9_]+ (an
+# underscore inside) so ordinary words ("when the cache is used") do not match.
+when\s+(?:the\s+)?(?:[a-z0-9]+_[a-z0-9_]+(?:\s+tool)?|[a-z0-9_.-]+\s+tool)\s+(?:(?:from|of|on|in)\s+(?:the\s+)?[a-z0-9_.-]+\s+server\s+)?(?:is|gets)\s+(?:being\s+)?(?:called|invoked|used|run|executed)
+whenever\s+(?:the\s+)?(?:[a-z0-9]+_[a-z0-9_]+(?:\s+tool)?|[a-z0-9_.-]+\s+tool)\s+(?:(?:from|of|on|in)\s+(?:the\s+)?[a-z0-9_.-]+\s+server\s+)?(?:is|gets)\s+(?:being\s+)?(?:called|invoked|used|run|executed)
+when\s+(?:the\s+)?user\s+(?:calls|invokes|uses|runs)\s+
+whenever\s+(?:the\s+)?user\s+(?:calls|invokes|uses|runs)\s+
+instead\s+of\s+(?:using\s+|calling\s+)?this\s+tool
+side\s+effects?\s+on\s+
+tool\s+(?:of|from|on|in)\s+(?:the\s+)?(?:other|another|different|second)\s+server
+always\s+(?:call|use|invoke|run)\s+(?:the\s+)?[a-z0-9]+_[a-z0-9_]+
+you\s+must\s+(?:use|call|invoke)\s+(?:the\s+)?[a-z0-9]+_[a-z0-9_]+
+instead\s+call\s+(?:the\s+)?[a-z0-9]+_[a-z0-9_]+
+then\s+call\s+(?:the\s+)?[a-z0-9]+_[a-z0-9_]+
+before\s+(?:replying|responding|answering)\s*,?\s+(?:call|use|invoke)\s+(?:the\s+)?[a-z0-9_]+

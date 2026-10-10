@@ -1,0 +1,23 @@
+# Sources
+- https://github.com/modelcontextprotocol/servers/blob/main/src/filesystem/index.ts - filesystem tool descriptions (verbatim)
+- https://github.com/modelcontextprotocol/servers/blob/main/src/fetch/src/mcp_server_fetch/server.py - fetch server descriptions
+- https://github.com/modelcontextprotocol/servers/blob/main/src/git/src/mcp_server_git/server.py - git server descriptions
+- https://github.com/modelcontextprotocol/servers/blob/main/src/memory/index.ts - memory (knowledge graph) descriptions
+- https://github.com/modelcontextprotocol/servers/blob/main/src/sequentialthinking/index.ts - sequential thinking long description
+- https://github.com/modelcontextprotocol/servers/blob/main/src/time/src/mcp_server_time/server.py - time server descriptions
+- https://github.com/modelcontextprotocol/servers/blob/main/src/everything/tools/echo.ts - everything server echo tool
+- https://github.com/github/github-mcp-server/blob/main/README.md - GitHub MCP server tool list and parameter descriptions
+- https://github.com/microsoft/playwright-mcp/blob/main/README.md - Playwright MCP tool descriptions
+- https://github.com/modelcontextprotocol/servers-archived/blob/main/src/{slack,postgres,brave-search,puppeteer}/index.ts - archived community reference servers
+- https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks - Invariant Labs tool poisoning and shadowing (attacks reconstructed)
+- https://invariantlabs.ai/blog/whatsapp-mcp-exploited - WhatsApp MCP exfiltration write-up
+- https://invariantlabs.ai/blog/mcp-github-vulnerability - GitHub MCP toxic agent flow
+- https://blog.trailofbits.com/2025/04/21/jumping-the-line-how-mcp-servers-can-attack-you-before-you-ever-use-them/ - Trail of Bits line jumping
+- https://www.elastic.co/security-labs/mcp-tools-attack-defense-recommendations - Elastic MCP attack vectors (rug pull, shadowing)
+- https://www.cyberark.com/resources/threat-research/poison-everywhere-no-output-from-your-mcp-server-is-safe - CyberArk full-schema poisoning
+- https://embracethered.com/blog/posts/2024/hiding-and-finding-text-with-unicode-tags/ - Unicode tag character smuggling
+- https://simonwillison.net/2025/Apr/9/mcp-prompt-injection/ - MCP prompt injection overview
+- https://owasp.org/www-community/attacks/CSV_Injection - CSV formula injection
+Attack text is reconstructed/paraphrased and synthetic; domains are attacker.example/example.com, keys are fake.
+- https://github.com/github/github-mcp-server/blob/main/pkg/github/repositories.go - GitHub MCP server repository tool descriptions (verbatim, M5 review)
+- https://github.com/modelcontextprotocol/servers/blob/main/src/everything/tools/get-sum.ts - everything server get-sum (verbatim, M5 review)

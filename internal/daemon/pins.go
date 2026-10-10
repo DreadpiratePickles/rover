@@ -40,7 +40,7 @@ func (s *Server) pinCall(server string, m jsonrpc.Message) (judgment, bool) {
 	ok, reason, err := s.pins.AllowCall(server, m.ToolName())
 	switch {
 	case err != nil:
-		s.o.Logf("pin check for %s/%s failed, blocking: %v", server, m.ToolName(), err)
+		s.o.Logf("pin check for %s/%s failed, blocking: %v", pin.TerminalSafe(server), pin.TerminalSafe(m.ToolName()), err)
 		return blockJ(m, ReasonPinCheckFailed, nil, nil), true
 	case !ok:
 		return blockJ(m, reason, nil, nil), true
@@ -101,7 +101,7 @@ func (s *Server) notifyPins(events []pin.Event) {
 			continue
 		}
 		s.o.Logf("PIN MISMATCH %s/%s (%s): %s -> %s, diff %d bytes; removed from tools/list and blocked until approved (see `rover pin list %s`)",
-			ev.Server, ev.Tool, ev.Kind, orNone(ev.Old.Short()), orNone(ev.New.Short()), len(ev.Diff), ev.Server)
+			pin.TerminalSafe(ev.Server), pin.TerminalSafe(ev.Tool), ev.Kind, orNone(ev.Old.Short()), orNone(ev.New.Short()), len(ev.Diff), pin.TerminalSafe(ev.Server))
 		if count[ev.Server] == 0 {
 			order = append(order, ev.Server)
 		}

@@ -1,0 +1,8 @@
+{
+ "id": "benign-tool_description-097",
+ "kind": "tool_description",
+ "text": "Delete multiple entities and their associated relations from the knowledge graph",
+ "label": "benign",
+ "source": "https://github.com/modelcontextprotocol/servers/blob/main/src/memory/index.ts",
+ "notes": "M5 review addition, verbatim: memory delete_entities"
+}
