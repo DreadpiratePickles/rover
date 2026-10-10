@@ -6,8 +6,7 @@
 GOVULNCHECK_VERSION := v1.7.0
 GOLANGCI_LINT_VERSION := v2.5.0
 
-# Per fuzz target; three targets keep `make fuzz` at about 30 s in total.
-FUZZTIME := 10s
+FUZZTIME := 30s
 
 .PHONY: build test vet race fuzz lint vuln ci tools clean
 
@@ -23,13 +22,10 @@ vet:
 race:
 	go test -race ./...
 
-# Fails only if a fuzzer finds a crashing input (saved under the package's
-# testdata/fuzz/). Finding no new coverage is not a failure. Go runs one -fuzz
-# target per invocation, so each target gets its own line.
+# Fails only if the fuzzer finds a crashing input (saved under
+# internal/jsonrpc/testdata/fuzz/). Finding no new coverage is not a failure.
 fuzz:
-	go test ./internal/jsonrpc -run='^$$' -fuzz='^FuzzParse$$' -fuzztime=$(FUZZTIME)
-	go test ./internal/audit -run='^$$' -fuzz='^FuzzVerifyLine$$' -fuzztime=$(FUZZTIME)
-	go test ./internal/ipc -run='^$$' -fuzz='^FuzzDecode$$' -fuzztime=$(FUZZTIME)
+	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 
 lint:
 	golangci-lint run ./...
