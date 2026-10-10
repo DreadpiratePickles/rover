@@ -217,3 +217,70 @@ func (l *lockedWriter) String() string {
 	defer l.mu.Unlock()
 	return l.w.String()
 }
+
+// N1: a config Rover cannot parse (a client may read it anyway, taking the
+// last of two duplicate keys) is an alert for the whole file.
+func TestTamperUnparsableFile(t *testing.T) {
+	r := newTamperRig(t, mcpConfig(wrappedServer("c", tamperRover)))
+	writeReplace(t, r.cfg, `{"mcpServers": {`+wrappedServer("c", tamperRover)+`, "c": {"command": "npx"}}}`)
+	as := waitKinds(t, r.s, TamperNotUnderstood)
+	if as[0].Server != TamperWholeFile || !strings.Contains(as[0].Detail, "duplicate") {
+		t.Fatalf("%+v", as[0])
+	}
+	if l := r.log.String(); !strings.Contains(l, `"reason":"not_understood:`) {
+		t.Fatalf("not audited:\n%s", l)
+	}
+	writeReplace(t, r.cfg, mcpConfig(wrappedServer("c", tamperRover)))
+	waitKinds(t, r.s)
+	big := mcpConfig(wrappedServer("c", tamperRover)) + strings.Repeat(" ", clients.MaxConfig)
+	writeReplace(t, r.cfg, big)
+	if as := waitKinds(t, r.s, TamperNotUnderstood); !strings.Contains(as[0].Detail, "larger than") {
+		t.Fatalf("%+v", as[0])
+	}
+}
+
+// N2: a roverd started before anything was installed still watches the
+// first config `rover install` reports.
+func TestTamperWatchStartsEmpty(t *testing.T) {
+	r := newTamperRig(t, mcpConfig(wrappedServer("fs", tamperRover)))
+	o := r.options()
+	o.TamperFiles = nil
+	o.SocketPath = filepath.Join(shortTempDir(t), "e.sock")
+	s := start(t, o)
+	res := s.Admin(ipc.Frame{Type: ipc.TypeAdmin, Op: ipc.OpTamperResolve, Path: r.cfg, Adapter: clients.NameCursor, Scope: "global"})
+	if res.Type != ipc.TypeAdminResult || !strings.Contains(string(res.Result), `"watching":true`) {
+		t.Fatalf("resolve: %+v %s", res, res.Result)
+	}
+	writeInPlace(t, r.cfg, mcpConfig(unwrappedFS))
+	waitKinds(t, s, TamperUnwrapped)
+}
+
+// N3: a config directory that is deleted and recreated is watched again on
+// the periodic retry (an injected tick), and its file is re-checked.
+func TestTamperDirectoryRecreated(t *testing.T) {
+	dir := filepath.Join(shortTempDir(t), "cursor")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "mcp.json")
+	writeInPlace(t, cfg, mcpConfig(wrappedServer("fs", tamperRover)))
+	tick := make(chan time.Time)
+	db, err := state.Open(filepath.Join(filepath.Dir(dir), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	s := start(t, Options{Audit: audit.New(&lockedWriter{w: &bytes.Buffer{}}), State: db, Notifier: &recordingNotifier{}, RoverPath: tamperRover,
+		TamperFiles:    []clients.ConfigFile{{Adapter: clients.NameCursor, Path: cfg, Scope: "global"}},
+		TamperDebounce: 50 * time.Millisecond, TamperRetry: tick})
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	waitKinds(t, s, TamperRemoved)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeInPlace(t, cfg, mcpConfig(unwrappedFS, `"new": {"command": "sh"}`))
+	tick <- time.Now()
+	waitKinds(t, s, TamperUnwrapped, TamperAdded)
+}

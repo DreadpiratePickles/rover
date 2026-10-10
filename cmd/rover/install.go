@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -232,8 +233,29 @@ func tellRoverd(out io.Writer, f clients.ConfigFile, op string) {
 	if op == ipc.OpTamperResolve {
 		req.Adapter, req.Scope = f.Adapter, f.Scope
 	}
-	if _, err := ipc.Admin(sock, req); err != nil && !errors.Is(err, ipc.ErrNoDaemon) {
-		_, _ = fmt.Fprintf(out, "warn  roverd's tamper watch was not updated: %v\n", err)
+	res, err := ipc.Admin(sock, req)
+	switch {
+	case errors.Is(err, ipc.ErrNoDaemon):
+		if op == ipc.OpTamperResolve {
+			_, _ = fmt.Fprintln(out, "note  roverd is not running; it watches this file from its next start")
+		}
+		return
+	case err != nil:
+		_, _ = fmt.Fprintf(out, "WARN  roverd's tamper watch was NOT updated: %v; restart roverd\n", err)
+		return
+	}
+	var r struct{ Watching bool }
+	if jerr := json.Unmarshal(res.Result, &r); jerr != nil {
+		_, _ = fmt.Fprintf(out, "WARN  roverd answered something unexpected (%v); restart roverd\n", jerr)
+		return
+	}
+	switch {
+	case op == ipc.OpTamperResolve && r.Watching:
+		_, _ = fmt.Fprintln(out, "ok    roverd is watching this file for tampering")
+	case op == ipc.OpTamperResolve:
+		_, _ = fmt.Fprintf(out, "WARN  roverd is NOT watching %s for tampering (%s); restart roverd\n", f.Path, orDash(res.Message))
+	default:
+		_, _ = fmt.Fprintln(out, "ok    roverd stopped watching this file")
 	}
 }
 

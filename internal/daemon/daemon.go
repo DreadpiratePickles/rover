@@ -66,12 +66,12 @@ type Options struct {
 	// a test can measure what detection adds to a decision (plan §6 M5).
 	DisableDetection bool
 
-	// TamperFiles are the client configs roverd watches (M7, tamper.go),
-	// RoverPath the binary their servers must run, TamperDebounce the
-	// settle time of a burst of changes (default 500 ms).
+	// Tamper watch (M7, tamper.go): the configs, the rover binary their servers
+	// must run, the settle time (500 ms) and the retry tick (every 10 s).
 	TamperFiles    []clients.ConfigFile
 	RoverPath      string
 	TamperDebounce time.Duration
+	TamperRetry    <-chan time.Time
 }
 
 // Server accepts wrapper connections and answers decide frames.

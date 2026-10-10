@@ -56,6 +56,12 @@ const (
 
 	// DefaultTamperDebounce lets a burst of writes settle before re-reading.
 	DefaultTamperDebounce = 500 * time.Millisecond
+	// TamperRetryEvery re-adds the watch of a directory that was deleted
+	// (no event will ever come from it again) and re-checks its files.
+	TamperRetryEvery = 10 * time.Second
+	// TamperWholeFile is the Server of a not_understood alert about a file
+	// rover cannot parse at all.
+	TamperWholeFile = "(whole file)"
 
 	tamperSession = "tamper"
 )
@@ -66,6 +72,7 @@ type TamperAlert struct {
 	Server  string    `json:"server"` // scope/key
 	Kind    string    `json:"kind"`
 	Command string    `json:"command,omitempty"` // what it runs now
+	Detail  string    `json:"detail,omitempty"`  // why a file is not understood
 	At      time.Time `json:"at"`
 }
 
@@ -87,10 +94,10 @@ func digest(s string) string {
 
 // startTamperWatch restores the saved baseline and alerts, watches every
 // config's directory and checks every config once.
+//
+// The watcher exists even with no files: `rover install` adds the first one
+// to a running roverd (tamper_resolve).
 func (s *Server) startTamperWatch() error {
-	if len(s.o.TamperFiles) == 0 {
-		return nil
-	}
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("tamper watch: %w", err)
@@ -131,8 +138,11 @@ func (s *Server) watchFileLocked(cf clients.ConfigFile) {
 	s.retryDirsLocked()
 }
 
-func (s *Server) retryDirsLocked() {
+// retryDirsLocked re-adds every directory whose watch is missing and
+// returns the ones that came back (t.mu held).
+func (s *Server) retryDirsLocked() []string {
 	t := &s.tamper
+	var back []string
 	for dir, ok := range t.dirs {
 		if ok || t.watcher == nil {
 			continue
@@ -142,6 +152,31 @@ func (s *Server) retryDirsLocked() {
 			continue
 		}
 		t.dirs[dir] = true
+		back = append(back, dir)
+	}
+	return back
+}
+
+// retryTick re-adds missing directory watches and re-checks the files in
+// the directories that came back: a directory deleted and recreated sends
+// no event to a watch that no longer exists.
+func (s *Server) retryTick() {
+	t := &s.tamper
+	t.mu.Lock()
+	back := map[string]bool{}
+	for _, d := range s.retryDirsLocked() {
+		back[d] = true
+	}
+	var recheck []string
+	for p := range t.files {
+		if back[filepath.Dir(p)] {
+			recheck = append(recheck, p)
+		}
+	}
+	t.mu.Unlock()
+	sort.Strings(recheck)
+	for _, p := range recheck {
+		s.checkTamper(p)
 	}
 }
 
@@ -150,8 +185,16 @@ func (s *Server) tamperLoop(w *fsnotify.Watcher) {
 	if debounce <= 0 {
 		debounce = DefaultTamperDebounce
 	}
+	retry := s.o.TamperRetry
+	if retry == nil {
+		tk := time.NewTicker(TamperRetryEvery)
+		defer tk.Stop()
+		retry = tk.C
+	}
 	for {
 		select {
+		case <-retry:
+			s.retryTick()
 		case ev, ok := <-w.Events:
 			if !ok {
 				return
@@ -205,21 +248,27 @@ func (s *Server) checkTamper(path string) {
 	}
 	s.retryDirsLocked()
 	doc, err := clients.ReadConfig(cf)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		doc = clients.Doc{File: cf} // no file: every wrapped server is gone
-	case err != nil:
-		s.o.Logf("tamper watch: %s does not parse (%v); its servers are checked again when it changes", path, err)
-		return
+	if errors.Is(err, os.ErrNotExist) {
+		doc, err = clients.Doc{File: cf}, nil // no file: every wrapped server is gone
 	}
-	want, base := s.evaluate(path, doc)
+	var want map[string]TamperAlert
+	var base map[string]string
+	if err != nil {
+		// A file rover cannot read is not "no servers": a client may still
+		// load it (taking the last of two duplicate keys, say). One alert for
+		// the whole file; the baseline is kept for when it parses again.
+		want = map[string]TamperAlert{TamperWholeFile: {File: path, Server: TamperWholeFile, Kind: TamperNotUnderstood, Detail: capDetail(err.Error())}}
+		base = t.baseline[path]
+	} else {
+		want, base = s.evaluate(path, doc)
+	}
 	t.baseline[path] = base
 	var fresh []TamperAlert
 	for k, a := range t.alerts {
 		if a.File != path {
 			continue
 		}
-		if n, still := want[a.Server]; !still || n.Kind != a.Kind || n.Command != a.Command {
+		if n, still := want[a.Server]; !still || n.Kind != a.Kind || n.Command != a.Command || n.Detail != a.Detail {
 			delete(t.alerts, k)
 			if !still {
 				s.o.Logf("tamper watch: %s in %s is fine again", pin.TerminalSafe(a.Server), path)
@@ -296,7 +345,11 @@ func (s *Server) expectedRover(cmd, baseDigest string) bool {
 // sanitised.
 func (s *Server) reportTamper(a TamperAlert) {
 	key := a.Server[strings.IndexByte(a.Server, '/')+1:]
-	s.o.Logf("TAMPER: %s in %s: %s (command %q); run `rover doctor`", pin.TerminalSafe(a.Server), a.File, a.Kind, pin.TerminalSafe(a.Command))
+	why := fmt.Sprintf("command %q", a.Command)
+	if a.Detail != "" {
+		why = a.Detail
+	}
+	s.o.Logf("TAMPER: %s in %s: %s (%s); run `rover doctor`", pin.TerminalSafe(a.Server), a.File, a.Kind, pin.TerminalSafe(why))
 	e := audit.Entry{Time: a.At, Session: tamperSession, Server: ipc.SanitizeServerName(key), Kind: AuditKindTamper,
 		Action: AuditTamperAlert, Reason: a.Kind + ":" + a.File, Findings: []string{a.Server}}
 	if err := s.writeAudit(e); err != nil {
@@ -304,4 +357,12 @@ func (s *Server) reportTamper(a TamperAlert) {
 	}
 	msg := fmt.Sprintf("%s in %s is no longer wrapped by rover (%s). run `rover doctor`.", ipc.SanitizeServerName(key), a.File, a.Kind)
 	s.tamper.notes.Add("tamper:"+a.File, 1, msg)
+}
+
+// capDetail bounds the parse error kept in an alert (it can quote keys).
+func capDetail(s string) string {
+	if len(s) > 300 {
+		return s[:300] + "..."
+	}
+	return s
 }

@@ -238,3 +238,32 @@ func startDaemonStoppable(t *testing.T, dir string) func() {
 	t.Fatalf("daemon did not start:\n%s", stderr.String())
 	return nil
 }
+
+// N2: roverd started before anything was installed watches the first
+// install at once: a hand unwrap afterwards is an alert and a doctor FAIL.
+func TestDoctorTamperAfterInstallIntoRunningDaemon(t *testing.T) {
+	dir := roverDir(t)
+	usePolicy(t, dir, `@id("p") permit (principal, action == Action::"call_tool", resource == Tool::"echo/echo");`, "observe")
+	cfg := filepath.Join(dir, "home", ".cursor", "mcp.json")
+	_ = os.MkdirAll(filepath.Dir(cfg), 0o700)
+	if err := os.WriteFile(cfg, []byte(`{"mcpServers":{"fs":{"command":"npx","args":["fs"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	startDaemonStoppable(t, dir)
+	out, err := run(dir, "install", "--client", "cursor", "--yes")
+	if err != nil || !strings.Contains(out, "roverd is watching this file") {
+		t.Fatalf("install (err %v):\n%s", err, out)
+	}
+	if werr := os.WriteFile(cfg, []byte(`{"mcpServers":{"fs":{"command":"npx","args":["fs"]}}}`), 0o600); werr != nil {
+		t.Fatal(werr)
+	}
+	var text string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if text, err = run(dir, "doctor"); strings.Contains(text, "FAIL  tamper") {
+			break
+		}
+	}
+	if err == nil || !strings.Contains(text, "FAIL  tamper") || !strings.Contains(text, "global/fs unwrapped") {
+		t.Fatalf("doctor (err %v):\n%s", err, text)
+	}
+}
