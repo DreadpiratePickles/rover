@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -182,32 +183,87 @@ func TestGitHubOnlyChainIsBlocked(t *testing.T) {
 	}
 }
 
-// LOW-4 (review): pending requests per session are capped; the oldest is
-// evicted with an audit note, so an agent cannot grow the map forever.
-func TestPendingRequestsAreCapped(t *testing.T) {
-	// Arrange
-	old := maxPending
-	maxPending = 3
-	t.Cleanup(func() { maxPending = old })
-	log := &syncBuf{}
-	s := start(t, Options{Audit: audit.New(log), Policy: engine(t, `@id("all") permit (principal, action == Action::"call_tool", resource);`), Config: labelled()})
-	c := dial(t, s)
-
-	// Act: four reads, never answered; then the answer to the first.
-	for _, id := range []string{"1", "2", "3", "4"} {
-		decide(t, c, "c2s", call(id, "read_file"))
+// floodSetup is the starter (trifecta guard) plus a permit for every call,
+// with files.read_file private, web.fetch untrusted and mail.echo egress.
+func floodSetup(t *testing.T) (*Server, *syncBuf) {
+	t.Helper()
+	src := string(policyfiles.Starter) + `@id("all") permit (principal, action == Action::"call_tool", resource);`
+	cfg := enforce()
+	cfg.Labels = map[string]map[string][]string{
+		"files": {"read_file": {"reads_private"}}, "web": {"fetch": {"reads_untrusted"}}, "mail": {"echo": {"egress"}},
 	}
-	decide(t, c, "s2c", okResult("1"))
+	log := &syncBuf{}
+	return start(t, Options{Audit: audit.New(log), Policy: engine(t, src), Config: cfg}), log
+}
+
+// Re-verification MEDIUM: a server flooding server->client requests must
+// not evict the agent's forwarded calls, or their results stop tainting.
+func TestServerFloodDoesNotEvictAgentCalls(t *testing.T) {
+	// Arrange
+	s, _ := floodSetup(t)
+	files, web, mail := dialAs(t, s, "files"), dialAs(t, s, "web"), dialAs(t, s, "mail")
+	decide(t, files, "c2s", call("1", "read_file"))
+	decide(t, files, "s2c", okResult("1"))
+	decide(t, web, "c2s", call("1", "fetch"))
+
+	// Act: 10,001 server->client pings from web before the fetch result.
+	for i := 0; i <= maxPendingS2C*2; i++ {
+		decide(t, web, "s2c", `{"jsonrpc":"2.0","id":"p`+strconv.Itoa(i)+`","method":"ping"}`)
+	}
+	decide(t, web, "s2c", okResult("1"))
+	v := decide(t, mail, "c2s", call("1", "echo"))
+
+	// Assert
+	if v.Action != ipc.ActionBlock || v.RuleIDs[0] != "trifecta-no-egress" {
+		t.Fatalf("mail.echo after the flood must be blocked: %+v (flags %+v)", v, s.Sessions()[0].Flags())
+	}
+	if n := s.Sessions()[0].pendingCount(); n != maxPendingS2C {
+		t.Fatalf("pending = %d, want the s2c cap %d", n, maxPendingS2C)
+	}
+}
+
+// An agent flooding calls on one server evicts its own oldest calls only;
+// each eviction is audited with the call's labels, and an evicted
+// reads_untrusted call taints (its result may have reached the agent
+// unseen) while an evicted reads_private call does not (no success seen).
+func TestAgentFloodEvictsWithLabels(t *testing.T) {
+	// Arrange
+	s, log := floodSetup(t)
+	web := dialAs(t, s, "web")
+	cfg := enforce()
+	cfg.Labels = map[string]map[string][]string{"web": {"read_file": {"reads_private"}, "fetch": {"reads_untrusted"}}}
+	if err := s.Reload(engine(t, `@id("all") permit (principal, action == Action::"call_tool", resource);`), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Act: one private read, then 19,999 fetches, none answered.
+	decide(t, web, "c2s", call("0", "read_file"))
+	for i := 1; i < 2*maxPendingC2S; i++ {
+		decide(t, web, "c2s", call(strconv.Itoa(i), "fetch"))
+	}
+	decide(t, web, "s2c", okResult("0")) // the evicted read's late result
 
 	// Assert
 	sess := s.Sessions()[0]
-	if n := sess.pendingCount(); n != 3 {
-		t.Fatalf("pending = %d, want 3", n)
+	f := sess.Flags()
+	if f.TouchedPrivate || !f.SawUntrusted {
+		t.Fatalf("flags = %+v, want saw_untrusted only", f)
 	}
-	if sess.Flags().TouchedPrivate {
-		t.Fatal("a reply to an evicted request must not count as a successful read")
+	if n := sess.pendingCount(); n != maxPendingC2S {
+		t.Fatalf("pending = %d, want %d", n, maxPendingC2S)
 	}
-	if got := auditActions(t, log); got != AuditPendingEvicted+":1" {
-		t.Fatalf("session audit = %q", got)
+	var evicted []audit.Entry
+	for _, e := range log.entries(t) {
+		if e.Action == AuditPendingEvicted {
+			evicted = append(evicted, e)
+		}
+	}
+	if len(evicted) != maxPendingC2S {
+		t.Fatalf("evictions audited = %d, want %d", len(evicted), maxPendingC2S)
+	}
+	first, second := evicted[0], evicted[1]
+	if first.Server != "web" || first.Dir != "c2s" || first.Tool != "read_file" || first.Reason != "labels: reads_private" ||
+		second.Tool != "fetch" || second.Reason != "labels: reads_untrusted" {
+		t.Fatalf("eviction audit: %+v / %+v", first, second)
 	}
 }

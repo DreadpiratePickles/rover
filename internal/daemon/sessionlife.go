@@ -2,7 +2,7 @@ package daemon
 
 import (
 	"context"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
@@ -29,49 +29,87 @@ const (
 	AuditSessionLingering = "session_lingering"
 	// AuditSessionExpired is audited when a lingering session is dropped.
 	AuditSessionExpired = "session_expired"
-	// AuditPendingEvicted is audited when the pending-request cap dropped
-	// the oldest requests (Reason is how many); their replies no longer
-	// correlate.
+	// AuditPendingEvicted is audited for each request the pending cap
+	// dropped (Reason: a forwarded call's labels); its reply no longer
+	// correlates.
 	AuditPendingEvicted = "pending_evicted"
 )
 
-// maxPending caps the pending requests of one session, so an agent that
-// never lets requests complete cannot grow roverd's memory without bound.
-// A var so tests can lower it.
-var maxPending = 10_000
+// Pending-request caps, per server AND direction (re-verification of
+// LOW-4): a server flooding server->client requests can only evict its own
+// requests, never the agent's forwarded calls, whose results set the
+// session flags. Vars so tests can lower them.
+var (
+	maxPendingS2C = 5_000  // server->client requests per server
+	maxPendingC2S = 10_000 // agent->server requests per server
+)
 
 type pendingKey struct {
 	key string
 	seq uint64
 }
 
-// addPending stores p under key and evicts the oldest entries beyond
-// maxPending, returning how many. Callers hold s.mu.
-func (s *Session) addPending(key string, p pendingReq) (evicted int) {
+// evictedReq is a pending request the cap dropped, for the audit log.
+type evictedReq struct {
+	server, dir string
+	p           pendingReq
+}
+
+func pendingCap(dir string) int {
+	if dir == "s2c" {
+		return maxPendingS2C
+	}
+	return maxPendingC2S
+}
+
+// addPending stores p under server/dir/key and evicts the oldest entries of
+// that server and direction beyond its cap. An evicted agent->server call
+// still counts its reads_untrusted label (its result may yet reach the
+// agent, uncorrelated); its reads_private label does not, because no
+// success was seen. Callers hold s.mu.
+func (s *Session) addPending(server, dir, key string, p pendingReq) (evicted []evictedReq) {
+	bucket := server + ":" + dir
 	s.nextSeq++
-	p.seq = s.nextSeq
+	p.seq, p.bucket = s.nextSeq, bucket
+	if _, dup := s.pending[key]; !dup {
+		s.counts[bucket]++
+	}
 	s.pending[key] = p
-	s.order = append(s.order, pendingKey{key: key, seq: p.seq})
-	for len(s.pending) > maxPending && len(s.order) > 0 {
-		k := s.order[0]
-		s.order = s.order[1:]
+	s.orders[bucket] = append(s.orders[bucket], pendingKey{key: key, seq: p.seq})
+	limit := pendingCap(dir)
+	for s.counts[bucket] > limit && len(s.orders[bucket]) > 0 {
+		k := s.orders[bucket][0]
+		s.orders[bucket] = s.orders[bucket][1:]
 		if cur, ok := s.pending[k.key]; ok && cur.seq == k.seq {
-			delete(s.pending, k.key)
-			evicted++
+			s.dropPending(k.key)
+			if cur.call {
+				s.flags = AfterResult(s.flags, cur.labels, true)
+			}
+			evicted = append(evicted, evictedReq{server: server, dir: dir, p: cur})
 		}
 	}
-	// order keeps keys of answered requests until they reach the front;
-	// compact it so it stays proportional to pending.
-	if len(s.order) > 2*maxPending+64 {
-		live := s.order[:0:0]
-		for _, k := range s.order {
+	// The queue keeps keys of answered requests until they reach the front;
+	// compact it so it stays proportional to the live entries.
+	if q := s.orders[bucket]; len(q) > 2*limit+64 {
+		live := q[:0:0]
+		for _, k := range q {
 			if cur, ok := s.pending[k.key]; ok && cur.seq == k.seq {
 				live = append(live, k)
 			}
 		}
-		s.order = live
+		s.orders[bucket] = live
 	}
 	return evicted
+}
+
+// dropPending removes one pending entry and returns it. Callers hold s.mu.
+func (s *Session) dropPending(key string) (pendingReq, bool) {
+	p, ok := s.pending[key]
+	if ok {
+		delete(s.pending, key)
+		s.counts[p.bucket]--
+	}
+	return p, ok
 }
 
 // pendingCount is the number of requests awaiting a reply.
@@ -160,10 +198,21 @@ func sessionEntry(sess *Session, now time.Time, action, reason string) audit.Ent
 	return audit.Entry{Time: now.UTC(), Session: sess.ID, Kind: AuditKindSession, Action: action, Reason: reason}
 }
 
-// evictedEntries is the audit note for requests the pending cap dropped.
-func evictedEntries(sess *Session, now time.Time, n int) []audit.Entry {
-	if n == 0 {
-		return nil
+// evictedEntries audits each request the pending cap dropped, with the
+// labels of a forwarded call.
+func evictedEntries(sess *Session, now time.Time, ev []evictedReq) []audit.Entry {
+	out := make([]audit.Entry, 0, len(ev))
+	for _, x := range ev {
+		e := sessionEntry(sess, now, AuditPendingEvicted, "not a forwarded call ("+x.p.method+")")
+		e.Server, e.Dir, e.Tool = x.server, x.dir, x.p.tool
+		if x.p.call {
+			ls := "none"
+			if len(x.p.labels) > 0 {
+				ls = strings.Join(x.p.labels, ",")
+			}
+			e.Reason = "labels: " + ls
+		}
+		out = append(out, e)
 	}
-	return []audit.Entry{sessionEntry(sess, now, AuditPendingEvicted, strconv.Itoa(n))}
+	return out
 }

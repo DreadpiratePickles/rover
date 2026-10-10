@@ -37,7 +37,8 @@ type Session struct {
 	// order and nextSeq keep pending's insertion order for the cap
 	// (addPending); lingerSince is set while no wrapper is attached
 	// (sessionlife.go).
-	order       []pendingKey
+	orders      map[string][]pendingKey // per "<server>:<dir>"
+	counts      map[string]int          // live pending entries per "<server>:<dir>"
 	nextSeq     uint64
 	lingerSince time.Time
 }
@@ -53,10 +54,12 @@ type pendingReq struct {
 	call   bool
 	labels []string
 	seq    uint64 // insertion order, for the pending cap
+	bucket string // "<server>:<dir>", the cap it counts against
 }
 
 func newSession(id string, clientPID int, now time.Time) *Session {
-	return &Session{ID: id, ClientPID: clientPID, Created: now, servers: map[string]int{}, pending: map[string]pendingReq{}}
+	return &Session{ID: id, ClientPID: clientPID, Created: now, servers: map[string]int{}, pending: map[string]pendingReq{},
+		orders: map[string][]pendingKey{}, counts: map[string]int{}}
 }
 
 // noteTools adds names to everything server has ever listed in this
@@ -114,8 +117,8 @@ func (s *Session) Client() (name, version string) {
 // It also returns the pending request a response answers (its tools/list
 // cursor, learn-mode observation key and, for a forwarded tools/call, its
 // labels); for a request, only the request's own cursor is set.
-// evicted is how many older pending requests the cap dropped (addPending).
-func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool, now time.Time) (e audit.Entry, req pendingReq, evicted int) {
+// evicted are the older pending requests the cap dropped (addPending).
+func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool, now time.Time) (e audit.Entry, req pendingReq, evicted []evictedReq) {
 	e = audit.Entry{
 		Time:    now.UTC(),
 		Session: s.ID,
@@ -137,7 +140,7 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 	defer s.mu.Unlock()
 	switch m.Kind {
 	case jsonrpc.KindRequest:
-		evicted = s.addPending(server+":"+dir+":"+string(m.ID), pendingReq{method: m.Method, tool: e.Tool, cursor: req.cursor, start: now})
+		evicted = s.addPending(server, dir, server+":"+dir+":"+string(m.ID), pendingReq{method: m.Method, tool: e.Tool, cursor: req.cursor, start: now})
 		if dir == "c2s" && m.Method == "initialize" {
 			// Read strictly (exact keys); Parse already refused an
 			// ambiguous clientInfo as invalid.
@@ -147,8 +150,7 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 		// A response travels the opposite way to its request, so look it up
 		// under the other direction. IDs are only unique per server and direction.
 		key := server + ":" + other(dir) + ":" + string(m.ID)
-		if p, ok := s.pending[key]; ok {
-			delete(s.pending, key)
+		if p, ok := s.dropPending(key); ok {
 			ms := float64(now.Sub(p.start).Microseconds()) / 1000
 			e.LatencyMS, e.ReplyTo, e.Tool, req = &ms, p.method, p.tool, p
 		}
@@ -318,7 +320,7 @@ func ResultIsError(result []byte) bool {
 // never saw it, so any "reply" to that id is not a reply to it.
 func (s *Session) forget(server, dir string, id []byte) {
 	s.mu.Lock()
-	delete(s.pending, server+":"+dir+":"+string(id))
+	s.dropPending(server + ":" + dir + ":" + string(id))
 	s.mu.Unlock()
 }
 
@@ -327,9 +329,7 @@ func (s *Session) forget(server, dir string, id []byte) {
 func (s *Session) take(server, dir string, id []byte) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := server + ":" + dir + ":" + string(id)
-	_, ok := s.pending[key]
-	delete(s.pending, key)
+	_, ok := s.dropPending(server + ":" + dir + ":" + string(id))
 	return ok
 }
 

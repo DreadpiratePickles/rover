@@ -38,10 +38,14 @@ tracking, the lethal trifecta, and why this needs one daemon.
   - To make this work, roverd remembers each forwarded call's labels on its
     pending request, keyed by server, direction and id. The result looks
     them up when it arrives. A result that answers no forwarded call
-    changes nothing. A session keeps at most 10,000 pending requests. Beyond
-    that the oldest is dropped, with a `pending_evicted` audit entry, so an
-    agent can't grow roverd's memory without bound, and a late reply to a
-    dropped request taints nothing.
+    changes nothing. Pending requests are capped per server
+    and direction: 10,000 agent->server and 5,000 server->client. So a
+    server flooding the agent with its own requests can only push out its
+    own, never the agent's calls whose results set the flags. When an agent
+    call is evicted anyway, it's audited (`pending_evicted`, with its
+    labels). A reads_untrusted label still taints, because the result may
+    yet reach the agent uncorrelated. A reads_private label doesn't, because
+    no success was seen.
   - **Sessions outlive their wrappers.** When an agent's last wrapper exits,
     the session **lingers** with its flags (audit: `session_lingering`). It
     stays while the agent process exists, which roverd checks with
