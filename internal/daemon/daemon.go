@@ -364,8 +364,8 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	server := hello.ServerName
 	m := jsonrpc.Parse(f.Raw)
 	now := s.o.Now()
-	e, cursor, obsKey := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
-	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, cursor, now)
+	e, req := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
+	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, req.cursor, now)
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
@@ -386,13 +386,8 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	}
 	s.notifyPins(j.pinEvents)
 	s.notifyPoison(j.poisoned)
-	if j.call {
-		sess.noteForwardedCall(j.callLabels)
-	}
-	if j.untrusted {
-		sess.noteUntrusted()
-	}
-	s.learnAfter(sess, server, f.Dir, m, j, obsKey)
+	s.noteSession(sess, server, f.Dir, m, j, req)
+	s.learnAfter(sess, server, f.Dir, m, j, req.obsKey)
 	return ipc.Frame{
 		Type: ipc.TypeVerdict, Seq: f.Seq, Action: j.action, Reason: j.reason, RuleIDs: j.ruleIDs,
 		ResponseRaw: j.responseRaw, ReplacementRaw: j.replacement,

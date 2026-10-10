@@ -34,6 +34,8 @@ const policyUsage = `usage:
                                          propose a policy from what learn mode (observe) recorded
   rover policy diff [FILE]               diff the current policy against the proposal (or FILE)
   rover policy apply                     ask roverd to reload config.yaml and the policy
+  rover policy labels [server]           print each tool's labels and where they come from
+                                         (built-in, config, or the conservative default)
 
 roverd uses policy.cedar when it exists, else policy.yaml (compiled on load).`
 
@@ -58,6 +60,8 @@ func runPolicy(args []string) int {
 		return policyPropose(args[1:])
 	case "diff":
 		return policyDiff(args[1:])
+	case "labels":
+		return policyLabels(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, policyUsage)
 		return 2

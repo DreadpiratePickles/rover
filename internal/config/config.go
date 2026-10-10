@@ -29,6 +29,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/DreadpiratePickles/rover/internal/labels"
 	"github.com/DreadpiratePickles/rover/internal/policy"
 	"github.com/DreadpiratePickles/rover/internal/policy/normalize"
 )
@@ -38,15 +39,6 @@ const FileName = "config.yaml"
 
 // maxConfigBytes bounds config.yaml (and a referenced normalizers file).
 const maxConfigBytes = 1 << 20
-
-// Labels a tool may carry (plan §5.1). Policies test them with
-// resource.labels.contains("...").
-var validLabels = map[string]bool{
-	"reads_private":   true,
-	"reads_untrusted": true,
-	"egress":          true,
-	"destructive":     true,
-}
 
 // A root name becomes part of a Cedar attribute (under_<name>), so it must be
 // a Cedar identifier.
@@ -74,9 +66,17 @@ func Default() Config {
 	return Config{Mode: policy.ModeObserve, Normalizers: normalize.BuiltIn()}
 }
 
-// ToolLabels returns the labels of one tool, or nil.
+// ToolLabels returns the configured labels of one tool, or nil. Decisions
+// use EffectiveLabels, which adds the built-in labels and the default.
 func (c Config) ToolLabels(server, tool string) []string {
 	return c.Labels[server][tool]
+}
+
+// EffectiveLabels returns the labels roverd uses for one tool and their
+// source: built-in < configured (replaces) < the conservative default for a
+// tool nobody knows (package labels, plan M8).
+func (c Config) EffectiveLabels(server, tool string) (ls []string, source string) {
+	return labels.Effective(server, tool, c.Labels)
 }
 
 // ToolNormalizers returns the normaliser rules of one tool, or nil.
@@ -185,11 +185,11 @@ func resolveRoots(in rootList) ([]normalize.Root, error) {
 	return out, nil
 }
 
-func checkLabels(labels map[string]map[string][]string) error {
-	for server, tools := range labels {
+func checkLabels(byServer map[string]map[string][]string) error {
+	for server, tools := range byServer {
 		for tool, ls := range tools {
 			for _, l := range ls {
-				if !validLabels[l] {
+				if !labels.Valid(l) {
 					return fmt.Errorf("config: labels.%s.%s: unknown label %q (want reads_private, reads_untrusted, egress or destructive)", server, tool, l)
 				}
 			}
