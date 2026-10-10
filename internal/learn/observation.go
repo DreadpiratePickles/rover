@@ -7,9 +7,10 @@
 // normaliser understands, the shape keeps only the fact a policy can use: the
 // resolved absolute path (never the text the agent typed), the URL's host,
 // the e-mail domain, the shell program, the SQL keyword. Every other argument
-// keeps its JSON type, plus its value only when that value is a short,
-// space-free string (an id, a mode, a branch name): a file's contents or a
-// message body never reaches the observations bucket.
+// keeps its JSON type only, except an argument with an enum-like name
+// (mode, state, format, ...; see literalNames) whose value is a short plain
+// word that does not look like a secret (literal.go). A file's contents, a
+// message body, a token or a password never reaches the observations bucket.
 package learn
 
 import (
@@ -20,7 +21,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/cedar-policy/cedar-go/types"
 	bolt "go.etcd.io/bbolt"
@@ -40,12 +40,19 @@ const (
 // flags are detection finding ids.
 const FlagPinMismatch = "pin_mismatch"
 
-// MaxLiteral bounds the strings whose value a shape keeps: shorter than
-// this many bytes and without white space.
-const MaxLiteral = 64
-
-// maxKeyPart bounds each name in a bbolt key (bbolt keys are at most 32 KiB).
+// maxKeyPart bounds each name in a bbolt key (bbolt keys are at most 32 KiB)
+// and the client, server and tool names stored in an observation.
 const maxKeyPart = 256
+
+// Size caps of one observation (found unbounded by independent verification
+// of M6: six 8 MB calls grew state.db by 98 MB).
+const (
+	MaxArgName          = 128      // bytes of an argument name
+	MaxArgs             = 64       // arguments per observation
+	MaxObservationBytes = 4 << 10  // the encoded observation
+	MaxBucketBytes      = 64 << 20 // the observations bucket, keys and values
+	LoadBudget          = 16 << 20 // what Load reads, newest first
+)
 
 // Arg is the shape of one argument.
 type Arg struct {
@@ -73,6 +80,9 @@ type Observation struct {
 	// detection findings (low ones do not flag). A flagged observation is
 	// never used by propose.
 	Flagged []string `json:"flagged,omitempty"`
+	// DroppedArgs counts arguments left out to keep the observation within
+	// MaxArgs and MaxObservationBytes.
+	DroppedArgs int `json:"dropped_args,omitempty"`
 }
 
 // Shape returns the shape of a call's arguments. rules are the tool's
@@ -85,7 +95,7 @@ func Shape(rules normalize.Rules, args, norm types.Record) map[string]Arg {
 	}
 	out := make(map[string]Arg, args.Len())
 	for name, v := range args.All() {
-		n := string(name)
+		n := truncate(string(name), MaxArgName)
 		if kind, ok := rules[n]; ok {
 			if rec, ok := recordAt(norm, n); ok {
 				if a, ok := normShape(kind, rec); ok {
@@ -96,14 +106,15 @@ func Shape(rules normalize.Rules, args, norm types.Record) map[string]Arg {
 			out[n] = Arg{Type: jsonType(v)} // normaliser failed: no value at all
 			continue
 		}
-		out[n] = literalShape(v)
+		out[n] = literalShape(n, v)
 	}
 	return out
 }
 
-// ResourceShape is the shape of a resources/read: its uri, as a literal.
+// ResourceShape is the shape of a resources/read: the uri's type only (a
+// URI can carry a token, and "uri" is not an enum-like name).
 func ResourceShape(uri string) map[string]Arg {
-	return map[string]Arg{"uri": literalShape(types.String(uri))}
+	return map[string]Arg{"uri": literalShape("uri", types.String(uri))}
 }
 
 func recordAt(r types.Record, name string) (types.Record, bool) {
@@ -154,16 +165,6 @@ func normShape(kind normalize.Kind, rec types.Record) (Arg, bool) {
 	return Arg{Type: string(kind), Values: vals}, true
 }
 
-// literalShape keeps the JSON type, and the value of a short string with no
-// white space.
-func literalShape(v types.Value) Arg {
-	a := Arg{Type: jsonType(v)}
-	if s, ok := v.(types.String); ok && len(s) < MaxLiteral && !strings.ContainsFunc(string(s), unicode.IsSpace) {
-		a.Value = string(s)
-	}
-	return a
-}
-
 // jsonType names the JSON type a converted value came from. A non-integer
 // number arrives as a String (package convert) and is named "string".
 func jsonType(v types.Value) string {
@@ -212,40 +213,102 @@ func keyTime(k []byte) uint64 {
 // MaxLoad caps how many observations Load returns (the bucket cap).
 const MaxLoad = DefaultCap
 
-// Load reads every observation in the bucket, oldest first, at most MaxLoad.
-// A value that does not decode is an error: the bucket is roverd's own.
-func Load(db *state.DB) ([]Observation, error) {
-	type kv struct {
-		t   uint64
-		obs Observation
-	}
-	var all []kv
+// Load returns the newest observations, oldest first: at most MaxLoad and
+// at most LoadBudget bytes of encoded values. It walks the keys with a
+// cursor (the time is in each key) and decodes only what fits. A value that
+// does not decode is an error: the bucket is roverd's own.
+func Load(db *state.DB) ([]Observation, error) { return loadBudget(db, LoadBudget) }
+
+func loadBudget(db *state.DB, budget int) ([]Observation, error) {
+	var out []Observation
 	err := db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(state.BucketObservations)
 		if b == nil {
 			return fmt.Errorf("bucket %s missing", state.BucketObservations)
 		}
-		return b.ForEach(func(k, v []byte) error {
+		type kt struct {
+			k []byte
+			t uint64
+		}
+		var keys []kt
+		c := b.Cursor()
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			keys = append(keys, kt{k, keyTime(k)})
+		}
+		sort.SliceStable(keys, func(i, j int) bool { return keys[i].t > keys[j].t })
+		used := 0
+		for _, e := range keys {
+			v := b.Get(e.k)
+			if len(out) >= MaxLoad || used+len(v) > budget {
+				break
+			}
+			used += len(v)
 			var o Observation
 			if err := json.Unmarshal(v, &o); err != nil {
-				return fmt.Errorf("observation %q: %w", k, err)
+				return fmt.Errorf("observation %q: %w", e.k, err)
 			}
-			all = append(all, kv{keyTime(k), o})
-			return nil
-		})
+			out = append(out, o)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	sort.SliceStable(all, func(i, j int) bool { return all[i].t < all[j].t })
-	if len(all) > MaxLoad {
-		all = all[len(all)-MaxLoad:]
-	}
-	out := make([]Observation, len(all))
-	for i, e := range all {
-		out[i] = e.obs
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
+}
+
+// capObservation applies the size caps: names cut to maxKeyPart, at most
+// MaxArgs arguments (by name order), then the largest arguments dropped
+// until the encoding fits MaxObservationBytes. DroppedArgs counts them.
+func capObservation(o Observation) Observation {
+	o.Client, o.Server, o.Tool = truncate(o.Client, maxKeyPart), truncate(o.Server, maxKeyPart), truncate(o.Tool, maxKeyPart)
+	names := make([]string, 0, len(o.Shape))
+	for n := range o.Shape {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	shape := make(map[string]Arg, min(len(names), MaxArgs))
+	for i, n := range names {
+		if i >= MaxArgs {
+			o.DroppedArgs++
+			continue
+		}
+		shape[n] = o.Shape[n]
+	}
+	o.Shape = shape
+	for {
+		b, err := json.Marshal(o)
+		if err != nil || len(b) <= MaxObservationBytes || len(o.Shape) == 0 {
+			return o
+		}
+		delete(o.Shape, largestArg(o.Shape))
+		o.DroppedArgs++
+	}
+}
+
+func largestArg(shape map[string]Arg) string {
+	best, size := "", -1
+	for n, a := range shape {
+		s := len(n) + len(a.Value)
+		for _, v := range a.Values {
+			s += len(v)
+		}
+		if s > size || (s == size && n < best) {
+			best, size = n, s
+		}
+	}
+	return best
+}
+
+// truncate cuts s to at most n bytes without splitting a UTF-8 sequence.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "")
 }
 
 // MaxDumpBytes caps the JSON an observations_dump answer carries, well

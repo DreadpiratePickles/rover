@@ -8,11 +8,14 @@
 // mode exists to make writing one cheap. It generalises what it saw:
 //
 //   - paths become the deepest directory they share, expressed as a root
-//     (an existing one when the paths lie inside it, else a suggested one);
+//     (an existing one when the paths lie inside it, else a suggested one
+//     for exactly that directory, never widened to fit another tool);
 //   - URLs become their hosts;
 //   - a short argument seen with exactly one value keeps that value;
-//   - a tool called without arguments gets a plain permit, and every server
-//     whose tools were listed gets a list_tools permit.
+//   - a tool with no normaliser mapping, never seen with a path, url or
+//     e-mail argument, gets a plain permit; a tool that has a constrained
+//     rule never gets an unconstrained one beside it (that would cancel
+//     it); every server whose tools were listed gets a list_tools permit.
 //
 // What it never does: propose anything pinning or detection flagged (those
 // calls are returned in Suspicious), propose a root at "/", at a top-level
@@ -29,6 +32,7 @@ import (
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/learn"
+	"github.com/DreadpiratePickles/rover/internal/policy/normalize"
 	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
@@ -78,14 +82,22 @@ var safeName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
 // Build generalises obs. roots maps the declared root names to their
 // (absolute, "~"-expanded) paths, as in config.yaml; labels are config.yaml's
-// tool labels, carried into the YAML so applying it keeps them.
-func Build(obs []learn.Observation, roots map[string]string, labels map[string]map[string][]string) (Proposal, error) {
+// tool labels, carried into the YAML so applying it keeps them; nc is the
+// normaliser config the observations were recorded with (a tool it maps can
+// only get constrained rules).
+func Build(obs []learn.Observation, roots map[string]string, labels map[string]map[string][]string, nc normalize.Config) (Proposal, error) {
 	b := newBuilder(roots)
+	b.nc = nc
 	var p Proposal
 	groups := map[groupKey][]learn.Observation{}
+	dropped := 0
 	for _, o := range obs {
 		if len(o.Flagged) > 0 {
 			p.Suspicious = append(p.Suspicious, o)
+			continue
+		}
+		if o.DroppedArgs > 0 {
+			dropped++ // its shape is incomplete: a rule from it could be too broad
 			continue
 		}
 		k := groupKey{server: o.Server, action: o.Action, tool: o.Tool}
@@ -93,6 +105,9 @@ func Build(obs []learn.Observation, roots map[string]string, labels map[string]m
 		p.Used++
 	}
 	sort.SliceStable(p.Suspicious, func(i, j int) bool { return p.Suspicious[i].TS.Before(p.Suspicious[j].TS) })
+	if dropped > 0 {
+		b.note("%d call(s) not proposed: arguments were left out of their observation to bound its size", dropped)
+	}
 	for _, k := range sortedKeys(groups) {
 		b.group(k, groups[k])
 	}
@@ -137,6 +152,7 @@ type builder struct {
 	yamlOK   map[string]bool // server -> has a call rule with a YAML form
 	yamlWhy  string          // the first rule without a YAML form
 	yamlBody []yamlRule
+	nc       normalize.Config
 }
 
 type declaredRoot struct{ name, path, resolved string }
@@ -194,6 +210,7 @@ type draft struct {
 	derived              []string
 	resourceIn           bool     // read_resource: resource in Server
 	yamlWhen             []string // YAML when: entries; nil with yamlNo set
+	constrained          bool     // has a path or host condition
 	yamlNo               string   // why this rule has no YAML form
 }
 

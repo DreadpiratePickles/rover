@@ -15,6 +15,8 @@ import (
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
+	"github.com/DreadpiratePickles/rover/internal/policy/normalize"
+	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
 type failWriter struct{ fail bool }
@@ -289,12 +291,39 @@ func TestListenRefusesWhenAnotherDaemonAnswers(t *testing.T) {
 func TestDecideLatencyBudget(t *testing.T) {
 	src := `@id("echo") permit (principal, action == Action::"call_tool", resource == Tool::"fs/echo");`
 	s := start(t, Options{Audit: audit.New(&bytes.Buffer{}), Policy: engine(t, src), Config: enforce()})
+	measureDecide(t, s, ipc.ActionForward)
+}
+
+// The same budget in observe mode with learn mode recording every call
+// into a real state database (M6): decide only queues the observation.
+func TestDecideLatencyBudgetWhileLearning(t *testing.T) {
+	db, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	cfg := observe()
+	nc, err := normalize.Parse([]byte("servers:\n  fs:\n    echo: {text: path}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Normalizers = nc
+	s := start(t, Options{Audit: audit.New(&bytes.Buffer{}), Policy: engine(t, `@id("none") forbid (principal, action, resource) when { false };`),
+		Config: cfg, State: db})
+	measureDecide(t, s, ipc.ActionForward) // would_deny, forwarded and recorded
+	if obs := dump(t, s); len(obs) != 500 {
+		t.Fatalf("%d observations recorded, want 500", len(obs))
+	}
+}
+
+func measureDecide(t *testing.T, s *Server, want string) {
+	t.Helper()
 	c, err := ipc.Dial(s.Addr(), hello(1, "fs"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"/tmp/x/hi"}}}`)
 	const (
 		n      = 500
 		budget = 10 * time.Millisecond
@@ -303,7 +332,7 @@ func TestDecideLatencyBudget(t *testing.T) {
 	for i := 0; i < n; i++ {
 		t0 := time.Now()
 		v, _, err := c.Decide("c2s", msg)
-		if err != nil || v.Action != ipc.ActionForward {
+		if err != nil || v.Action != want {
 			t.Fatalf("verdict %+v err %v", v, err)
 		}
 		lat = append(lat, time.Since(t0))

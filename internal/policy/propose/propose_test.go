@@ -1,10 +1,15 @@
 package propose
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/ipc"
+	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 	"github.com/DreadpiratePickles/rover/internal/learn"
 	"github.com/DreadpiratePickles/rover/internal/policy"
 	"github.com/DreadpiratePickles/rover/internal/policy/normalize"
@@ -30,6 +35,8 @@ func path(p string) map[string]learn.Arg {
 const normalizers = `servers:
   files:
     read_file: {path: path}
+    list_directory: {path: path}
+    copy_to: {source: path}
     read_many: {paths: path}
     copy: {source: path}
   fetch:
@@ -62,9 +69,18 @@ func mustLoad(t *testing.T, p Proposal, roots map[string]string) *policy.Engine 
 	return eng
 }
 
+func testNormalizers(t *testing.T) normalize.Config {
+	t.Helper()
+	nc, err := normalize.Parse([]byte(normalizers))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nc
+}
+
 func build(t *testing.T, obs []learn.Observation, roots map[string]string) Proposal {
 	t.Helper()
-	p, err := Build(obs, roots, nil)
+	p, err := Build(obs, roots, nil, testNormalizers(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +216,7 @@ func TestBuildYAMLEquivalent(t *testing.T) {
 	labels := map[string]map[string][]string{"fetch": {"fetch": {"egress"}}}
 
 	// Act
-	p, err := Build(obs, roots, labels)
+	p, err := Build(obs, roots, labels, testNormalizers(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +232,7 @@ func TestBuildYAMLEquivalent(t *testing.T) {
 			t.Errorf("YAML lacks %q:\n%s", want, y)
 		}
 	}
-	if c.Labels["fetch"]["fetch"][0] != "egress" || c.Roots["projects"] != "/srv/x/projects" {
+	if c.Mode != "enforce" || c.Labels["fetch"]["fetch"][0] != "egress" || c.Roots["projects"] != "/srv/x/projects" {
 		t.Fatalf("compiled: %+v %+v", c.Labels, c.Roots)
 	}
 	for _, r := range p.Rules {
@@ -278,5 +294,121 @@ func TestUnifiedDiff(t *testing.T) {
 	}
 	if got := UnifiedDiff("a", "b", nil, []byte("x\n")); got != "--- a\n+++ b\n@@ -0,0 +1,1 @@\n+x\n" {
 		t.Fatalf("from empty: %q", got)
+	}
+}
+
+// H1 (independent verification): a root suggested for one tool must never
+// widen another tool's rule. A directory given to one tool and files under
+// it given to another share the root only because the directories are
+// identical; nothing climbs to the parent.
+func TestBuildRootsNeverWidenAcrossTools(t *testing.T) {
+	// Arrange: real directories, because a single observed path that is a
+	// directory is its own root.
+	w, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"projects/sub", "other"} {
+		if err := os.MkdirAll(filepath.Join(w, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proj := filepath.Join(w, "projects")
+	obs := []learn.Observation{
+		callObs(0, "files", "list_directory", path(proj)),
+		callObs(1, "files", "read_file", path(filepath.Join(proj, "a.txt"))),
+		callObs(2, "files", "read_file", path(filepath.Join(proj, "sub", "b.txt"))),
+	}
+
+	// Act
+	p := build(t, obs, nil)
+
+	// Assert
+	if len(p.NewRoots) != 1 || p.NewRoots[0] != (Root{Name: "projects", Path: proj}) {
+		t.Fatalf("new roots %+v, want only projects = %s\n%s", p.NewRoots, proj, p.Cedar)
+	}
+	if !strings.Contains(string(p.Cedar), "(new root projects = "+proj+")") {
+		t.Errorf("the comment must name the exact directory:\n%s", p.Cedar)
+	}
+	eng := mustLoad(t, p, nil)
+	roots := []normalize.Root{{Name: "projects", Path: proj}}
+	for target, want := range map[string]string{
+		filepath.Join(proj, "a.txt"):          ipc.ActionForward,
+		filepath.Join(proj, "sub", "new.txt"): ipc.ActionForward,
+		filepath.Join(w, "other", "c.txt"):    ipc.ActionBlock,
+		filepath.Join(w, "c.txt"):             ipc.ActionBlock,
+	} {
+		msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":` + strconv.Quote(target) + `}}}`
+		o := eng.Decide(policy.Input{Mode: policy.ModeEnforce, Server: "files", Dir: policy.DirC2S, Msg: jsonrpc.Parse([]byte(msg)),
+			Now: t0, Roots: roots, Normalizers: normalize.Rules{"path": normalize.KindPath}})
+		if o.Action != want {
+			t.Errorf("read_file %s: %s (%s), want %s", target, o.Action, o.Reason, want)
+		}
+	}
+}
+
+func TestCommonDirectory(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		paths []string
+		want  string
+	}{
+		"one existing directory": {[]string{dir}, dir},
+		"one file":               {[]string{"/srv/p/a.txt"}, "/srv/p"},
+		"same file twice":        {[]string{"/srv/p/a.txt", "/srv/p/a.txt"}, "/srv/p"},
+		"two files, one dir":     {[]string{"/srv/p/a.txt", "/srv/p/b.txt"}, "/srv/p"},
+		"file and subdir file":   {[]string{"/srv/p/a.txt", "/srv/p/sub/b.txt"}, "/srv/p"},
+		"a path and its child":   {[]string{"/srv/p", "/srv/p/a.txt"}, "/srv/p"},
+		"name prefix only":       {[]string{"/srv/p/ab", "/srv/p/abc"}, "/srv/p"},
+	} {
+		if got := commonDir(tc.paths); got != tc.want {
+			t.Errorf("%s: commonDir(%q) = %s, want %s", name, tc.paths, got, tc.want)
+		}
+	}
+}
+
+// M1: once a tool has a constrained rule, calls without the constrained
+// argument are not proposed (a plain permit would cancel the constraint).
+func TestBuildNoPlainPermitBesideConstrainedRule(t *testing.T) {
+	obs := []learn.Observation{
+		callObs(0, "files", "read_file", path("/srv/x/p/a.txt")),
+		callObs(1, "files", "read_file", nil),
+		callObs(2, "files", "read_file", map[string]learn.Arg{"mode": {Type: "string", Value: "ro"}}),
+	}
+	p := build(t, obs, nil)
+	if len(p.Rules) != 1 || !strings.Contains(p.Rules[0].Cedar, "under_p") {
+		t.Fatalf("rules %+v", p.Rules)
+	}
+	if len(p.Notes) != 2 || !strings.Contains(p.Notes[0], "files/read_file called 1 time(s) without path; write this rule by hand") {
+		t.Fatalf("notes %q", p.Notes)
+	}
+}
+
+// M1: a plain permit only for a tool with no normaliser mapping that was
+// never seen with a path, url or email argument.
+func TestBuildPlainPermitOnlyForUnmappedTools(t *testing.T) {
+	obs := []learn.Observation{
+		callObs(0, "files", "list_directory", nil), // mapped tool, called with {}
+		callObs(1, "gh", "whoami", nil),            // unmapped, no arguments
+		callObs(2, "mail", "send", map[string]learn.Arg{"to": {Type: "email", Value: "example.org"}}),
+	}
+	p := build(t, obs, nil)
+	if len(p.Rules) != 1 || p.Rules[0].ID != "learned-gh-whoami" {
+		t.Fatalf("rules %+v notes %q", p.Rules, p.Notes)
+	}
+	if len(p.Notes) != 2 {
+		t.Fatalf("notes %q", p.Notes)
+	}
+}
+
+func TestBuildSkipsObservationsWithDroppedArgs(t *testing.T) {
+	o := callObs(0, "gh", "whoami", nil)
+	o.DroppedArgs = 3
+	p := build(t, []learn.Observation{o}, nil)
+	if len(p.Rules) != 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "bound its size") {
+		t.Fatalf("rules %+v notes %q", p.Rules, p.Notes)
 	}
 }

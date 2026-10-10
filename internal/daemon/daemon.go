@@ -86,6 +86,7 @@ type Server struct {
 	noPolicyWarned atomic.Int64 // unix nanos of the last "no policy" warning
 	// rec records learn-mode observations (M6); nil without a state DB.
 	rec        *learn.Recorder
+	taint      toolTaint     // learn mode: tools whose last listing was flagged
 	closedDone chan struct{} // closed when Close has finished (final flush)
 }
 

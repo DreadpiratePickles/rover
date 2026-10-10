@@ -35,8 +35,9 @@ agent ──► rover wrap ──► roverd decide ──► audit entry ──�
   that observation's `flagged` list (the key travels with the pending request).
 - **`internal/policy/propose`**: `Load`, `Build` (generalisation, Cedar, YAML)
   and a small unified diff.
-- **CLI**: `rover policy propose [--out FILE] [--yaml]` and
-  `rover policy diff [FILE]`. `rover policy apply` is unchanged (SIGHUP;
+- **CLI**: `rover policy propose [--out FILE [--force]] [--yaml]` and
+  `rover policy diff [FILE]`. The YAML equivalent sets `mode: enforce` (its
+  header says so). `rover policy apply` is unchanged (SIGHUP;
   TODO(M9): OS authentication).
 
 ### What a shape keeps
@@ -48,27 +49,46 @@ agent ──► rover wrap ──► roverd decide ──► audit entry ──�
 | email | domain | `alice@example.org` → `example.org` |
 | shell_command | program | `rm -rf /tmp/x` → `rm` |
 | sql | statement keyword | `select * from users …` → `SELECT` |
-| no normaliser | JSON type, plus the value only for a string under 64 bytes with no white space | `"ro"` → `string "ro"`; `"hello world"` → `string` |
+| no normaliser | JSON type only; the value too only when the argument name is enum-like (branch, ref, mode, method, format, level, state, sort, direction, order, visibility, status, type, kind, lang, language, encoding, scope) AND the value matches `^[A-Za-z][A-Za-z0-9_.-]{0,31}$` AND it is not secret-shaped (an sk_live_/ghp_/xoxb-/AKIA… prefix, a `=` or `:`, or 16+ characters with more than 3.5 bits of entropy per character) | `mode: "ro"` → `string "ro"`; `token: "abc"` → `string`; `type: "password=x"` → `string` |
 
-A file's contents, a message body or a token never reaches the bucket.
+So the bucket holds resolved paths, hosts, domains, programs, SQL keywords,
+JSON type names and short enum-like words: never a file's contents, a message
+body, a URI or a value under any other argument name. Sizes are capped too:
+argument names at 128 bytes, 64 arguments and 4 KiB per observation (extra
+arguments are dropped and counted; such a call is never proposed), the bucket
+at 50,000 observations and 64 MiB (oldest dropped), and `propose` reads the
+newest 16 MB.
 
 ### How propose generalises
 
-- **Paths**: per (server, tool, argument), the deepest directory shared by the
-  parent directories of every path seen. Inside a declared root → that root's
-  `under_<root>`. Otherwise a *new root* is suggested, named after the
-  directory's last component, and printed under "roots to add to config.yaml".
+- **Paths**: per (server, tool, argument), the deepest directory that contains
+  every path seen: for one path, the path itself if it is a directory now,
+  else its parent; for several, their common directory (so `/p` and
+  `/p/a.txt` give `/p`). Inside a declared root → that root's `under_<root>`.
+  Otherwise a *new root* is suggested for exactly that directory, named after
+  its last component, and printed under "roots to add to config.yaml"; the
+  rule's comment names the directory (`new root projects = /…/projects`).
+  Two rules share a suggested root only when their directories are
+  identical: a root found for one tool never widens another's rule.
   Calls under two different roots become two rules (`…-read_file`,
   `…-read_file-2`) rather than one rule whose directory climbs above both.
 - **Refusal**: a common directory of `/`, a top-level directory (`/etc`,
   `/tmp`), or your home directory or anything above it is **not** proposed:
   "too broad, write this rule by hand".
 - **URLs** → the set of hosts (`["a", "b"].contains(context.norm.url.host)`).
-- **One short value, always the same**, on an argument the schema declares
-  (`context.args.owner` …) → equality. Other arguments are left unconstrained,
-  and the rule's comment says so.
-- **No arguments** → a plain permit. **tools/list seen** → a list_tools permit
-  per server. **resources/read** → the URIs seen.
+- **One recorded value, always the same**, on an argument the schema
+  declares (in practice `branch`) → equality. Other arguments are left
+  unconstrained, and the rule's comment says so.
+- **Plain permits only where nothing could be constrained**: a tool with no
+  normaliser mapping that was never seen with a path, url or email argument.
+  A tool that has a path or host rule never gets an unconstrained rule beside
+  it (it would cancel the constraint): its calls without that argument are
+  listed as "<server>/<tool> called N time(s) without path; write this rule by
+  hand". **tools/list seen** → a list_tools permit per server.
+  **resources/read** is never proposed (URIs are not recorded).
+- **Flags on a tool's description**: a medium or high finding on a tool's
+  description (or a pin mismatch for it) flags every later call to that tool
+  until a clean listing; those calls are listed as suspicious.
 - Every rule has `@id("learned-<server>-<tool>[-<n>]")` and the comment
   `// derived from N calls between <first> and <last>: <what>`.
 - Names or values that would need escaping in Cedar (a tool called
@@ -203,7 +223,7 @@ You should see (trimmed):
 
 ```
 @id("learned-files-read_file")
-// derived from 2 calls between 2026-10-09T23:26:39Z and 2026-10-09T23:26:39Z: path inside /tmp/rover-m6-1wHU/lab/projects, the deepest directory the 2 path(s) share (new root projects)
+// derived from 2 calls between 2026-10-09T23:26:39Z and 2026-10-09T23:26:39Z: path inside /private/tmp/rover-m6-1wHU/lab/projects, the deepest directory the 2 path(s) share (new root projects = /private/tmp/rover-m6-1wHU/lab/projects)
 permit (
   principal,
   action == Action::"call_tool",
@@ -217,14 +237,14 @@ suspicious, not proposed:
   2026-10-09T23:26:39Z  files  read_file  flags: instruction_phrase
 
 roots to add to config.yaml:
-  projects: "/tmp/rover-m6-1wHU/lab/projects"
+  projects: "/private/tmp/rover-m6-1wHU/lab/projects"
 ```
 
 Then apply it by hand and check it:
 
 ```bash
 ./bin/rover policy diff                 # what would change (exit 1: there are differences)
-./bin/rover policy propose --out $ROVER_DIR/config/policy.cedar
+./bin/rover policy propose --force --out $ROVER_DIR/config/policy.cedar   # --force: policy.cedar exists
 $EDITOR $ROVER_DIR/config/config.yaml   # roots: { projects: "<the path above>" }
 ./bin/rover policy validate             # ok: 3 policies
 ./bin/rover policy apply                # roverd reloads

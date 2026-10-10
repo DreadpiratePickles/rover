@@ -81,17 +81,18 @@ func resolvedT(t *testing.T, p string) string {
 
 func TestShapeOfArgumentsWithoutNormaliser(t *testing.T) {
 	// Arrange
-	long := strings.Repeat("x", MaxLiteral)
 	args := types.RecordMap{
 		"mode":   types.String("ro"),
-		"text":   types.String("hello world"),
-		"long":   types.String(long),
-		"short":  types.String(long[:MaxLiteral-1]),
+		"branch": types.String("feature/x"), // '/' is not in the value pattern
+		"state":  types.String("open"),
+		"text":   types.String("hello"), // not an enum-like name: type only
+		"id":     types.String("abc123"),
 		"n":      types.Long(3),
 		"ok":     types.True,
 		"obj":    types.NewRecord(types.RecordMap{"a": types.String("b")}),
 		"list":   types.NewSet(types.String("a")),
-		"tabbed": types.String("a\tb"),
+		"format": types.String("json"),
+		"level":  types.String("a" + strings.Repeat("b", 32)), // 33 bytes: too long
 	}
 
 	// Act
@@ -99,14 +100,39 @@ func TestShapeOfArgumentsWithoutNormaliser(t *testing.T) {
 
 	// Assert
 	want := map[string]Arg{
-		"mode": {Type: "string", Value: "ro"}, "text": {Type: "string"}, "long": {Type: "string"},
-		"short": {Type: "string", Value: long[:MaxLiteral-1]}, "n": {Type: "number"}, "ok": {Type: "boolean"},
-		"obj": {Type: "object"}, "list": {Type: "array"}, "tabbed": {Type: "string"},
+		"mode": {Type: "string", Value: "ro"}, "branch": {Type: "string"}, "state": {Type: "string", Value: "open"},
+		"text": {Type: "string"}, "id": {Type: "string"}, "n": {Type: "number"}, "ok": {Type: "boolean"},
+		"obj": {Type: "object"}, "list": {Type: "array"}, "format": {Type: "string", Value: "json"}, "level": {Type: "string"},
 	}
 	for k, w := range want {
 		if g := got[k]; g.Type != w.Type || g.Value != w.Value || g.Values != nil {
 			t.Errorf("%s: got %+v, want %+v", k, g, w)
 		}
+	}
+}
+
+// The verifier's secrets: none may reach the bucket, even under an
+// enum-like argument name.
+func TestShapeNeverKeepsSecretShapedValues(t *testing.T) {
+	secrets := []string{
+		"sk_live_51HxQabcdEFGH1234", "sk_test_abc", "rk_live_x", "ghp_abcdefghijklmnop", "gho_x", "ghs_x", "ghu_x",
+		"github_pat_11ABC", "xoxb-123-456", "xoxp-1", "AKIAIOSFODNN7EXAMPLE", "ASIAXYZ",
+		"password=hunter2SuperSecret", "user:pw", "Zq8vR2mX7pL4kT9w", // high entropy, 16 chars
+	}
+	for _, sec := range secrets {
+		for _, name := range []string{"mode", "type", "token", "password", "key"} {
+			got := shapeOf(t, nil, types.RecordMap{types.String(name): types.String(sec)}, nil)
+			if got[name].Value != "" {
+				t.Errorf("%s=%q was kept", name, sec)
+			}
+			b, _ := json.Marshal(got)
+			if strings.Contains(string(b), sec) {
+				t.Errorf("%s=%q reached the shape: %s", name, sec, b)
+			}
+		}
+	}
+	if got := shapeOf(t, nil, types.RecordMap{"type": types.String("pull_request")}, nil); got["type"].Value != "pull_request" {
+		t.Errorf("a plain enum value under an allowed name must be kept: %+v", got)
 	}
 }
 
@@ -122,12 +148,10 @@ func TestShapeOfFailedNormaliserKeepsOnlyType(t *testing.T) {
 	}
 }
 
-func TestResourceShape(t *testing.T) {
-	if got := ResourceShape("file:///x"); got["uri"].Type != "string" || got["uri"].Value != "file:///x" {
+func TestResourceShapeKeepsNoURI(t *testing.T) {
+	// "uri" is not an enum-like name: a URI can carry a token.
+	if got := ResourceShape("file:///x?token=abc"); got["uri"].Type != "string" || got["uri"].Value != "" {
 		t.Fatalf("%+v", got)
-	}
-	if got := ResourceShape("file:///a b"); got["uri"].Value != "" {
-		t.Fatalf("a URI with white space must not be kept: %+v", got)
 	}
 }
 

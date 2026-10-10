@@ -48,7 +48,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:\n  rover wrap [--name NAME] -- <server command> [args...]\n  rover daemon [--log-bodies]\n  rover log [--log FILE] [--verify]\n"+
 		"  rover policy init [--force]\n  rover policy validate [--policy FILE]\n  rover policy test <audit.jsonl>\n  rover policy apply\n"+
-		"  rover policy propose [--out FILE] [--yaml]\n  rover policy diff [FILE]\n"+
+		"  rover policy propose [--out FILE [--force]] [--yaml]\n  rover policy diff [FILE]\n"+
 		"  rover pin list [server]\n  rover pin approve <server> <tool>\n  rover pin reset <server>\n  rover eval [--corpus DIR]")
 	os.Exit(2)
 }

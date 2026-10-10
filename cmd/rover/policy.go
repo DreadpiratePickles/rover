@@ -30,7 +30,7 @@ const policyUsage = `usage:
                                          load and type-check a policy (.cedar, or .yaml compiled first),
                                          then run ` + "`cedar validate`" + ` if installed
   rover policy test <audit.jsonl>        replay logged messages through the current policy
-  rover policy propose [--out FILE] [--yaml]
+  rover policy propose [--out FILE [--force]] [--yaml]
                                          propose a policy from what learn mode (observe) recorded
   rover policy diff [FILE]               diff the current policy against the proposal (or FILE)
   rover policy apply                     ask roverd to reload config.yaml and the policy

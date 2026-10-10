@@ -88,7 +88,7 @@ func TestLearnModeRecordsForwardedCallsAndFlagsPoisonedResults(t *testing.T) {
 	if strings.Join(args.Flagged, ",") != "ansi_escape" {
 		t.Errorf("a medium finding in the call's own arguments must flag it: %+v", args)
 	}
-	if read.Action != learn.ActionRead || read.Shape["uri"].Value != "file:///readme" {
+	if read.Action != learn.ActionRead || read.Shape["uri"].Type != "string" || read.Shape["uri"].Value != "" {
 		t.Errorf("resources/read: %+v", read)
 	}
 }
@@ -116,5 +116,50 @@ func TestLearnModeRecordsNothingWhenEnforcingOrBlocked(t *testing.T) {
 				t.Fatalf("recorded %+v", obs)
 			}
 		})
+	}
+}
+
+// M2 (independent verification): a medium finding on a tool's description
+// flags the list AND every later call to that tool, until a clean listing.
+func TestLearnModeFlagsCallsToToolWithSuspiciousDescription(t *testing.T) {
+	// Arrange
+	db, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	s := start(t, Options{Audit: audit.New(&syncBuf{}), State: db, Config: observe(), Policy: engine(t, detectPolicy)})
+	c := dial(t, s)
+
+	// Act: "keys" says "~/.ssh" in its description (medium).
+	listOnce(t, c, "1", cleanTool, mediumTool)
+	decide(t, c, "c2s", call("2", "keys"))
+	decide(t, c, "c2s", call("3", "echo"))
+	obs := dump(t, s)
+
+	// Assert
+	if len(obs) != 3 {
+		t.Fatalf("%+v", obs)
+	}
+	if strings.Join(obs[0].Flagged, ",") != "sensitive_path" {
+		t.Errorf("list: %+v", obs[0])
+	}
+	if obs[1].Tool != "keys" || strings.Join(obs[1].Flagged, ",") != "sensitive_path" {
+		t.Errorf("a call to the tool with the suspicious description must be flagged: %+v", obs[1])
+	}
+	if obs[2].Tool != "echo" || len(obs[2].Flagged) != 0 {
+		t.Errorf("the clean tool's call must not be: %+v", obs[2])
+	}
+}
+
+func TestToolTaintClearsOnCleanListing(t *testing.T) {
+	var tt toolTaint
+	tt.update("s", map[string][]string{"keys": {"sensitive_path"}, "echo": nil})
+	if got := tt.flags("s", "keys"); strings.Join(got, ",") != "sensitive_path" {
+		t.Fatalf("%v", got)
+	}
+	tt.update("s", map[string][]string{"keys": nil})
+	if got := tt.flags("s", "keys"); len(got) != 0 {
+		t.Fatalf("a clean listing must clear the taint: %v", got)
 	}
 }

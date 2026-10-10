@@ -138,7 +138,9 @@ func renderYAML(p Proposal, b *builder, labels map[string]map[string][]string) (
 	}
 	var out bytes.Buffer
 	out.WriteString("# Proposed by `rover policy propose`: review every rule before applying it.\n")
-	out.WriteString("# Its roots and labels replace config.yaml's when it is used as policy.yaml.\nversion: 1\ndefaults: deny\n")
+	out.WriteString("# Its roots and labels replace config.yaml's when it is used as policy.yaml.\n")
+	out.WriteString("# It compiles as mode: enforce: used as policy.yaml, anything not permitted is blocked.\n")
+	out.WriteString("version: 1\nmode: enforce\ndefaults: deny\n")
 	writeRoots(&out, b)
 	writeLabels(&out, labels)
 	if len(b.yamlBody) == 0 {

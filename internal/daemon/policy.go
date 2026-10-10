@@ -167,7 +167,7 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	}
 	j := s.judgePolicy(st, sess, server, transport, dir, m, now, det)
 	if j.obs != nil {
-		j.obs.Flagged = flagIDs(detFs)
+		j.obs.Flagged = sortedUnique(append(flagIDs(detFs), s.taint.flags(server, j.obs.Tool)...))
 	}
 	j.pinEvents = pinEvents
 	return j
@@ -252,6 +252,7 @@ func (s *Server) filterList(st *loaded, sess *Session, server string, m jsonrpc.
 	case err != nil:
 		return rejectList(m, err)
 	case pinChanged:
+		s.taintPinMismatches(server, events)
 		result = filtered
 		reasons = append(reasons, ReasonPinMismatch+": "+strings.Join(mismatched(events), ", "))
 	}

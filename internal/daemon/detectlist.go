@@ -75,11 +75,13 @@ func (s *Server) detectList(sess *Session, server string, result []byte, cursor 
 	rules := detect.NewRules(opts...)
 	kept := make([][]byte, 0, len(tools))
 	var all []detect.Finding
+	taint := make(map[string][]string, len(tools))
 	for _, t := range tools {
 		fs, serr := scanTool(rules, result, t)
 		if serr != nil {
 			return nil, nil, nil, nil, fmt.Errorf("tool %q: %w", t.name, serr)
 		}
+		taint[t.name] = flagIDs(fs) // learn mode: medium/high flag later calls to it
 		if detect.Max(fs) == detect.High {
 			removed = append(removed, poisonEvent{server: server, tool: t.name, ids: detect.Score(fs).IDs})
 			continue
@@ -88,6 +90,7 @@ func (s *Server) detectList(sess *Session, server string, result []byte, cursor 
 		kept = append(kept, result[t.at[0]:t.at[1]])
 	}
 	s.det.page(server, cursor, next, removed)
+	s.taint.update(server, taint)
 	findings, flags = detect.Score(all).IDs, flagIDs(all)
 	if len(removed) == 0 {
 		return result, nil, findings, flags, nil

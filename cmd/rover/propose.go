@@ -24,15 +24,22 @@ import (
 // YAML with --yaml), the calls it left out, the flagged ("suspicious")
 // observations, and the roots config.yaml must declare before the proposal
 // can be applied. --out writes the Cedar (or, with --yaml, the YAML) to a
-// file instead of printing it.
+// file instead of printing it; an existing file is kept unless --force.
 func policyPropose(args []string) int {
 	fset := flag.NewFlagSet("policy propose", flag.ExitOnError)
 	out := fset.String("out", "", "write the proposal to FILE instead of printing it")
 	withYAML := fset.Bool("yaml", false, "also print the policy.yaml equivalent (with --out: write the YAML)")
+	force := fset.Bool("force", false, "with --out: overwrite FILE if it exists")
 	_ = fset.Parse(args)
 	if fset.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, policyUsage)
 		return 2
+	}
+	if *out != "" && !*force {
+		if _, err := os.Lstat(*out); err == nil {
+			fmt.Fprintf(os.Stderr, "rover policy propose: %s exists; refusing to overwrite it (use --force)\n", *out)
+			return 1
+		}
 	}
 	p, note, err := buildProposal()
 	if err != nil {
@@ -128,7 +135,7 @@ func buildProposal() (propose.Proposal, string, error) {
 	for _, r := range cfg.Roots {
 		roots[r.Name] = r.Path
 	}
-	p, err := propose.Build(obs, roots, cfg.Labels)
+	p, err := propose.Build(obs, roots, cfg.Labels, cfg.Normalizers)
 	return p, note, err
 }
 

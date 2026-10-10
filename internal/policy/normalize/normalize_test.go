@@ -211,6 +211,41 @@ func TestPathNoRootsCleansOnly(t *testing.T) {
 	}
 }
 
+// With no roots an absolute path is still resolved (symlinks followed
+// through the nearest existing ancestor), as in the rooted branch; a
+// relative one stays relative.
+func TestPathNoRootsResolvesAbsoluteSymlinks(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "real")
+	if err = os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err = os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	res, err := applyPath(t, types.String(link+"/sub/../new.txt"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := normField(t, res, "path", "path"); got != types.String(filepath.Join(target, "new.txt")) {
+		t.Errorf("path = %v, want %s", got, filepath.Join(target, "new.txt"))
+	}
+	if !slices.Contains(res.Findings, "path_no_root") {
+		t.Errorf("findings %v", res.Findings)
+	}
+	loop := filepath.Join(dir, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyPath(t, types.String(loop+"/x"), nil); !errors.Is(err, ErrReject) {
+		t.Fatalf("loop without roots: err = %v, want ErrReject", err)
+	}
+}
+
 func TestPathSetOneEscapeIsNotAllUnder(t *testing.T) {
 	_, roots := fixture(t)
 	root := roots[0].Path

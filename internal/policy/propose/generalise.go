@@ -16,7 +16,7 @@ import (
 
 var (
 	// safeLiteral is a value Rover writes into a Cedar string literal:
-	// printable ASCII without '"' and '\', shorter than learn.MaxLiteral.
+	// printable ASCII without '"' and '\', at most 63 bytes.
 	safeLiteral = regexp.MustCompile(`^[!#-\[\]-~]{1,63}$`)
 	// safeHost is a normalised host (lower case, IDNs already punycode).
 	safeHost = regexp.MustCompile(`^[a-z0-9._-]{1,253}$|^\[[0-9a-f:.]{2,45}\]$`)
@@ -101,8 +101,33 @@ func (b *builder) partitionKey(o learn.Observation) string {
 	return sb.String()
 }
 
-// callDrafts generalises one tool's calls into one draft per partition.
+// normArgs are the arguments of a tool that a rule can constrain or that a
+// normaliser maps (path, url, email kinds): from nc and from what was seen.
+func (b *builder) normArgs(server, tool string, obs []learn.Observation) []string {
+	set := map[string]bool{}
+	for n, k := range b.nc.Servers[server][tool] {
+		if k == normalize.KindPath || k == normalize.KindURL || k == normalize.KindEmail {
+			set[n] = true
+		}
+	}
+	for _, o := range obs {
+		for n, a := range o.Shape {
+			switch a.Type {
+			case string(normalize.KindPath), string(normalize.KindURL), string(normalize.KindEmail):
+				set[n] = true
+			}
+		}
+	}
+	return sortedSet(set)
+}
+
+// callDrafts generalises one tool's calls into one draft per partition. A
+// tool that has a normaliser mapping or was seen with a path, url or email
+// argument only gets constrained rules: a partition without a path or host
+// condition is listed in the notes, not permitted.
 func (b *builder) callDrafts(server, tool string, obs []learn.Observation) []draft {
+	constrainable := len(b.nc.Servers[server][tool]) > 0 || len(b.normArgs(server, tool, obs)) > 0
+	args := strings.Join(b.normArgs(server, tool, obs), " or ")
 	parts := map[string][]learn.Observation{}
 	var order []string
 	for _, o := range obs {
@@ -116,11 +141,17 @@ func (b *builder) callDrafts(server, tool string, obs []learn.Observation) []dra
 	var out []draft
 	for _, k := range order {
 		d, err := b.callDraft(server, tool, parts[k])
-		if err != nil {
+		switch {
+		case err != nil:
 			b.note("%d %s/%s call(s) not proposed: %v", len(parts[k]), server, tool, err)
-			continue
+		case constrainable && !d.constrained:
+			if args == "" {
+				args = "a mapped argument"
+			}
+			b.note("%s/%s called %d time(s) without %s; write this rule by hand", server, tool, len(parts[k]), args)
+		default:
+			out = append(out, d)
 		}
-		out = append(out, d)
 	}
 	return out
 }
@@ -183,20 +214,21 @@ func (b *builder) pathCond(d *draft, n string, obs []learn.Observation) error {
 		return fmt.Errorf("argument %s was a %s, but the schema declares it as %s", n, plural(list), plural(!list))
 	}
 	root := b.rootFor(all)
-	how := "inside root " + root
+	how := "inside root " + root + " = " + b.rootPath(root)
 	if root == "" {
 		dir := commonDir(all)
 		if b.tooBroad(dir) {
 			return fmt.Errorf("the paths of %s share only %s: too broad, write this rule by hand", n, dir)
 		}
 		root = b.suggestRoot(dir)
-		how = fmt.Sprintf("inside %s, the deepest directory the %d path(s) share (new root %s)", dir, len(all), root)
+		how = fmt.Sprintf("inside %s, the deepest directory the %d path(s) share (new root %s = %s)", dir, len(all), root, dir)
 	}
 	attr := "under_" + root
 	if list {
 		attr = "all_under_" + root
 	}
 	d.conds = append(d.conds, fmt.Sprintf("context.norm has %s.%s && context.norm.%s.%s == true", n, attr, n, attr))
+	d.constrained = true
 	d.derived = append(d.derived, n+" "+how)
 	switch {
 	case n == "path" && !list:
@@ -229,6 +261,7 @@ func hostCond(d *draft, n string, obs []learn.Observation) error {
 	}
 	list := sortedSet(hosts)
 	d.conds = append(d.conds, fmt.Sprintf("context.norm has %s && %s.contains(context.norm.%s.host)", n, cedarStringSet(list), n))
+	d.constrained = true
 	d.derived = append(d.derived, n+" host in "+strings.Join(list, ", "))
 	switch {
 	case n == "url":
@@ -245,7 +278,7 @@ func literalCond(d *draft, n string, obs []learn.Observation) {
 	for _, o := range obs {
 		v := o.Shape[n].Value
 		if v == "" {
-			d.derived = append(d.derived, n+" not constrained (a value was too long or had white space, so it was not kept)")
+			d.derived = append(d.derived, n+" not constrained (its value is not recorded: only enum-like arguments with a plain, non-secret word are)")
 			return
 		}
 		vals[v] = true
@@ -269,25 +302,37 @@ func literalCond(d *draft, n string, obs []learn.Observation) {
 	}
 }
 
-// commonDir is the deepest directory containing the parent directory of
-// every path.
+// commonDir is the directory a path rule is derived from. One distinct
+// path: the path itself when it is an existing directory now, else its
+// parent. Several: the deepest directory containing all of them, taken
+// over the paths themselves (component by component), so "/p" and
+// "/p/a.txt" give "/p", not its parent.
 func commonDir(paths []string) string {
-	var common []string
-	for i, p := range paths {
-		parts := strings.Split(filepath.Dir(filepath.Clean(p)), string(filepath.Separator))
-		if i == 0 {
-			common = parts
-			continue
+	uniq := map[string]bool{}
+	for _, p := range paths {
+		uniq[filepath.Clean(p)] = true
+	}
+	list := sortedSet(uniq)
+	if len(list) == 1 {
+		p := list[0]
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			return p
 		}
+		return filepath.Dir(p)
+	}
+	sep := string(filepath.Separator)
+	common := strings.Split(list[0], sep)
+	for _, p := range list[1:] {
+		parts := strings.Split(p, sep)
 		n := 0
 		for n < len(common) && n < len(parts) && common[n] == parts[n] {
 			n++
 		}
 		common = common[:n]
 	}
-	dir := strings.Join(common, string(filepath.Separator))
+	dir := strings.Join(common, sep)
 	if dir == "" {
-		return string(filepath.Separator)
+		return sep
 	}
 	return dir
 }
@@ -301,11 +346,13 @@ func (b *builder) tooBroad(dir string) bool {
 	return slices.ContainsFunc(b.home, func(h string) bool { return within(dir, h) })
 }
 
-// suggestRoot names a new root after dir's last component, reusing a root
-// already suggested for dir or a directory containing it.
+// suggestRoot names a new root after dir's last component. A root is
+// shared only by rules whose directory is exactly the same: reusing a
+// broader root suggested for another tool would widen this rule (found by
+// independent verification of M6).
 func (b *builder) suggestRoot(dir string) string {
 	for _, r := range b.newRoots {
-		if within(r.Path, dir) {
+		if r.Path == dir {
 			return r.Name
 		}
 	}
@@ -328,4 +375,14 @@ func (b *builder) suggestRoot(dir string) string {
 	b.names[name] = true
 	b.newRoots = append(b.newRoots, Root{Name: name, Path: dir})
 	return name
+}
+
+// rootPath is the path of a declared root.
+func (b *builder) rootPath(name string) string {
+	for _, r := range b.roots {
+		if r.name == name {
+			return r.path
+		}
+	}
+	return ""
 }

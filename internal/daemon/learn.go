@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/DreadpiratePickles/rover/internal/detect"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
@@ -133,4 +134,53 @@ func (s *Server) dumpObservations() ipc.Frame {
 		note = fmt.Sprintf("%d oldest observations left out (the answer is capped at %d bytes)", dropped, learn.MaxDumpBytes)
 	}
 	return ipc.Frame{Type: ipc.TypeAdminResult, Result: b, Message: note}
+}
+
+// toolTaint remembers, per server and tool, the flags of its last listing:
+// medium/high findings on its description, or a pin mismatch. Learn mode
+// adds them to every later call of that tool until a clean listing clears
+// them, so a call to a tool whose description looked suspicious is never
+// proposed (independent verification of M6).
+type toolTaint struct {
+	mu sync.Mutex
+	m  map[string]map[string][]string
+}
+
+// update applies one listing: a tool with flags is tainted, a tool listed
+// clean (nil flags) is cleared, a tool not in this page is left alone.
+func (t *toolTaint) update(server string, tools map[string][]string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.m == nil {
+		t.m = map[string]map[string][]string{}
+	}
+	cur := t.m[server]
+	if cur == nil {
+		cur = map[string][]string{}
+		t.m[server] = cur
+	}
+	for tool, flags := range tools {
+		if len(flags) == 0 {
+			delete(cur, tool)
+			continue
+		}
+		cur[tool] = append([]string(nil), flags...)
+	}
+}
+
+func (t *toolTaint) flags(server, tool string) []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.m[server][tool]...)
+}
+
+// taintPinMismatches taints the tools a listing's pin check removed.
+func (s *Server) taintPinMismatches(server string, events []pin.Event) {
+	tools := map[string][]string{}
+	for _, ev := range events {
+		if ev.Kind != pin.KindPinned && ev.Kind != kindRecheck {
+			tools[ev.Tool] = []string{learn.FlagPinMismatch}
+		}
+	}
+	s.taint.update(server, tools)
 }

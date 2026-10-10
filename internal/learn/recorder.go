@@ -67,6 +67,8 @@ type Recorder struct {
 	dropWarn  bool
 	capWarned bool
 	count     int // observations in the bucket; -1 until counted
+	bytes     int // bytes of keys and values in the bucket
+	maxBytes  int
 
 	flushMu    sync.Mutex // one flush at a time (Run and Flush)
 	kick       chan struct{}
@@ -82,7 +84,7 @@ func NewRecorder(db *state.DB, logf func(string, ...any)) *Recorder {
 		logf = func(string, ...any) {}
 	}
 	return &Recorder{
-		db: db, logf: logf, cap: DefaultCap, byKey: map[string]*entry{}, late: map[string][]string{}, count: -1,
+		db: db, logf: logf, cap: DefaultCap, maxBytes: MaxBucketBytes, byKey: map[string]*entry{}, late: map[string][]string{}, count: -1,
 		kick: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 	}
 }
@@ -181,7 +183,7 @@ func (r *Recorder) Flush() error {
 	r.mu.Lock()
 	batch, late := r.queue, r.late
 	r.queue, r.late = nil, map[string][]string{}
-	count := r.count
+	count, size := r.count, r.bytes
 	r.mu.Unlock()
 	if len(batch) == 0 && len(late) == 0 {
 		return nil
@@ -196,7 +198,10 @@ func (r *Recorder) Flush() error {
 			return fmt.Errorf("bucket %s missing", state.BucketObservations)
 		}
 		if count < 0 {
-			count = b.Stats().KeyN
+			count, size = 0, 0
+			if err := b.ForEach(func(k, v []byte) error { count, size = count+1, size+len(k)+len(v); return nil }); err != nil {
+				return err
+			}
 		}
 		for _, e := range batch {
 			v, err := r.encode(e)
@@ -206,17 +211,19 @@ func (r *Recorder) Flush() error {
 			if err := b.Put([]byte(e.key), v); err != nil {
 				return err
 			}
-			count++
+			count, size = count+1, size+len(e.key)+len(v)
 		}
-		if err := applyLate(b, late); err != nil {
+		delta, err := applyLate(b, late)
+		if err != nil {
 			return err
 		}
-		if count > r.cap {
-			n, err := trimOldest(b, count-r.cap*9/10)
+		size += delta
+		if count > r.cap || size > r.maxBytes {
+			n, freed, err := trimOldest(b, count-r.cap*9/10, size-r.maxBytes*9/10)
 			if err != nil {
 				return err
 			}
-			count, trimmed = count-n, n
+			count, size, trimmed = count-n, size-freed, n
 		}
 		return nil
 	})
@@ -235,10 +242,10 @@ func (r *Recorder) Flush() error {
 	for _, e := range batch {
 		delete(r.byKey, e.key)
 	}
-	r.count, r.dropWarn = count, false
+	r.count, r.bytes, r.dropWarn = count, size, false
 	if trimmed > 0 && !r.capWarned {
 		r.capWarned = true
-		r.logf("learn: the observations bucket reached %d entries; dropped the %d oldest (logged once)", r.cap, trimmed)
+		r.logf("learn: the observations bucket reached its cap (%d entries or %d bytes); dropped the %d oldest (logged once)", r.cap, r.maxBytes, trimmed)
 	}
 	if r.afterFlush != nil {
 		r.afterFlush()
@@ -257,15 +264,16 @@ func (r *Recorder) encode(e *entry) ([]byte, error) {
 	if shape == nil && p.Action == ActionCall {
 		shape = Shape(p.Rules, p.Args, p.Norm)
 	}
-	return json.Marshal(Observation{
+	return json.Marshal(capObservation(Observation{
 		TS: p.TS.UTC(), Client: p.Client, Server: p.Server, Tool: p.Tool, Action: p.Action,
 		Shape: shape, Flagged: p.Flagged,
-	})
+	}))
 }
 
-// applyLate merges flags into observations already in the bucket. A key
-// that is gone (trimmed) is skipped.
-func applyLate(b *bolt.Bucket, late map[string][]string) error {
+// applyLate merges flags into observations already in the bucket and
+// returns the change in bytes. A key that is gone (trimmed) is skipped.
+func applyLate(b *bolt.Bucket, late map[string][]string) (int, error) {
+	delta := 0
 	for k, flags := range late {
 		v := b.Get([]byte(k))
 		if v == nil {
@@ -273,43 +281,48 @@ func applyLate(b *bolt.Bucket, late map[string][]string) error {
 		}
 		var o Observation
 		if err := json.Unmarshal(v, &o); err != nil {
-			return fmt.Errorf("observation %q: %w", k, err)
+			return 0, fmt.Errorf("observation %q: %w", k, err)
 		}
 		o.Flagged = mergeFlags(o.Flagged, flags)
 		nv, err := json.Marshal(o)
 		if err != nil {
-			return err
+			return 0, err
 		}
+		delta += len(nv) - len(v)
 		if err := b.Put([]byte(k), nv); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// trimOldest deletes the n oldest observations (by the time in their key).
-func trimOldest(b *bolt.Bucket, n int) (int, error) {
-	type kt struct {
-		k []byte
-		t uint64
-	}
-	var all []kt
-	if err := b.ForEach(func(k, _ []byte) error {
-		all = append(all, kt{append([]byte(nil), k...), keyTime(k)})
-		return nil
-	}); err != nil {
-		return 0, err
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].t < all[j].t })
-	if n > len(all) {
-		n = len(all)
-	}
-	for _, e := range all[:n] {
-		if err := b.Delete(e.k); err != nil {
 			return 0, err
 		}
 	}
-	return n, nil
+	return delta, nil
+}
+
+// trimOldest deletes the oldest observations (by the time in their key)
+// until at least n are gone and at least minBytes are freed. It returns how
+// many it deleted and the bytes freed.
+func trimOldest(b *bolt.Bucket, n, minBytes int) (deleted, freed int, err error) {
+	type kt struct {
+		k    []byte
+		t    uint64
+		size int
+	}
+	var all []kt
+	if err := b.ForEach(func(k, v []byte) error {
+		all = append(all, kt{append([]byte(nil), k...), keyTime(k), len(k) + len(v)})
+		return nil
+	}); err != nil {
+		return 0, 0, err
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].t < all[j].t })
+	for _, e := range all {
+		if deleted >= n && freed >= minBytes {
+			break
+		}
+		if err := b.Delete(e.k); err != nil {
+			return 0, 0, err
+		}
+		deleted, freed = deleted+1, freed+e.size
+	}
+	return deleted, freed, nil
 }
 
 // mergeFlags returns the sorted union of a and b.

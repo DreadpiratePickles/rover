@@ -1,6 +1,7 @@
 package learn
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cedar-policy/cedar-go/types"
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/DreadpiratePickles/rover/internal/state"
 )
@@ -177,5 +179,89 @@ func TestRecorderFlagsQueuedAndWrittenObservations(t *testing.T) {
 	want := []string{"instruction_phrase", "instruction_phrase,pin_mismatch", ""}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("flags %q, want %q", got, want)
+	}
+}
+
+// M3 (independent verification): every size is bounded.
+func TestObservationSizeCaps(t *testing.T) {
+	// Arrange: 100 arguments with 200-byte names, and three 3000-byte paths.
+	args := types.RecordMap{}
+	for i := 0; i < 100; i++ {
+		args[types.String(fmt.Sprintf("%03d%s", i, strings.Repeat("n", 197)))] = types.Long(1)
+	}
+	shape := Shape(nil, types.NewRecord(args), types.NewRecord(nil))
+	for n := range shape {
+		if len(n) > MaxArgName {
+			t.Fatalf("argument name of %d bytes kept", len(n))
+		}
+	}
+	big := map[string]Arg{}
+	for _, n := range []string{"a", "b", "c"} {
+		big[n] = Arg{Type: "path", Value: "/" + strings.Repeat(n, 3000)}
+	}
+
+	// Act
+	short := map[string]Arg{}
+	for i := 0; i < 100; i++ {
+		short[fmt.Sprintf("a%03d", i)] = Arg{Type: "number"}
+	}
+	many := capObservation(Observation{Server: "s", Shape: short})
+	long := capObservation(Observation{Server: "s", Shape: shape})
+	huge := capObservation(Observation{Server: "s", Shape: big, Client: strings.Repeat("c", 10000)})
+
+	// Assert
+	if len(many.Shape) != MaxArgs || many.DroppedArgs != 100-MaxArgs {
+		t.Fatalf("%d args kept, %d dropped", len(many.Shape), many.DroppedArgs)
+	}
+	for _, o := range []Observation{many, long, huge} {
+		if b, _ := json.Marshal(o); len(b) > MaxObservationBytes {
+			t.Fatalf("encoded observation of %d bytes", len(b))
+		}
+	}
+	if huge.DroppedArgs < 2 || len(huge.Client) > maxKeyPart {
+		t.Fatalf("huge: %d dropped, client %d bytes", huge.DroppedArgs, len(huge.Client))
+	}
+}
+
+func TestRecorderBucketByteCap(t *testing.T) {
+	tr := newTestRecorder(t)
+	tr.maxBytes = 64 << 10
+	for i := 0; i < 100; i++ {
+		p := call(i)
+		p.Shape = map[string]Arg{"path": {Type: "path", Value: "/" + strings.Repeat("x", 3000)}}
+		p.Action = ActionRead // Shape is used as given
+		tr.Record(p)
+	}
+	if err := tr.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	var total int
+	_ = tr.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(state.BucketObservations).ForEach(func(k, v []byte) error { total += len(k) + len(v); return nil })
+	})
+	if total > 64<<10 || total == 0 {
+		t.Fatalf("bucket holds %d bytes, cap %d", total, 64<<10)
+	}
+	if obs := stored(t, tr.db); !obs[len(obs)-1].TS.Equal(call(99).TS) {
+		t.Fatal("the newest observation must be kept")
+	}
+}
+
+func TestLoadNewestFirstWithinBudget(t *testing.T) {
+	tr := newTestRecorder(t)
+	for i := 0; i < 10; i++ {
+		tr.Record(call(i))
+	}
+	if err := tr.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	one, _ := json.Marshal(Observation{TS: call(0).TS, Client: "agent", Server: "files", Tool: "read_file", Action: ActionCall,
+		Shape: map[string]Arg{"mode": {Type: "string", Value: "ro"}}})
+	obs, err := loadBudget(tr.db, 3*len(one)+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs) != 3 || !obs[0].TS.Equal(call(7).TS) || !obs[2].TS.Equal(call(9).TS) {
+		t.Fatalf("got %d: %+v", len(obs), obs)
 	}
 }
