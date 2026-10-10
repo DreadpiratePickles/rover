@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/approve"
+	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/config"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/paths"
@@ -33,8 +35,37 @@ func policyLoader(dirs paths.Dirs) func() (daemon.Policy, config.Config, string,
 
 // startFacts are what roverd knows about its own history at start.
 type startFacts struct {
-	lastAudit                time.Time // the newest audit entry's time
-	stateCreated, hadHistory bool      // state.db was just created; the audit anchor exists
+	lastAudit    time.Time // the newest audit entry's time
+	stateCreated bool      // state.db was just created
+	history      auditHistory
+}
+
+// auditHistory is what the audit log says about Rover's past (review M9).
+type auditHistory struct {
+	// any: at least one entry other than a refused policy: something a
+	// roverd session recorded, a pin or tamper change, or an approved
+	// policy. A declined init dialog alone is not history.
+	any bool
+	// approved is the hash of the latest `policy approved` entry, "" if none.
+	approved string
+	last     time.Time // the newest entry's time
+}
+
+// readHistory scans the audit log (all rotated files).
+func readHistory(logPath string) (auditHistory, error) {
+	var h auditHistory
+	err := audit.Scan(logPath, func(e audit.Entry) {
+		if e.Time.After(h.last) {
+			h.last = e.Time
+		}
+		switch {
+		case e.Kind == daemon.AuditKindPolicy && e.Action == daemon.AuditPolicyApproved:
+			h.approved, h.any = e.Digest, true
+		case e.Kind != daemon.AuditKindPolicy:
+			h.any = true
+		}
+	})
+	return h, err
 }
 
 // loadApprovedAtStart loads the policy and checks its hash against
@@ -52,7 +83,11 @@ func loadApprovedAtStart(dirs paths.Dirs, db *state.DB, f startFacts, logf func(
 	if note != "" {
 		logf("policy precedence: %s", note)
 	}
-	reset = distrust(db, f)
+	cur, found, derr := approve.CurrentPolicy(db)
+	reset = distrust(cur, found, derr, f)
+	if f.stateCreated && f.history.any {
+		reset = "" // reportStateLoss already reports a recreated state.db
+	}
 	switch {
 	case err != nil:
 		logf("POLICY NOT LOADED: %v; every tools/call, tools/list, resources/read, sampling and elicitation request is blocked (no_policy)", err)
@@ -69,20 +104,30 @@ func loadApprovedAtStart(dirs paths.Dirs, db *state.DB, f startFacts, logf func(
 	return pol, cfg, note, ""
 }
 
-// distrust says why approved_policy cannot be trusted at start, or "".
-func distrust(db *state.DB, f startFacts) string {
-	if f.stateCreated && f.hadHistory {
-		return "" // reportStateLoss already reports a recreated state.db
-	}
-	cur, found, err := approve.CurrentPolicy(db)
+// distrust says why the approved policy in state.db cannot be trusted, or
+// "". roverd runs it at start and on reload, and `rover doctor` runs it
+// too, so doctor fails exactly when roverd would refuse:
+//   - no approval although the audit log has history: approvals lost;
+//   - an approval newer than the newest audit entry: roverd audits every
+//     approval it records, so someone else wrote it;
+//   - an approval that is not the one in the latest `policy approved`
+//     audit entry: an older state.db (and its policy files) put back
+//     after a human approved something else. The audit chain is the record
+//     an agent cannot rewrite without breaking the anchor.
+func distrust(cur approve.PolicyApproval, found bool, err error, f startFacts) string {
 	switch {
 	case err != nil:
 		return "approved_policy unreadable: " + err.Error()
-	case !found && f.hadHistory:
+	case !found && f.history.any:
 		return "state.db has no approved policy although the audit log has history: approvals were lost or removed"
-	case found && cur.ApprovedAt.After(f.lastAudit):
+	case !found:
+		return ""
+	case !f.lastAudit.IsZero() && cur.ApprovedAt.After(f.lastAudit):
 		return fmt.Sprintf("approved_policy says %s was approved at %s, after the newest audit entry (%s): roverd did not write that record",
 			short(cur.Hash), cur.ApprovedAt.UTC().Format(time.RFC3339Nano), f.lastAudit.UTC().Format(time.RFC3339Nano))
+	case f.history.approved != cur.Hash:
+		return fmt.Sprintf("approved_policy says %s, but the latest `policy approved` audit entry says %s: state.db was replaced (an older copy put back?)",
+			short(cur.Hash), orDash(short(f.history.approved)))
 	}
 	return ""
 }
@@ -142,10 +187,14 @@ func (r reloader) reload() string {
 		r.logf("policy reload FAILED, keeping the previous policy: %v", err)
 		return note
 	}
-	if why := unapproved(r.db, hash); why != "" {
+	why := unapproved(r.db, hash)
+	if why == "" {
+		why = r.distrusted()
+	}
+	if why != "" {
 		why = "policy reload REFUSED: " + why + "; run `rover policy apply` (OS authentication)"
 		r.logf("%s", why)
-		_ = r.srv.AuditPolicy("refused", why)
+		_ = r.srv.AuditPolicy("refused", why, "")
 		return note
 	}
 	if err := r.srv.Reload(pol, cfg); err != nil {
@@ -155,4 +204,14 @@ func (r reloader) reload() string {
 	r.onLoad(cfg)
 	r.logf("policy reloaded (mode %s); approved hash %s", cfg.Mode, short(hash))
 	return note
+}
+
+// distrusted runs distrust with the audit log as it is now.
+func (r reloader) distrusted() string {
+	h, err := readHistory(filepath.Join(r.dirs.State, "audit.jsonl"))
+	if err != nil {
+		return "audit log unreadable: " + err.Error()
+	}
+	cur, found, derr := approve.CurrentPolicy(r.db)
+	return distrust(cur, found, derr, startFacts{history: h})
 }

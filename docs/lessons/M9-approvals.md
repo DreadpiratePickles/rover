@@ -71,7 +71,13 @@ policies.
   switch from enforce to observe is just another `policy_apply`. A bare
   SIGHUP reloads only the policy already approved. Only the latest
   approved hash counts, so rolling back to an older approved policy needs
-  the dialog too. `rover doctor` checks hash on disk against the approved one.
+  the dialog too, and that holds even if the agent puts back an older
+  `state.db` together with the older policy files: every approval is also
+  written to the hash-chained audit log (`policy approved`, with the hash),
+  and roverd loads only the approval that matches the *latest* such entry.
+  A copied-back database disagrees with the log, so roverd loads nothing,
+  stays in enforce, and reports a state reset. `rover doctor` runs the same
+  checks and fails whenever roverd would refuse.
 - **Cancellation.** A `notifications/cancelled` for a held request stops
   its approval (the dialog closes) and releases it as a block, reason
   `cancelled by client` (plan §4.3).
@@ -190,8 +196,10 @@ whatever the agent wrote. So now:
   roverd runs in enforce with **no** policy until `rover policy apply`;
 - roverd distrusts its own database at start when it cannot be the one it
   wrote: state.db recreated or without any approval while the audit log has
-  history, or an approval newer than the newest audit entry (roverd audits
-  every approval it records, so a newer record came from someone else). It
+  history (anything but a declined init dialog), an approval newer than the
+  newest audit entry (roverd audits every approval it records, so a newer
+  record came from someone else), or an approval that is not the one in the
+  latest `policy approved` audit entry (an older copy put back). It
   then loads no policy, stays in enforce, audits a `state` `reset` entry and
   sends a notification, and `rover doctor` fails.
 

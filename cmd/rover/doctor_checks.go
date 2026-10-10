@@ -118,8 +118,13 @@ func checkPolicy(mode, note string, err error, st *daemon.DoctorState) check {
 // checkPolicyApproval compares the hash of the policy files on disk with
 // the approved one (M9). A mismatch means someone changed the policy, or
 // config.yaml, without `rover policy apply`: roverd will not load it.
-func checkPolicyApproval(disk string, diskErr error, approved *approve.PolicyApproval, approvedErr error) check {
+//
+// distrusted is what roverd's own check (distrust) says about the approval
+// in state.db; doctor fails whenever roverd would refuse it.
+func checkPolicyApproval(disk string, diskErr error, approved *approve.PolicyApproval, approvedErr error, distrusted string) check {
 	switch {
+	case distrusted != "":
+		return fail("policy-approval", "roverd will not load a policy: %s; check who changed it, then `rover policy apply`", distrusted)
 	case approvedErr != nil:
 		return fail("policy-approval", "cannot read approved_policy: %v", approvedErr)
 	case diskErr != nil:

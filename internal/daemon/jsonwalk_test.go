@@ -13,7 +13,9 @@ func FuzzUnescape(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		var want string
-		if json.Unmarshal(raw, &want) != nil {
+		// Only a JSON string: Unmarshal into a string also accepts null
+		// (leaving it empty), which textValue rightly refuses.
+		if t := bytes.TrimSpace(raw); len(t) == 0 || t[0] != '"' || json.Unmarshal(raw, &want) != nil {
 			return
 		}
 		got, ok := textValue(bytes.TrimSpace(raw))

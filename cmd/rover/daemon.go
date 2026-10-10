@@ -56,8 +56,14 @@ func runDaemon(args []string) int {
 	// note both before either file is opened (and so created).
 	logPath := filepath.Join(dirs.State, "audit.jsonl")
 	_, serr := os.Stat(filepath.Join(dirs.State, "state.db"))
-	_, aerr := os.Stat(anchorPath(logPath))
-	stateCreated, hadHistory := errors.Is(serr, os.ErrNotExist), aerr == nil
+	// History means something a roverd session recorded, not merely a
+	// declined init dialog (review M9 NEW-2).
+	history, herr := readHistory(logPath)
+	if herr != nil {
+		logf("audit log: %v", herr)
+		return 1
+	}
+	stateCreated, hadHistory := errors.Is(serr, os.ErrNotExist), history.any
 	db, err := state.Open(filepath.Join(dirs.State, "state.db"))
 	if errors.Is(err, state.ErrLocked) {
 		logf("another roverd holds the state database; exiting")
@@ -82,7 +88,7 @@ func runDaemon(args []string) int {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	pol, cfg, note, reset := loadApprovedAtStart(dirs, db, startFacts{lastAudit: log.LastTime(), stateCreated: stateCreated, hadHistory: hadHistory}, logf)
+	pol, cfg, note, reset := loadApprovedAtStart(dirs, db, startFacts{lastAudit: log.LastTime(), stateCreated: stateCreated, history: history}, logf)
 	sock, err := paths.SocketPath(dirs)
 	if err != nil {
 		logf("%v", err)

@@ -15,7 +15,8 @@ import (
 const adminTimeout = 10 * time.Second
 
 // AuthAdminTimeout bounds an admin request that shows the OS dialog first
-// (pin_approve, pin_reset, policy_apply): the human needs time to answer it.
+// (pin_approve, pin_reset, policy_apply, tamper_resolve, tamper_forget):
+// the human needs time to answer it.
 const AuthAdminTimeout = 3 * time.Minute
 
 // Admin sends one admin frame to roverd at path and returns its
@@ -32,7 +33,8 @@ func Admin(path string, req Frame) (Frame, error) {
 	}
 	defer func() { _ = conn.Close() }()
 	limit := adminTimeout
-	if req.Op == OpPinApprove || req.Op == OpPinReset || req.Op == OpPolicyApply {
+	switch req.Op {
+	case OpPinApprove, OpPinReset, OpPolicyApply, OpTamperResolve, OpTamperForget:
 		limit = AuthAdminTimeout
 	}
 	_ = conn.SetDeadline(time.Now().Add(limit))

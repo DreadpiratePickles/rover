@@ -40,11 +40,12 @@ func TestDoctorCheckFunctions(t *testing.T) {
 		{checkPolicy("", "", errors.New("no policy"), nil), statusFail},
 		{checkPolicy("enforce", "", nil, nil), statusPass},
 		{checkPolicy("observe", "", nil, &daemon.DoctorState{Mode: "enforce"}), statusFail}, // roverd runs with no policy
-		{checkPolicyApproval(hashA, nil, &approve.PolicyApproval{Hash: hashA, Method: "init"}, nil), statusPass},
-		{checkPolicyApproval(hashB, nil, &approve.PolicyApproval{Hash: hashA, Method: "init"}, nil), statusFail}, // tampered
-		{checkPolicyApproval(hashA, nil, nil, nil), statusFail},                                                  // never approved
-		{checkPolicyApproval(hashA, nil, nil, errors.New("db")), statusFail},
-		{checkPolicyApproval("", errors.New("no file"), &approve.PolicyApproval{Hash: hashA}, nil), statusFail},
+		{checkPolicyApproval(hashA, nil, &approve.PolicyApproval{Hash: hashA, Method: "init"}, nil, ""), statusPass},
+		{checkPolicyApproval(hashB, nil, &approve.PolicyApproval{Hash: hashA, Method: "init"}, nil, ""), statusFail}, // tampered
+		{checkPolicyApproval(hashA, nil, nil, nil, ""), statusFail},                                                  // never approved
+		{checkPolicyApproval(hashA, nil, nil, errors.New("db"), ""), statusFail},
+		{checkPolicyApproval("", errors.New("no file"), &approve.PolicyApproval{Hash: hashA}, nil, ""), statusFail},
+		{checkPolicyApproval(hashA, nil, &approve.PolicyApproval{Hash: hashA}, nil, "state.db was replaced"), statusFail}, // NEW-4
 		{checkAudit(filepath.Join(dir, "none.jsonl")), statusWarn},
 		{checkAudit(junkFile(t, dir, "bad.jsonl", 0o600)), statusFail},
 		{checkTLS(func() (tls.CurveID, error) { return tls.X25519, nil }), statusFail},

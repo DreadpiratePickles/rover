@@ -90,8 +90,10 @@ const AuditKindPolicy = "policy"
 
 // AuditPolicy records a policy event (M9): an approved hash, a refused
 // reload.
-func (s *Server) AuditPolicy(action, reason string) error {
-	return s.writeAudit(audit.Entry{Time: s.o.Now().UTC(), Session: adminSession, Kind: AuditKindPolicy, Action: action, Reason: reason})
+// hash, when set, is the policy bundle hash (in the entry's digest field):
+// the latest "approved" entry is what roverd checks state.db against.
+func (s *Server) AuditPolicy(action, reason, hash string) error {
+	return s.writeAudit(audit.Entry{Time: s.o.Now().UTC(), Session: adminSession, Kind: AuditKindPolicy, Action: action, Reason: reason, Digest: hash})
 }
 
 // InputFor builds the policy input for one message. `rover policy test`

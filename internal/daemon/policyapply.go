@@ -24,6 +24,10 @@ const (
 	ApplyNoAuthAgent = "no_auth_agent"
 )
 
+// AuditPolicyApproved is the audit action of an approved policy; its
+// digest is the approved bundle hash.
+const AuditPolicyApproved = "approved"
+
 // ApplyResult is the admin reply to policy_apply.
 type ApplyResult struct {
 	Decision string `json:"decision"`
@@ -59,14 +63,14 @@ func (s *Server) applyPolicy(f ipc.Frame) ipc.Frame {
 		case errors.Is(err, approve.ErrNotInteractive):
 			res.Reason = approve.ReasonNotInteractive
 		}
-		_ = s.AuditPolicy("refused", "hash "+hash+": "+res.Reason)
+		_ = s.AuditPolicy("refused", "hash "+hash+": "+res.Reason, "")
 		s.o.Logf("policy apply %s REFUSED: %s", short12(hash), res.Reason)
 		return adminResult(res, "")
 	}
 	if err := approve.RecordPolicy(s.o.State, hash, method, s.o.Now()); err != nil {
 		return fail(fmt.Errorf("not applied: recording the approval: %w", err))
 	}
-	if err := s.AuditPolicy("approved", "hash "+hash+" method "+method); err != nil {
+	if err := s.AuditPolicy(AuditPolicyApproved, "hash "+hash+" method "+method, hash); err != nil {
 		return fail(err)
 	}
 	if err := s.ReloadWith(pol, cfg, true); err != nil {

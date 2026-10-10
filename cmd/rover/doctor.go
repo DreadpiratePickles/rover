@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
@@ -69,7 +70,8 @@ func doctorChecks() ([]check, error) {
 	_, cfg, note, _, perr := loadAll(dirs)
 	disk, diskErr := loadedHash(dirs)
 	approved, apprErr := approvedPolicy(st, stErr, filepath.Join(dirs.State, "state.db"))
-	out = append(out, checkPolicy(string(cfg.Mode), note, perr, daemonState(st, stErr)), checkPolicyApproval(disk, diskErr, approved, apprErr))
+	out = append(out, checkPolicy(string(cfg.Mode), note, perr, daemonState(st, stErr)),
+		checkPolicyApproval(disk, diskErr, approved, apprErr, doctorDistrust(approved, apprErr)))
 	if roverErr != nil {
 		out = append(out, fail("client", "cannot tell which rover binary this is: %v", roverErr))
 	} else {
@@ -117,4 +119,21 @@ func daemonState(st *daemon.DoctorState, err error) *daemon.DoctorState {
 		return nil
 	}
 	return st
+}
+
+// doctorDistrust runs roverd's distrust check on the approval doctor read
+// and the audit log as it is now.
+func doctorDistrust(approved *approve.PolicyApproval, apprErr error) string {
+	if apprErr != nil {
+		return ""
+	}
+	h, err := readHistory(defaultLogPath())
+	if err != nil {
+		return "audit log unreadable: " + err.Error()
+	}
+	var cur approve.PolicyApproval
+	if approved != nil {
+		cur = *approved
+	}
+	return distrust(cur, approved != nil, nil, startFacts{lastAudit: h.last, history: h})
 }
