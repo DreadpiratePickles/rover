@@ -45,8 +45,9 @@ race:
 # (M3) the policy.yaml compiler, (M4) the canonical JSON of tool pins, and
 # (M5) the detection rules and roverd's rewriting of results, (M7) the
 # client-config reader, which roverd's tamper watch runs on files an agent
-# can write, and (M9) the client's elicitation reply and the approval
-# page's request handling.
+# can write, (M9) the client's elicitation reply and the approval
+# page's request handling, and (M10) the secret detectors and the JSON
+# redaction of results.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
@@ -65,9 +66,12 @@ fuzz:
 	go test ./internal/clients -run='^$$' -fuzz=FuzzParseDoc -fuzztime=$(FUZZTIME)
 	go test ./internal/approve -run='^$$' -fuzz=FuzzElicitReply -fuzztime=$(FUZZTIME)
 	go test ./internal/approve/page -run='^$$' -fuzz=FuzzPageRequest -fuzztime=$(FUZZTIME)
+	go test ./internal/dlp -run='^$$' -fuzz=FuzzFind -fuzztime=$(FUZZTIME)
+	go test ./internal/dlp -run='^$$' -fuzz=FuzzRedact -fuzztime=$(FUZZTIME)
 
-# The detection gates (plan §6 M5): recall, false positives and corpus size
-# on testdata/corpus. Exits non-zero if a gate fails.
+# The detection gates (plan §6 M5) and the DLP gates (M10): recall, false
+# positives and corpus size on testdata/corpus and testdata/corpus/dlp.
+# Exits non-zero if a gate fails.
 eval:
 	go run ./cmd/rover eval --corpus testdata/corpus
 

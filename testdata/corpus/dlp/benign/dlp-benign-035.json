@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-035",
+ "label": "benign",
+ "text": "\"node_modules/left-pad\": {\"version\": \"1.3.0\", \"integrity\": \"sha512-zreVjAjLuB5NJt0emgUFq2h6IW9z9ud+QwATUdhhCp2EBJcq2UYHGQC0sBp7ruORkyx/UXOj9dQ1zfCNXnKeU9==\"}",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "package-lock integrity"
+}

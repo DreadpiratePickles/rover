@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-037",
+ "label": "benign",
+ "text": "SELECT id, email, created_at FROM users WHERE last_login < now() - interval '90 days' ORDER BY id LIMIT 100;",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "sql"
+}

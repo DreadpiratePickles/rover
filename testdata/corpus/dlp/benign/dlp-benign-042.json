@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-042",
+ "label": "benign",
+ "text": "eyJwYWdlIjoyfQ== is the cursor for page 2",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "base64 short json"
+}

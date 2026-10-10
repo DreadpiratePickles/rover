@@ -150,6 +150,7 @@ func policyInit(args []string) int {
 	}
 	fmt.Println("next: edit policy.cedar (it permits nothing yet), run `rover policy validate`, then `rover policy apply`.")
 	fmt.Println("config.yaml starts in observe mode: denials are logged as would_deny, not blocked.")
+	fmt.Println("to limit egress tools to hosts you trust, uncomment the egress allow-list at the end of policy.cedar (templates/egress-allowlist.cedar).")
 	return 0
 }
 

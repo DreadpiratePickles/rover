@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-028",
+ "label": "benign",
+ "text": "goroutine 1 [running]:\nmain.main()\n\t/home/dev/app/main.go:42 +0x1d\nexit status 2 pc=0x7ffd5e8c3a10",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "stack trace"
+}

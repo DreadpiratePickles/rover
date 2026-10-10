@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-021",
+ "label": "benign",
+ "text": "tokenizer: bert-base-uncased\nmax_tokens: 4096\ntokens_used: 123456789\n",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "tokenizer config"
+}

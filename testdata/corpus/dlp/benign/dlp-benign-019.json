@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-019",
+ "label": "benign",
+ "text": "const token = await getToken(user.id);\nif (token === \"\") { throw new Error(\"no token\"); }\nlocalStorage.setItem(\"token\", token);",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "js token var"
+}

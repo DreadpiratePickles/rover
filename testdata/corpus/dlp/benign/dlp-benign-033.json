@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-033",
+ "label": "benign",
+ "text": "golang.org/x/text v0.21.0 h1:tw34YRbQN4rvJA190gbGAmr6P3xHBvyVBQanV3NtJ/o=\ngolang.org/x/text v0.21.0/go.mod h1:uZM664WyjzgxUkoNOfaWeVUK4p0n/85RuRD4+h3lSiE=",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "go.sum"
+}

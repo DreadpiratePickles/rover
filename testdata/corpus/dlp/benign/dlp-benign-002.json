@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-002",
+ "label": "benign",
+ "text": "commit eabe193c297f6b550806eaa8c30a8e9a8d1cbe15\nAuthor: Dev <dev@example.com>\n\n    fix: handle empty input\n\ncommit 98c0990e2cac8b31cef6554f4ae7b321e68cf255",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "git log"
+}

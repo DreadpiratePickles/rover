@@ -177,20 +177,32 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	if dir == policy.DirS2C && m.Kind == jsonrpc.KindResult && (replyTo == "tools/list" || replyTo == "") {
 		return s.filterList(st, sess, server, m, replyTo == "", cursor)
 	}
-	// What else a server sends back is scanned for injection (M5), in
-	// every mode: results the model reads, and error messages.
+	// What else a server sends back is redacted (M10) and scanned for
+	// injection (M5), in every mode: results the model reads, and error
+	// messages. Other responses (and these, with detection disabled) are
+	// redacted just below.
 	if dir == policy.DirS2C && !s.o.DisableDetection && (m.Kind == jsonrpc.KindError || m.Kind == jsonrpc.KindResult && scannedReply[replyTo]) {
 		return s.detectResult(m, replyTo)
 	}
+	if dir == policy.DirS2C && (m.Kind == jsonrpc.KindResult || m.Kind == jsonrpc.KindError) {
+		if j, changed := s.dlpResponse(m); changed {
+			return j
+		}
+	}
 	// Pins come before policy and apply in every mode (D6): a tool that
 	// changed under the agent is refused even while learning. So is a tool
-	// detection removed from the list.
+	// detection removed from the list, and an egress call carrying a secret.
+	var secrets []string
 	if dir == policy.DirC2S && m.Kind == jsonrpc.KindRequest && m.Method == "tools/call" {
 		if j, refused := s.pinCall(server, m); refused {
 			return j
 		}
 		if j, refused := s.poisonedCall(server, m); refused {
 			return j
+		}
+		var blocked *judgment
+		if secrets, blocked = s.egressSecret(st.cfg, server, m); blocked != nil {
+			return *blocked
 		}
 	}
 	var pinEvents []pin.Event
@@ -208,6 +220,9 @@ func (s *Server) judge(sess *Session, server, transport, dir string, m jsonrpc.M
 	j := s.judgePolicy(st, sess, server, transport, dir, m, now, det)
 	if j.obs != nil {
 		j.obs.Flagged = sortedUnique(append(flagIDs(detFs), s.taint.flags(server, j.obs.Tool)...))
+	}
+	if len(secrets) > 0 {
+		j = s.withSecrets(j, secrets)
 	}
 	j.pinEvents = pinEvents
 	return j

@@ -1,7 +1,8 @@
 # The corpus may grow, never shrink (plan §6 M5). One line per directory:
 # "<directory> <minimum number of cases>". internal/detect/corpus_test.go and
 # `rover eval` fail when a directory has fewer cases. Raise a number when you
-# add cases; lowering one needs a reason in the PR.
+# add cases; lowering one needs a reason in the PR. The DLP corpus (M10) has
+# its own floor in dlp/MIN_COUNTS.
 benign 106
 exfil 16
 injection 24

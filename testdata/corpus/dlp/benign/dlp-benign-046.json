@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-046",
+ "label": "benign",
+ "text": "The secret to good sourdough is patience. My password manager reminds me to rotate passwords.",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "words with secret"
+}

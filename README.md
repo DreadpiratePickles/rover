@@ -33,7 +33,9 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | — | **Phase 1 complete: v0.1.0** (snapshot via `make snapshot`; tagging is Bobby's) | |
 | M8 | Session context and the lethal trifecta: per-session taint flags across servers, built-in tool labels with a conservative default, `rover policy labels`, trifecta guard active in the starter | done |
 | M9 | Approvals and OS authentication: `@rover_require("approval")` holds a call until the macOS authentication dialog (LocalAuthentication) or polkit says yes; MCP elicitation and a read-only details page inform; `rover policy apply` and `rover pin approve/reset` need the dialog; roverd loads only an approved policy hash | done, pending the macOS dialog spike (Bobby, see docs/lessons/M9-approvals.md) |
-| M10 | Secrets and data-loss prevention | next |
+| M10 | Secrets and data-loss prevention: secrets in results and errors redacted before the model sees them, egress calls carrying a secret blocked, every audit entry and log line redacted (bodies now logged by default), egress allow-list template, DLP corpus and `rover eval` gates | done |
+| — | **Phase 2 complete: v0.2.0** (snapshot via `make snapshot`; tagging is Bobby's) | |
+| M11 | Remote servers through `rover bridge` | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -68,7 +70,8 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover log              # timeline of every message
 ./bin/rover log --verify     # check the hash chain, report the first break
 ./bin/rover daemon           # run roverd by hand to watch its log
-./bin/rover policy test audit.jsonl  # replay a log (recorded with --log-bodies) through the current policy
+./bin/rover daemon --no-bodies       # metadata only (bodies are logged by default, secrets redacted)
+./bin/rover policy test audit.jsonl  # replay a log (bodies on, the default) through the current policy
 
 # tool pinning (M4): the first tools/list of a server (and its cursor pages,
 # for 60 s) is trusted and pinned; every tool member except _meta is hashed.
@@ -95,7 +98,18 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 
 # detection tier 1 (M5): always on, in every mode. A poisoned tool is removed
 # from tools/list; an injected result block is replaced or gets a warning.
-./bin/rover eval                     # precision/recall/false positives on testdata/corpus; exit 1 if a gate fails
+./bin/rover eval                     # precision/recall/false positives on testdata/corpus, then the dlp
+                                     # section on testdata/corpus/dlp; exit 1 if a gate fails
+
+# secrets and DLP (M10): always on, in every mode. A secret in a tool result,
+# structuredContent, resource or error becomes [REDACTED:<kind>] before the
+# agent sees it (audit findings dlp:<kind>); a tools/call to an egress tool
+# whose arguments carry one is blocked (secret_in_egress_args:<kind>); a
+# non-egress tool gets its arguments unchanged. Kinds: aws-access-key,
+# aws-secret, github-token, slack-token, slack-webhook, stripe,
+# private-key-pem, jwt, generic-credential, high-entropy.
+# To limit egress tools to trusted hosts, uncomment the egress allow-list at
+# the end of policy.cedar (templates/egress-allowlist.cedar).
 
 # learn mode (M6): in observe mode roverd records the shape of every call
 # (resolved paths, hosts, short literals; never contents). Then:
@@ -114,7 +128,7 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover install --service        # launchd agent / systemd user unit for roverd (--yes loads it)
 ./bin/rover doctor                   # PASS/WARN/FAIL per check; --json for scripts; exit 1 on FAIL
 ./bin/rover version
-make snapshot                        # goreleaser snapshot of the v0.1.0 archives into dist/
+make snapshot                        # goreleaser snapshot of the release archives (v0.2.0 after M10) into dist/
 ```
 
 `rover install --client claude-code` also proposes `permissions.deny` rules
@@ -196,8 +210,12 @@ logged with `file:line:col` and leaves the previous policy (or none) in force.
 `ROVER_DIR=/some/path` puts all three under one directory, which is how the
 tests and the lessons keep a lab separate from real use. Directories are `0700`
 and files `0600`; Rover refuses to run if it finds them looser. Message bodies
-are not logged until M10 adds redaction (`rover daemon --log-bodies` turns them
-on for a lab).
+are logged by default since M10, and every audit entry, daemon log line,
+learn-mode shape and approval record passes through secret redaction first.
+`rover daemon --no-bodies`, or `audit.bodies: false` in config.yaml, logs
+metadata only. Redaction catches the formats in internal/dlp and high-entropy
+tokens, not every secret there is (a plain-English password, a key split
+across two different results): keep the state directory private either way.
 
 ## Layout
 
@@ -215,6 +233,8 @@ internal/ipc/          wrapper <-> roverd protocol (fuzzed) and peer credentials
 internal/audit/        hash-chained JSONL audit log and its verifier
 internal/state/        bbolt database (pins from M4; approvals, ... from later milestones)
 internal/detect/       detection tier 1: rules (fuzzed), rules/*.txt phrase lists, corpus evaluation
+internal/dlp/          secret detectors (fuzzed), redaction (JSON-aware), DLP corpus evaluation
+internal/jsonedit/     strict JSON walking and byte splicing shared by roverd and DLP
 internal/pin/          tool pinning: canonical JSON + SHA-256 per tool (fuzzed), TOFU, mismatch tracking, diffs
 internal/clients/      client config adapters: strict byte-preserving rewrite (fuzzed), backups, deny rules
 internal/paths/        where files go, and the permission checks
@@ -222,7 +242,9 @@ internal/framing/      newline-delimited reading with a hard size limit
 internal/jsonrpc/      classify JSON-RPC messages (fuzzed)
 examples/echo-server/  A0: MCP server with no SDK (read_file is unsafe on purpose)
 testdata/corpus/       M5: the evaluation corpus (benign, poisoning, injection, exfil), MIN_COUNTS, CHANGES.md
+testdata/corpus/dlp/   M10: fake secrets and benign look-alikes, dlp/MIN_COUNTS
 testdata/servers/rugpull/  M4 lab: evil server that changes a tool after its first list (build tag `lab`)
+testdata/servers/leaky/    M10 lab: server that echoes text into every result channel (build tag `lab`)
 docs/lessons/          one lesson per module
 ```
 

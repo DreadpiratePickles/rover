@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-017",
+ "label": "benign",
+ "text": "func refresh(ctx context.Context) error {\n\ttoken, err := src.Token()\n\tif err != nil {\n\t\treturn err\n\t}\n\treq.Header.Set(\"Authorization\", \"Bearer \"+token.AccessToken)\n\treturn nil\n}",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "go token var"
+}

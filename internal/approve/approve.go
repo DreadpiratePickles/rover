@@ -37,9 +37,9 @@ type Request struct {
 	Server  string
 	Tool    string
 	Summary string
-	// Args are the call's arguments. M10 will redact secrets from them;
-	// until then they are shown only when approvals.show_args is true,
-	// and never written to disk.
+	// Args are the call's arguments with secrets already redacted by roverd
+	// (M10). They are shown only when approvals.show_args is true, and
+	// never written to disk.
 	Args     json.RawMessage
 	RuleIDs  []string
 	Created  time.Time

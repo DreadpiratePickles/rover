@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-039",
+ "label": "benign",
+ "text": "127.0.0.1 - - [09/Oct/2026:10:00:00 +0000] \"GET /api/v1/items?page=2&per_page=50 HTTP/1.1\" 200 5123 \"-\" \"curl/8.4.0\"",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "access log"
+}

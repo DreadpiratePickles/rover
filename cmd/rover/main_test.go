@@ -202,8 +202,8 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 		if e.Server != "echo" || e.Action != "forward" {
 			t.Fatalf("entry missing server/action: %+v", e)
 		}
-		if e.Body != nil {
-			t.Fatalf("bodies must be off by default (M1), got %s", e.Body)
+		if e.Body == nil {
+			t.Fatalf("bodies are on by default since M10 (secrets redacted): %+v", e)
 		}
 		kinds = append(kinds, e.Dir+":"+e.Kind)
 	}

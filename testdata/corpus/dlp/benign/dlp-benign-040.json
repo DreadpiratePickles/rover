@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-040",
+ "label": "benign",
+ "text": "NAME                     READY   STATUS\nweb-7d4b9c8f6d-x2k9p     1/1     Running\nworker-5f6c7d8e9f-abcde  1/1     Running",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "k8s pods"
+}

@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-020",
+ "label": "benign",
+ "text": "let token = lexer.next_token()?;\nmatch token { Token::Ident(name) => println!(\"{}\", name), _ => {} }",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "rust token var"
+}

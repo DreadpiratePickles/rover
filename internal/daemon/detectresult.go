@@ -43,8 +43,29 @@ func (p resultPlan) reason() string {
 // logged (review M1: "keep the original in the audit log"); its reason
 // holds the SHA-256 of each removed text and of the line as forwarded.
 func (s *Server) detectResult(m jsonrpc.Message, replyTo string) judgment {
+	// Secrets first (M10): detection, the agent and the log only ever see
+	// the redacted line.
+	member, blocks, bk := "result", "content", detect.KindToolResult
+	switch {
+	case m.Kind == jsonrpc.KindError:
+		member, blocks = "error", ""
+	case replyTo == "resources/read":
+		blocks, bk = "contents", detect.KindResource
+	case replyTo == "initialize" || replyTo == "prompts/get":
+		blocks = ""
+	}
+	red, secrets, err := s.redactResponse(m.Raw, member, blocks, bk)
+	if err != nil {
+		return rejectResult(m, err)
+	}
+	if len(secrets) > 0 {
+		if rm := jsonrpc.Parse(red); rm.Kind == m.Kind {
+			m = rm // detection reads, and edits, the redacted line
+		} else {
+			return rejectResult(m, errors.New("redacted line no longer parses as the same message"))
+		}
+	}
 	var plan resultPlan
-	var err error
 	switch {
 	case m.Kind == jsonrpc.KindError:
 		plan, err = planError(m)
@@ -60,24 +81,36 @@ func (s *Server) detectResult(m jsonrpc.Message, replyTo string) judgment {
 	if err != nil {
 		return rejectResult(m, err)
 	}
-	if len(plan.findings) == 0 {
+	if len(plan.findings) == 0 && len(secrets) == 0 {
 		return forwardJ
 	}
-	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, findings: detect.Score(plan.findings).IDs,
+	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward,
+		findings:   sortedUnique(append(dlpFindings(secrets), detect.Score(plan.findings).IDs...)),
 		untrusted:  len(flagIDs(plan.findings)) > 0,
 		learnFlags: flagIDs(plan.findings)}
-	if len(plan.edits) == 0 {
+	if len(plan.edits) == 0 && len(secrets) == 0 {
 		return j
 	}
 	line, err := applyEdits(m.Raw, plan.edits)
 	if err != nil {
 		return rejectResult(m, err)
 	}
+	var reasons []string
+	if len(secrets) > 0 {
+		reasons = append(reasons, redactedReason(secrets))
+	}
+	if r := plan.reason(); r != "" {
+		reasons = append(reasons, r)
+	}
+	reasons = append(reasons, "forwarded sha256:"+sha(line))
 	j.action, j.audit, j.replacement = ipc.ActionReplace, ipc.ActionReplace, line
-	j.reason = plan.reason() + "; forwarded sha256:" + sha(line)
+	j.reason = strings.Join(reasons, "; ")
 	return j
 }
 
+// rejectResult replaces a reply that could not be read strictly with an
+// error: forwarding it unscanned could hand the agent a secret or an
+// injection.
 func rejectResult(m jsonrpc.Message, err error) judgment {
 	return judgment{
 		action: ipc.ActionReplace, audit: ipc.ActionBlock,

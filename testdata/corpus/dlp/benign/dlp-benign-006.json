@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-006",
+ "label": "benign",
+ "text": "d9d83e5b3bbc8a60d573aed0f8dba86d  file0.txt\n126144e329ee5140770cb02873b57ed0  file1.txt\n319a12ace79ee2481101bef62c449d2f  file2.txt\n3ec05d5f78e868b7b247f0d6d52d7c27  file3.txt",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "md5 list"
+}

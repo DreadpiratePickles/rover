@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-041",
+ "label": "benign",
+ "text": "| Kind | Count |\n|------|-------|\n| secrets | 37 |\n| benign | 45 |",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "markdown table"
+}

@@ -165,3 +165,26 @@ func TestVerifyEmptyLog(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+func TestRedactorRewritesEveryEntryBeforeItIsHashed(t *testing.T) {
+	// Arrange
+	var buf bytes.Buffer
+	l := New(&buf)
+	l.SetRedactor(func(e Entry) Entry {
+		e.Reason = strings.ReplaceAll(e.Reason, "s3cret", "[REDACTED:test]")
+		return e
+	})
+
+	// Act
+	if err := l.Write(Entry{Session: "s", Dir: "c2s", Kind: "request", Reason: "token s3cret"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert
+	if strings.Contains(buf.String(), "s3cret") || !strings.Contains(buf.String(), "[REDACTED:test]") {
+		t.Fatalf("%s", buf.String())
+	}
+	if res := Verify(&buf); res.Err != nil {
+		t.Fatalf("the redacted entry must verify: %v", res.Err)
+	}
+}

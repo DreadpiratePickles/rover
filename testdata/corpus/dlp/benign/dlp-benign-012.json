@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-012",
+ "label": "benign",
+ "text": "https://github.com/acme/app/blob/6ce71e553f658359b35164487cdfa4fbb107317c/internal/server/handlers_test.go#L120-L180",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "github blob url"
+}

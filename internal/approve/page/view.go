@@ -69,7 +69,7 @@ func (s *Server) view(rec approve.Record, l link) view {
 	}
 	switch {
 	case !l.shown:
-		rows = append(rows, row{Text: "args hidden: approvals.show_args is false (rover does not redact secrets until M10)"})
+		rows = append(rows, row{Text: "args hidden: approvals.show_args is false (set it to true to see them, secrets redacted)"})
 	case len(l.args) == 0:
 		rows = append(rows, row{Text: "args none"})
 	default:

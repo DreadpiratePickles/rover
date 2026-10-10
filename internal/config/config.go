@@ -62,6 +62,18 @@ type Config struct {
 	NormalizersFile string
 	// Approvals configures the approval flow (M9).
 	Approvals Approvals
+	// Audit configures the audit log (M10).
+	Audit Audit
+}
+
+// Audit is config.yaml's audit section.
+//
+//	audit:
+//	  bodies: true   # log full message bodies (secrets redacted); false: metadata only
+type Audit struct {
+	// Bodies logs full message bodies, with secrets redacted (M10). On by
+	// default; `rover daemon --no-bodies` turns it off whatever this says.
+	Bodies bool
 }
 
 // Approvals is config.yaml's approvals section.
@@ -73,8 +85,8 @@ type Approvals struct {
 	// TimeoutS is how long a held call waits for a human; 0 means the
 	// default (120 s).
 	TimeoutS int
-	// ShowArgs shows the arguments on the details page. Off by default:
-	// Rover does not redact secrets from them until M10.
+	// ShowArgs shows the arguments on the details page, with secrets
+	// redacted (M10). Off by default: the page needs only the summary.
 	ShowArgs bool
 }
 
@@ -94,7 +106,7 @@ const maxApprovalTimeoutS = 3600
 
 // Default is the configuration used when config.yaml does not exist.
 func Default() Config {
-	return Config{Mode: policy.ModeObserve, Normalizers: normalize.BuiltIn()}
+	return Config{Mode: policy.ModeObserve, Normalizers: normalize.BuiltIn(), Audit: Audit{Bodies: true}}
 }
 
 // ToolLabels returns the configured labels of one tool, or nil. Decisions
@@ -124,6 +136,9 @@ type file struct {
 		TimeoutS int  `yaml:"timeout_s"`
 		ShowArgs bool `yaml:"show_args"`
 	} `yaml:"approvals"`
+	Audit struct {
+		Bodies *bool `yaml:"bodies"`
+	} `yaml:"audit"`
 }
 
 // rootList decodes a YAML mapping {name: path} keeping the file's order.
@@ -224,6 +239,9 @@ func parse(b []byte, dir string, read Reader) (Config, error) {
 		return Config{}, fmt.Errorf("config: approvals.timeout_s %d: want 1..%d (0 or absent means %d)", f.Approvals.TimeoutS, maxApprovalTimeoutS, int(DefaultApprovalTimeout/time.Second))
 	}
 	cfg.Approvals = Approvals{TimeoutS: f.Approvals.TimeoutS, ShowArgs: f.Approvals.ShowArgs}
+	if f.Audit.Bodies != nil {
+		cfg.Audit.Bodies = *f.Audit.Bodies
+	}
 	if f.Normalizers != "" {
 		n, p, err := loadNormalizers(f.Normalizers, dir, read)
 		if err != nil {

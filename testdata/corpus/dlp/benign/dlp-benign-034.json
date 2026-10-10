@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-034",
+ "label": "benign",
+ "text": "<script src=\"https://cdn.example.com/lib.js\" integrity=\"sha384-AVjFyRJNmZYreza5qfG36QsriWX5sMuTinRO2+j+xucxICegJigNYMYX1IoWpcer\" crossorigin=\"anonymous\"></script>",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "sri hash"
+}

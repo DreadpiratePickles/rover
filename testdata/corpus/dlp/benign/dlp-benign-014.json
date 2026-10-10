@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-014",
+ "label": "benign",
+ "text": "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "lorem 1"
+}

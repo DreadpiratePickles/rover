@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-025",
+ "label": "benign",
+ "text": "password: ********\ntoken: xxxxxxxxxxxxxxxx\n",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "masked"
+}

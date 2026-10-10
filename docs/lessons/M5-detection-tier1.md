@@ -289,10 +289,11 @@ $ ./bin/rover log --verify
 $ kill $(cat $ROVER_DIR/dpid); rm -rf $ROVER_DIR
 ```
 
-With bodies off (the default) the removed text is not in the log, but its
+With bodies off (the default until M10) the removed text is not in the log, but its
 SHA-256 is: if the text turns up later, you can prove it is what Rover
-removed. With `rover daemon --log-bodies` the entry's body is the
-**original** line, as the server sent it, and the reason carries the
+removed. With bodies on (`--log-bodies` in M5; the default since M10) the
+entry's body is the **original** line, as the server sent it (with
+secrets redacted since M10), and the reason carries the
 SHA-256 of the line as forwarded. A desktop notification "Rover blocked a tool" appeared (pins and detection
 share one budget: at most one notification per server per 10 seconds,
 however many tools a server poisons or changes), and `daemon.err` has `TOOL POISONING lab: 1 tool(s) removed ...:

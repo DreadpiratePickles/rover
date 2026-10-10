@@ -27,12 +27,14 @@ import (
 // finds no daemon, but can be run by hand for a visible log.
 func runDaemon(args []string) int {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-	logBodies := fs.Bool("log-bodies", false, "record full message bodies in the audit log (off until M10 adds redaction)")
+	noBodies := fs.Bool("no-bodies", false, "log metadata only, no message bodies (bodies are on by default, secrets redacted; config.yaml audit.bodies)")
+	_ = fs.Bool("log-bodies", true, "deprecated: bodies are logged by default since M10")
 	_ = fs.Parse(args)
 
-	logf := func(format string, a ...any) {
+	// Every log line goes through DLP: an error message can quote a secret.
+	logf := daemon.RedactingLogf(func(format string, a ...any) {
 		fmt.Fprintf(os.Stderr, time.Now().UTC().Format("2006-01-02T15:04:05.000Z")+" roverd "+format+"\n", a...)
-	}
+	})
 
 	// Everything roverd creates is owner-only, whatever the inherited umask.
 	syscall.Umask(0o077)
@@ -89,6 +91,7 @@ func runDaemon(args []string) int {
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 	pol, cfg, note, reset := loadApprovedAtStart(dirs, db, startFacts{lastAudit: log.LastTime(), stateCreated: stateCreated, history: history}, logf)
+	logBodies := cfg.Audit.Bodies && !*noBodies
 	sock, err := paths.SocketPath(dirs)
 	if err != nil {
 		logf("%v", err)
@@ -115,7 +118,7 @@ func runDaemon(args []string) int {
 	srv := daemon.New(daemon.Options{
 		SocketPath: sock,
 		Audit:      log,
-		LogBodies:  *logBodies,
+		LogBodies:  logBodies,
 		SelfUID:    uint32(os.Getuid()), //nolint:gosec // G115: uid fits in uint32 on all supported platforms
 		PeerCreds:  ipc.PeerCreds,
 		ParentPID:  ipc.ParentPID,
@@ -151,7 +154,7 @@ func runDaemon(args []string) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	logf("listening on %s (pid %d, bodies=%v)", sock, os.Getpid(), *logBodies)
+	logf("listening on %s (pid %d, bodies=%v)", sock, os.Getpid(), logBodies)
 	if err := srv.Serve(ctx); err != nil {
 		logf("serve: %v", err)
 		return 1
