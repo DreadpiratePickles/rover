@@ -31,7 +31,8 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | M6 | Learn mode (observe records call shapes) and policy proposals: `rover policy propose/diff`, flagged calls excluded | done |
 | M7 | Client installers (`rover install/uninstall`, Claude Code deny rules, `--service`), tamper watch, `rover doctor`, `rover version`, goreleaser snapshot | done |
 | — | **Phase 1 complete: v0.1.0** (snapshot via `make snapshot`; tagging is Bobby's) | |
-| M8 | Session context and the lethal trifecta | next |
+| M8 | Session context and the lethal trifecta: per-session taint flags across servers, built-in tool labels with a conservative default, `rover policy labels`, trifecta guard active in the starter | done |
+| M9 | Approvals and OS authentication | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -45,6 +46,8 @@ make fuzz           # fuzz every parser of attacker input for 30s each
 ./bin/rover policy init
 $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where files live"
 ./bin/rover policy validate  # type-check it against the schema (and run `cedar validate` if installed)
+./bin/rover policy labels    # each tool's labels and where they came from (built-in, config, default);
+                             # the starter's trifecta guard blocks egress after private + untrusted
 ./bin/rover policy apply     # ask a running roverd to reload it (enforce -> observe is refused until M9)
 
 # or write the policy in YAML (plan §5.4) and read the Cedar it compiles to
@@ -52,6 +55,7 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover policy compile ~/Library/Application\ Support/Rover/policy.yaml
 ./bin/rover policy validate ~/Library/Application\ Support/Rover/policy.yaml
 ./bin/rover policy validate --print-schema   # the schema generated from your roots
+# YAML session conditions: when: { session: { touched_private: true, servers_touched: [hr-db] } }
 
 # wrap any stdio MCP server; roverd starts itself the first time
 # (--name may only use A-Za-z0-9_.-)

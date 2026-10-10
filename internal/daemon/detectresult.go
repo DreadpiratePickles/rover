@@ -36,7 +36,8 @@ func (p resultPlan) reason() string {
 // resources/read contents, prompts/get messages, initialize instructions,
 // and the message of an error reply. High: the text is replaced by
 // removedText (only that JSON string changes). Medium: a warning. Low:
-// findings only. Any finding marks the session saw_untrusted.
+// findings only. A medium or high finding marks the session saw_untrusted;
+// a low one does not (low is "logged, not acted on", as in M5 and M6).
 //
 // The audit entry keeps the original line as its body when bodies are
 // logged (review M1: "keep the original in the audit log"); its reason
@@ -62,7 +63,8 @@ func (s *Server) detectResult(m jsonrpc.Message, replyTo string) judgment {
 	if len(plan.findings) == 0 {
 		return forwardJ
 	}
-	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, findings: detect.Score(plan.findings).IDs, untrusted: true,
+	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, findings: detect.Score(plan.findings).IDs,
+		untrusted:  len(flagIDs(plan.findings)) > 0,
 		learnFlags: flagIDs(plan.findings)}
 	if len(plan.edits) == 0 {
 		return j

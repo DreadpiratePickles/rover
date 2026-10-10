@@ -50,6 +50,7 @@ The conditions and what they compile to:
 | `deny: "*"` | `forbid (principal, action, resource)`; `action == Action::"call_tool"` when a condition only exists for tool calls |
 | `path_under: lab` | `context.norm has path.under_lab && context.norm.path.under_lab == true` |
 | `session: {touched_private: true}` | `context.session.touched_private == true` |
+| `session: {servers_touched: [hr-db, files]}` (added in M8) | `context.session.servers_touched.contains("hr-db") && ...contains("files")`: every listed server |
 | `tool_label: egress` | `resource.labels.contains("egress")` |
 | `hour_between: [9, 18]` | `context.time.hour >= 9 && context.time.hour < 18` |
 | `host_in: [a.org, b.org]` | `context.norm has url && ["a.org", "b.org"].contains(context.norm.url.host)` |

@@ -1,6 +1,8 @@
 // Template: break the "lethal trifecta" (private data + untrusted content +
-// a way out). Label tools in config.yaml: reads_private, reads_untrusted,
-// egress.
+// a way out). Both forbids are already active in the starter policy.cedar
+// that `rover policy init` writes (same ids, so do not paste this file into
+// it). Labels come from the built-in list, config.yaml, and the conservative
+// default ({reads_untrusted, egress}); see `rover policy labels`.
 
 // Forbids any egress tool once the session has both read private data and
 // seen untrusted content, because that is exactly when injected instructions

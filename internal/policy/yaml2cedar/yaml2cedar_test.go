@@ -24,8 +24,8 @@ func goldenCases(t *testing.T) []string {
 		t.Fatal(err)
 	}
 	sort.Strings(files)
-	if len(files) != 6 {
-		t.Fatalf("want 6 golden cases, found %d", len(files))
+	if len(files) != 7 {
+		t.Fatalf("want 7 golden cases, found %d", len(files))
 	}
 	return files
 }
@@ -168,6 +168,9 @@ func TestCompileErrors(t *testing.T) {
 		{"empty when", head + "rules:\n  - id: a\n    allow: fs.read\n    when: {}\n", 6, 11, "at least one condition"},
 		{"session unknown key", head + "rules:\n  - id: a\n    deny: \"*\"\n    when: { session: { touched: true } }\n", 6, 24, `unknown key "touched"`},
 		{"session not bool", head + "rules:\n  - id: a\n    deny: \"*\"\n    when: { session: { saw_untrusted: yes please } }\n", 6, 39, "true or false"},
+		{"servers_touched not a list", head + "rules:\n  - id: a\n    deny: \"*\"\n    when: { session: { servers_touched: files } }\n", 6, 41, "must be a list"},
+		{"servers_touched empty", head + "rules:\n  - id: a\n    deny: \"*\"\n    when: { session: { servers_touched: [] } }\n", 6, 41, "at least one server"},
+		{"servers_touched bad name", head + "rules:\n  - id: a\n    deny: \"*\"\n    when: { session: { servers_touched: ['a\"b'] } }\n", 6, 42, "not a server name"},
 		{"version 2", "version: 2\ndefaults: deny\n", 1, 10, "not supported"},
 		{"missing version", "defaults: deny\n", 1, 1, "missing \"version: 1\""},
 		{"defaults allow", "version: 1\ndefaults: allow\n", 2, 11, "only accepted value is deny"},

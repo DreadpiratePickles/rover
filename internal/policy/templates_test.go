@@ -110,3 +110,38 @@ forbid (principal, action == Action::"server_elicitation", resource);`
 		}
 	}
 }
+
+// M8: `rover policy init` writes the trifecta guard as active policies. The
+// starter carries the template's two forbids byte for byte, so the two
+// files cannot drift apart.
+func TestStarterCarriesTheTrifectaGuard(t *testing.T) {
+	// Arrange
+	tmpl, err := fs.ReadFile(policyfiles.Templates, "trifecta-guard.cedar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(tmpl)
+	start := strings.Index(src, "// Forbids any egress tool")
+	if start < 0 {
+		t.Fatal("template layout changed")
+	}
+
+	// Act
+	body := src[start:]
+
+	// Assert
+	if !strings.Contains(string(policyfiles.Starter), body) {
+		t.Fatalf("starter.cedar must contain the trifecta-guard policies verbatim:\n%s", body)
+	}
+	e, err := Load(policyfiles.Starter, "starter.cedar", policyfiles.Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, p := range e.Policies() {
+		ids[p.ID] = true
+	}
+	if !ids["trifecta-no-egress"] || !ids["trifecta-no-egress-after-detection"] {
+		t.Fatalf("starter policies = %v", e.Policies())
+	}
+}

@@ -4,10 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 	"github.com/DreadpiratePickles/rover/internal/policy"
 )
@@ -32,6 +34,13 @@ type Session struct {
 	// tools is each server's tool names as this agent saw them listed, for
 	// detection's cross_tool_reference (review M4: per session, per server).
 	tools map[string]map[string]bool
+	// order and nextSeq keep pending's insertion order for the cap
+	// (addPending); lingerSince is set while no wrapper is attached
+	// (sessionlife.go).
+	orders      map[string][]pendingKey // per "<server>:<dir>"
+	counts      map[string]int          // live pending entries per "<server>:<dir>"
+	nextSeq     uint64
+	lingerSince time.Time
 }
 
 type pendingReq struct {
@@ -40,10 +49,17 @@ type pendingReq struct {
 	cursor string // tools/list: params.cursor, for the pins' first-listing window
 	start  time.Time
 	obsKey string // learn mode: the request's observation, flagged by its result
+	// call is a tools/call that was forwarded; labels are its tool's
+	// effective labels. Its result sets the session flags (M8).
+	call   bool
+	labels []string
+	seq    uint64 // insertion order, for the pending cap
+	bucket string // "<server>:<dir>", the cap it counts against
 }
 
 func newSession(id string, clientPID int, now time.Time) *Session {
-	return &Session{ID: id, ClientPID: clientPID, Created: now, servers: map[string]int{}, pending: map[string]pendingReq{}}
+	return &Session{ID: id, ClientPID: clientPID, Created: now, servers: map[string]int{}, pending: map[string]pendingReq{},
+		orders: map[string][]pendingKey{}, counts: map[string]int{}}
 }
 
 // noteTools adds names to everything server has ever listed in this
@@ -98,9 +114,11 @@ func (s *Session) Client() (name, version string) {
 // observe builds the audit entry for one message and updates the session's
 // request/response correlation. It is the logic that lived in the A1 proxy,
 // now owned by the daemon so the wrapper stays thin.
-// It also returns the cursor of the tools/list request a result answers and
-// the learn-mode observation key of the request a response answers.
-func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool, now time.Time) (e audit.Entry, cursor, obsKey string) {
+// It also returns the pending request a response answers (its tools/list
+// cursor, learn-mode observation key and, for a forwarded tools/call, its
+// labels); for a request, only the request's own cursor is set.
+// evicted are the older pending requests the cap dropped (addPending).
+func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool, now time.Time) (e audit.Entry, req pendingReq, evicted []evictedReq) {
 	e = audit.Entry{
 		Time:    now.UTC(),
 		Session: s.ID,
@@ -116,13 +134,13 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 		e.Body = m.Raw
 	}
 	if m.Kind == jsonrpc.KindRequest && m.Method == "tools/list" {
-		cursor = listCursor(m.Params)
+		req.cursor = listCursor(m.Params)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch m.Kind {
 	case jsonrpc.KindRequest:
-		s.pending[server+":"+dir+":"+string(m.ID)] = pendingReq{method: m.Method, tool: e.Tool, cursor: cursor, start: now}
+		evicted = s.addPending(server, dir, server+":"+dir+":"+string(m.ID), pendingReq{method: m.Method, tool: e.Tool, cursor: req.cursor, start: now})
 		if dir == "c2s" && m.Method == "initialize" {
 			// Read strictly (exact keys); Parse already refused an
 			// ambiguous clientInfo as invalid.
@@ -132,10 +150,9 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 		// A response travels the opposite way to its request, so look it up
 		// under the other direction. IDs are only unique per server and direction.
 		key := server + ":" + other(dir) + ":" + string(m.ID)
-		if p, ok := s.pending[key]; ok {
-			delete(s.pending, key)
+		if p, ok := s.dropPending(key); ok {
 			ms := float64(now.Sub(p.start).Microseconds()) / 1000
-			e.LatencyMS, e.ReplyTo, e.Tool, cursor, obsKey = &ms, p.method, p.tool, p.cursor, p.obsKey
+			e.LatencyMS, e.ReplyTo, e.Tool, req = &ms, p.method, p.tool, p
 		}
 		if m.Kind == jsonrpc.KindResult {
 			var r struct {
@@ -145,7 +162,7 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 			e.ToolError = r.IsError
 		}
 	}
-	return e, cursor, obsKey
+	return e, req, evicted
 }
 
 // attachObservation remembers the observation key of a pending request, so
@@ -190,45 +207,120 @@ func other(dir string) string {
 func (s *Session) Flags() policy.SessionCtx {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.flags
+	f := s.flags
+	f.ServersTouched = slices.Clone(f.ServersTouched)
+	return f
 }
 
-// noteForwardedCall records that a tools/call with these labels reached its
-// server. Only forwarded calls count: a blocked read never touched data.
-func (s *Session) noteForwardedCall(labels []string) {
+// noteForwardedCall records that a tools/call reached its server: it counts
+// the call, adds the server to servers_touched and remembers the tool's
+// labels on the pending request, so its result can set the flags. Only
+// forwarded calls count: a blocked read never touched data.
+func (s *Session) noteForwardedCall(server, dir string, id []byte, labels []string) {
 	s.mu.Lock()
-	s.flags = NextFlags(s.flags, labels)
+	defer s.mu.Unlock()
+	s.flags = AfterCall(s.flags, server)
+	k := server + ":" + dir + ":" + string(id)
+	if p, ok := s.pending[k]; ok {
+		p.call, p.labels = true, labels
+		s.pending[k] = p
+	}
+}
+
+// noteResult records that the result of a forwarded tools/call reached the
+// agent (see AfterResult).
+func (s *Session) noteResult(labels []string, isError bool) {
+	s.mu.Lock()
+	s.flags = AfterResult(s.flags, labels, isError)
 	s.mu.Unlock()
 }
 
-// noteUntrusted records that a result with a detection finding reached the
-// agent (plan M8: saw_untrusted is also set by any detection finding).
+// noteUntrusted records that a result with a medium or high detection
+// finding reached the agent (plan M8: saw_untrusted is also set by
+// detection, whatever the tool's labels say).
 func (s *Session) noteUntrusted() {
 	s.mu.Lock()
 	s.flags.SawUntrusted = true
 	s.mu.Unlock()
 }
 
-// NextFlags is context.session after one more forwarded tools/call of a tool
-// with these labels. `rover policy test` replays sessions with it.
-func NextFlags(f policy.SessionCtx, labels []string) policy.SessionCtx {
+// AfterCall is context.session after one more forwarded tools/call to
+// server. The call alone sets no taint flag: those wait for its result.
+// `rover policy test` replays sessions with it.
+func AfterCall(f policy.SessionCtx, server string) policy.SessionCtx {
+	f.Calls++
+	if i, found := slices.BinarySearch(f.ServersTouched, server); !found {
+		f.ServersTouched = slices.Insert(slices.Clone(f.ServersTouched), i, server)
+	}
+	return f
+}
+
+// AfterResult is context.session after the result of a forwarded call of a
+// tool with these labels reached the agent.
+//
+//   - touched_private: a reads_private call SUCCEEDED. A request alone does
+//     not count (the server may refuse it), nor does an isError result (the
+//     read failed; what came back is an error message).
+//   - saw_untrusted: a reads_untrusted result arrived, isError or not: an
+//     error text from a web page or an issue tracker is still a stranger's
+//     text.
+func AfterResult(f policy.SessionCtx, labels []string, isError bool) policy.SessionCtx {
 	for _, l := range labels {
 		switch l {
 		case "reads_private":
-			f.TouchedPrivate = true
+			if !isError {
+				f.TouchedPrivate = true
+			}
 		case "reads_untrusted":
 			f.SawUntrusted = true
 		}
 	}
-	f.Calls++
 	return f
+}
+
+// noteSession updates the session flags (M8) once the message's audit entry
+// is written: a forwarded tools/call is counted and its labels remembered;
+// the result (or JSON-RPC error) answering such a call, if it reaches the
+// agent (forwarded, or rewritten by detection, not replaced by an error),
+// sets touched_private and saw_untrusted from those labels; a medium or high detection finding
+// in any result sets saw_untrusted.
+func (s *Server) noteSession(sess *Session, server, dir string, m jsonrpc.Message, j judgment, req pendingReq) {
+	if j.call {
+		sess.noteForwardedCall(server, dir, m.ID, j.callLabels)
+	}
+	if dir == policy.DirS2C && req.call && j.audit != ipc.ActionBlock {
+		switch m.Kind {
+		case jsonrpc.KindResult:
+			sess.noteResult(req.labels, ResultIsError(m.Result))
+		case jsonrpc.KindError:
+			// A JSON-RPC error answering the call: its message reached the
+			// agent, so reads_untrusted applies; it is not a successful
+			// read, so reads_private does not (review HIGH-1).
+			sess.noteResult(req.labels, true)
+		}
+	}
+	if j.untrusted {
+		sess.noteUntrusted()
+	}
+}
+
+// ResultIsError reports whether a tools/call result says isError: true,
+// reading the exact key strictly. Anything unclear counts as success, so
+// a server cannot dodge touched_private with an ambiguous result.
+func ResultIsError(result []byte) bool {
+	fields, err := jsonrpc.Object(result)
+	if err != nil {
+		return false
+	}
+	v, ok := fields.Get("isError")
+	return ok && string(v) == "true"
 }
 
 // forget drops the pending entry of a request that was blocked: its server
 // never saw it, so any "reply" to that id is not a reply to it.
 func (s *Session) forget(server, dir string, id []byte) {
 	s.mu.Lock()
-	delete(s.pending, server+":"+dir+":"+string(id))
+	s.dropPending(server + ":" + dir + ":" + string(id))
 	s.mu.Unlock()
 }
 
@@ -237,9 +329,7 @@ func (s *Session) forget(server, dir string, id []byte) {
 func (s *Session) take(server, dir string, id []byte) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := server + ":" + dir + ":" + string(id)
-	_, ok := s.pending[key]
-	delete(s.pending, key)
+	_, ok := s.dropPending(server + ":" + dir + ":" + string(id))
 	return ok
 }
 
@@ -253,22 +343,28 @@ func (s *Server) join(clientPID int, server string) *Session {
 	if !ok {
 		sess = newSession(newID(), clientPID, s.o.Now())
 		s.sessions[clientPID] = sess
+	} else if sess.rejoin() {
+		s.o.Logf("session %s: a wrapper came back; the session keeps its flags", sess.ID)
 	}
 	sess.join(server)
 	return sess
 }
 
+// release detaches a wrapper. When it was the last one the session is not
+// deleted: it lingers, flags and all, until the agent process is gone or
+// LingerMax passes (sweepSessions), so an agent cannot wash its taint out
+// by restarting its servers (review MEDIUM-3).
 func (s *Server) release(sess *Session, server string) {
+	now := s.o.Now()
 	s.mu.Lock()
 	last := sess.leave(server)
 	if last {
-		if cur, ok := s.sessions[sess.ClientPID]; ok && cur == sess {
-			delete(s.sessions, sess.ClientPID)
-		}
+		sess.startLinger(now)
 	}
 	s.mu.Unlock()
 	if last {
-		s.o.Logf("session %s: closed", sess.ID)
+		s.o.Logf("session %s: last wrapper left; lingering while client pid %d lives", sess.ID, sess.ClientPID)
+		_ = s.writeAudit(sessionEntry(sess, now, AuditSessionLingering, "last wrapper left"))
 	}
 }
 

@@ -1,0 +1,13 @@
+# "No mail once the session has touched the HR database and files" (M8).
+version: 1
+mode: enforce
+defaults: deny
+rules:
+  - id: no-mail-after-hr
+    deny: mail.send
+    when: { session: { servers_touched: [hr-db, files] } }
+  - id: no-egress-after-private-hr
+    deny: "*"
+    when:
+      session: { touched_private: true, servers_touched: [hr-db] }
+      tool_label: egress

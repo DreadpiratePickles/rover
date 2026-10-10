@@ -2,7 +2,6 @@ package yaml2cedar
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -284,26 +283,6 @@ func (c compiler) pathUnder(n *yaml.Node, roots map[string]string) ([]cond, erro
 		cedar:    "context.norm has path." + attr + " && context.norm.path." + attr + " == true",
 		callOnly: true,
 	}}, nil
-}
-
-// session: {touched_private: bool, saw_untrusted: bool}.
-func (c compiler) session(n *yaml.Node) ([]cond, error) {
-	fields, err := c.mapping(n, "when.session", "touched_private", "saw_untrusted")
-	if err != nil {
-		return nil, err
-	}
-	if len(fields) == 0 {
-		return nil, c.errAt(n, "when.session: needs touched_private and/or saw_untrusted")
-	}
-	out := make([]cond, 0, len(fields))
-	for _, f := range fields {
-		b, err := c.boolean(f.val, "session."+f.key.Value)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, cond{cedar: "context.session." + f.key.Value + " == " + strconv.FormatBool(b)})
-	}
-	return out, nil
 }
 
 func (c compiler) toolLabel(n *yaml.Node) ([]cond, error) {

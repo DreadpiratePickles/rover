@@ -1,0 +1,165 @@
+# Built-in tool labels for well-known MCP servers (plan M8).
+#
+# These are the FIRST of three label sources, in order:
+#   1. this file (source "built-in"),
+#   2. labels in config.yaml or policy.yaml (source "config"): a tool listed
+#      there REPLACES its built-in labels, it does not add to them,
+#   3. the conservative default for a tool nobody knows (source "default"):
+#      [reads_untrusted, egress].
+#
+# Labels: reads_private   the tool reads the user's own data
+#         reads_untrusted the tool's result can carry text a stranger wrote
+#         egress          the tool can send data off the machine (or to others)
+#         destructive     the tool changes or deletes something
+#
+# Every tool is named exactly; there are no wildcards. A pattern such as
+# "read_*" would let a server pick a name ("read_and_upload") that inherits
+# a harmless label instead of falling to the conservative default.
+# An empty list means "known, and none of the four labels".
+#
+# Server names are the names you give the server in your client config
+# (`rover wrap --name`). Each entry also matches its aliases, and a name with
+# the common packaging prefixes/suffixes removed ("mcp-server-", "server-",
+# "-mcp-server", "-mcp"): "mcp-server-git", "git-mcp" and "git" all match git.
+servers:
+  filesystem:  # @modelcontextprotocol/server-filesystem
+    aliases: [fs]
+    tools:
+      read_file: [reads_private]
+      read_text_file: [reads_private]
+      read_media_file: [reads_private]
+      read_multiple_files: [reads_private]
+      list_directory: [reads_private]
+      list_directory_with_sizes: [reads_private]
+      directory_tree: [reads_private]
+      search_files: [reads_private]
+      get_file_info: [reads_private]
+      list_allowed_directories: [reads_private]
+      write_file: [destructive]
+      edit_file: [destructive]
+      create_directory: [destructive]
+      move_file: [destructive]
+
+  fetch:  # mcp-server-fetch: the URL itself carries data out (query strings)
+    tools:
+      fetch: [reads_untrusted, egress]
+
+  git:  # mcp-server-git
+    tools:
+      git_status: [reads_private]
+      git_diff: [reads_private]
+      git_diff_staged: [reads_private]
+      git_diff_unstaged: [reads_private]
+      git_log: [reads_private]
+      git_show: [reads_private]
+      git_branch: [reads_private]
+      git_commit: [destructive]
+      git_add: [destructive]
+      git_reset: [destructive]
+      git_checkout: [destructive]
+      git_create_branch: [destructive]
+      git_init: [destructive]
+
+  # github, slack, memory, postgres: a read returns BOTH the user's data
+  # (private repos, DMs, rows) and text other people wrote (issues, messages,
+  # notes the agent stored from a web page), so it carries both labels: a
+  # chain on one server (read an issue, read a private file, open a PR) then
+  # trips the guard by itself.
+  github:  # @modelcontextprotocol/server-github
+    tools:
+      get_file_contents: [reads_private, reads_untrusted]
+      get_issue: [reads_private, reads_untrusted]
+      get_pull_request: [reads_private, reads_untrusted]
+      get_pull_request_comments: [reads_private, reads_untrusted]
+      get_pull_request_files: [reads_private, reads_untrusted]
+      get_pull_request_reviews: [reads_private, reads_untrusted]
+      get_pull_request_status: [reads_private, reads_untrusted]
+      list_commits: [reads_private, reads_untrusted]
+      list_issues: [reads_private, reads_untrusted]
+      list_pull_requests: [reads_private, reads_untrusted]
+      search_code: [reads_private, reads_untrusted]
+      search_issues: [reads_private, reads_untrusted]
+      search_repositories: [reads_private, reads_untrusted]
+      search_users: [reads_untrusted]
+      create_or_update_file: [egress]
+      push_files: [egress]
+      create_pull_request: [egress]
+      create_pull_request_review: [egress]
+      create_issue: [egress]
+      update_issue: [egress]
+      add_issue_comment: [egress]
+      merge_pull_request: [egress]
+      update_pull_request_branch: [egress]
+      create_repository: [egress]
+      create_branch: [egress]
+      fork_repository: [egress]
+      delete_file: [destructive, egress]
+      delete_repository: [destructive, egress]
+
+  memory:  # @modelcontextprotocol/server-memory
+    tools:
+      read_graph: [reads_private, reads_untrusted]
+      search_nodes: [reads_private, reads_untrusted]
+      open_nodes: [reads_private, reads_untrusted]
+      create_entities: [destructive]
+      create_relations: [destructive]
+      add_observations: [destructive]
+      delete_entities: [destructive]
+      delete_observations: [destructive]
+      delete_relations: [destructive]
+
+  slack:  # @modelcontextprotocol/server-slack
+    tools:
+      slack_post_message: [egress]
+      slack_reply_to_thread: [egress]
+      slack_add_reaction: [egress]
+      slack_list_channels: [reads_private, reads_untrusted]
+      slack_get_channel_history: [reads_private, reads_untrusted]
+      slack_get_thread_replies: [reads_private, reads_untrusted]
+      slack_get_users: [reads_private, reads_untrusted]
+      slack_get_user_profile: [reads_private, reads_untrusted]
+
+  postgres:  # @modelcontextprotocol/server-postgres (read-only queries; rows hold user text)
+    tools:
+      query: [reads_private, reads_untrusted]
+
+  puppeteer:  # @modelcontextprotocol/server-puppeteer
+    tools:
+      puppeteer_navigate: [reads_untrusted, egress]
+      puppeteer_click: [reads_untrusted, egress]
+      puppeteer_fill: [reads_untrusted, egress]
+      puppeteer_select: [reads_untrusted, egress]
+      puppeteer_hover: [reads_untrusted, egress]
+      puppeteer_evaluate: [reads_untrusted, egress]
+      puppeteer_screenshot: [reads_untrusted]
+
+  playwright:  # @playwright/mcp
+    tools:
+      browser_navigate: [reads_untrusted, egress]
+      browser_navigate_back: [reads_untrusted, egress]
+      browser_click: [reads_untrusted, egress]
+      browser_type: [reads_untrusted, egress]
+      browser_fill_form: [reads_untrusted, egress]
+      browser_select_option: [reads_untrusted, egress]
+      browser_hover: [reads_untrusted, egress]
+      browser_press_key: [reads_untrusted, egress]
+      browser_evaluate: [reads_untrusted, egress]
+      browser_snapshot: [reads_untrusted]
+      browser_take_screenshot: [reads_untrusted]
+      browser_close: []
+
+  brave-search:  # @modelcontextprotocol/server-brave-search: the query leaves the machine
+    aliases: [brave]
+    tools:
+      brave_web_search: [reads_untrusted, egress]
+      brave_local_search: [reads_untrusted, egress]
+
+  time:  # mcp-server-time
+    tools:
+      get_current_time: []
+      convert_time: []
+
+  sequentialthinking:  # @modelcontextprotocol/server-sequential-thinking
+    aliases: [sequential-thinking]
+    tools:
+      sequentialthinking: []

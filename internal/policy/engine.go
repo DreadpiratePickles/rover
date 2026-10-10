@@ -64,11 +64,18 @@ const (
 // ErrLoad wraps every error returned by Load.
 var ErrLoad = errors.New("policy load failed")
 
-// SessionCtx is context.session: what this session has done so far.
+// SessionCtx is context.session: what this session (one agent process,
+// across every server it uses) has done so far. roverd sets it (M8):
+// TouchedPrivate once a reads_private call succeeded, SawUntrusted once a
+// reads_untrusted result or a result with a medium or high detection finding
+// reached the agent, Calls and ServersTouched for every forwarded tools/call.
 type SessionCtx struct {
 	TouchedPrivate bool
 	SawUntrusted   bool
 	Calls          int64
+	// ServersTouched is context.session.servers_touched: the names of the
+	// servers with at least one forwarded tools/call, sorted.
+	ServersTouched []string
 }
 
 // DeviceCtx is context.device. All zero until N5 (device posture).
@@ -92,8 +99,9 @@ type Input struct {
 	Transport     string
 	Dir           string // DirC2S or DirS2C
 	Msg           jsonrpc.Message
-	// Labels maps a tool name (without the server prefix) to its labels from
-	// config.yaml, e.g. {"read_file": ["reads_private"]}.
+	// Labels maps a tool name (without the server prefix) to its effective
+	// labels (package labels: built-in, then config, then the conservative
+	// default), e.g. {"read_file": ["reads_private"]}.
 	Labels    map[string][]string
 	Session   SessionCtx
 	Device    DeviceCtx

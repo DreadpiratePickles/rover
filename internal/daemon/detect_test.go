@@ -169,7 +169,10 @@ func TestAmbiguousResultIsRejected(t *testing.T) {
 }
 
 func TestCleanResultIsForwardedUntouched(t *testing.T) {
-	s := start(t, Options{Audit: audit.New(&syncBuf{}), Policy: engine(t, detectPolicy), Config: enforce()})
+	// echo.fetch is labelled "no labels", so only detection could taint.
+	cfg := enforce()
+	cfg.Labels = map[string]map[string][]string{"echo": {"fetch": {}}}
+	s := start(t, Options{Audit: audit.New(&syncBuf{}), Policy: engine(t, detectPolicy), Config: cfg})
 	c := dial(t, s)
 	decide(t, c, "c2s", call("5", "fetch"))
 	v := decide(t, c, "s2c", `{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"Hello, world. See https://example.com/docs."}]}}`)
