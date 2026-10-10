@@ -55,6 +55,7 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover policy compile ~/Library/Application\ Support/Rover/policy.yaml
 ./bin/rover policy validate ~/Library/Application\ Support/Rover/policy.yaml
 ./bin/rover policy validate --print-schema   # the schema generated from your roots
+# YAML session conditions: when: { session: { touched_private: true, servers_touched: [hr-db] } }
 
 # wrap any stdio MCP server; roverd starts itself the first time
 # (--name may only use A-Za-z0-9_.-)

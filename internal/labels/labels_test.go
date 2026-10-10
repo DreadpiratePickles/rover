@@ -47,6 +47,11 @@ func TestEffectivePrecedence(t *testing.T) {
 	}{
 		{"built-in", "filesystem", "list_directory", []string{"reads_private"}, SourceBuiltIn},
 		{"built-in two labels", "github", "delete_repository", []string{"destructive", "egress"}, SourceBuiltIn},
+		{"github issue read is private and untrusted", "github", "get_issue", []string{"reads_private", "reads_untrusted"}, SourceBuiltIn},
+		{"github file read is private and untrusted", "github", "get_file_contents", []string{"reads_private", "reads_untrusted"}, SourceBuiltIn},
+		{"slack history is private and untrusted", "slack", "slack_get_channel_history", []string{"reads_private", "reads_untrusted"}, SourceBuiltIn},
+		{"memory read is private and untrusted", "memory", "read_graph", []string{"reads_private", "reads_untrusted"}, SourceBuiltIn},
+		{"postgres rows are private and untrusted", "postgres", "query", []string{"reads_private", "reads_untrusted"}, SourceBuiltIn},
 		{"built-in no labels", "time", "get_current_time", []string{}, SourceBuiltIn},
 		{"user replaces built-in", "filesystem", "read_file", []string{"egress", "reads_private"}, SourceConfig},
 		{"user empty list means none", "filesystem", "write_file", []string{}, SourceConfig},
@@ -137,5 +142,37 @@ func TestListMergesSources(t *testing.T) {
 	}
 	if len(List("nobody", nil)) != 0 || len(KnownServers()) != 12 {
 		t.Fatalf("unknown server must list nothing; known servers = %v", KnownServers())
+	}
+}
+
+// HIGH-2 (review): every read of a server that holds both the user's data
+// and other people's text must carry both labels, or a chain on that one
+// server (read an issue, read a private file, open a PR) never trips the
+// guard.
+func TestMixedServersReadsCarryBothLabels(t *testing.T) {
+	for server, tools := range map[string][]string{
+		"github": {"get_file_contents", "get_issue", "get_pull_request", "get_pull_request_comments", "get_pull_request_files",
+			"get_pull_request_reviews", "get_pull_request_status", "list_commits", "list_issues", "list_pull_requests",
+			"search_code", "search_issues", "search_repositories"},
+		"slack":    {"slack_get_channel_history", "slack_get_thread_replies", "slack_list_channels", "slack_get_users", "slack_get_user_profile"},
+		"memory":   {"read_graph", "search_nodes", "open_nodes"},
+		"postgres": {"query"},
+	} {
+		for _, tool := range tools {
+			ls, _ := BuiltIn(server, tool)
+			if !slices.Contains(ls, ReadsPrivate) || !slices.Contains(ls, ReadsUntrusted) {
+				t.Errorf("%s.%s = %v, want reads_private and reads_untrusted", server, tool, ls)
+			}
+		}
+	}
+}
+
+func TestMatchKind(t *testing.T) {
+	for in, want := range map[string]string{
+		"git": MatchExact, "brave": MatchAlias, "mcp-server-git": MatchTrimmed, "git-mcp": MatchTrimmed, "nope": "",
+	} {
+		if _, got := Match(in); got != want {
+			t.Errorf("Match(%q) kind = %q, want %q", in, got, want)
+		}
 	}
 }

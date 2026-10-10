@@ -32,6 +32,8 @@ forbid (principal, action == Action::"server_elicitation", resource);
 // next unknown tool is blocked as egress. Label your own tools in
 // config.yaml to tell Rover what they really do; `rover policy labels`
 // shows every label in force and where it came from.
+// Only a reads_private label (built-in or config.yaml) sets touched_private:
+// a server nobody labelled never makes the session private.
 // Do not also paste templates/trifecta-guard.cedar: the ids would clash.
 
 // Forbids any egress tool once the session has both read private data and

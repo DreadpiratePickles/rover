@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,65 +35,126 @@ const trifectaPermits = `
 @id("permit-mail")  permit (principal, action == Action::"call_tool", resource in Server::"mail");
 `
 
-// wrapAs starts `rover wrap --name name -- echo-server` as a child of the
-// test process, so every wrapper it starts shares one agent pid (the test)
-// and so one roverd session.
-func wrapAs(t *testing.T, dir, name string) *mcp {
-	t.Helper()
-	m := &mcp{t: t, cmd: exec.Command(bins.rover, "wrap", "--name", name, "--", bins.echo)} //nolint:gosec // G204: test runs the binaries it just built
-	m.cmd.Env = env(dir, "ROVER_TEST_NO_AUTOSTART=1")
-	m.in, _ = m.cmd.StdinPipe()
-	stdout, _ := m.cmd.StdoutPipe()
-	m.out = bufio.NewReader(stdout)
-	m.cmd.Stderr = &m.stderr
-	if err := m.cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	m.call(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`)
-	return m
-}
-
 func toolCall(id int, tool, args string) string {
 	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, id, tool, args)
 }
 
 var sessionRE = regexp.MustCompile(`session ([0-9a-f]+): wrapping`)
 
-// trifectaSession starts files, web and mail, runs calls ("files" reads
-// secretPath, the others echo), closes them and returns the last reply and
-// the session id the three shared.
-func trifectaSession(t *testing.T, dir, secretPath string, order ...string) (last map[string]any, session string) {
+// driverResult is what the driver process prints: the last reply and the
+// session id of every wrapper it started.
+type driverResult struct {
+	Last     json.RawMessage `json:"last"`
+	Sessions []string        `json:"sessions"`
+}
+
+// trifectaSession runs one agent: a separate driver process (this test
+// binary, re-executed; see TestMain) that starts files, web and mail as its
+// children, so they share one agent pid and one roverd session, and a new
+// driver is a new session. order is phases separated by "|": each phase
+// starts fresh wrappers under the same driver, runs its calls ("files"
+// reads secretPath, the others echo) and closes them.
+func trifectaSession(t *testing.T, dir, secretPath, order string) (last map[string]any, sessions []string) {
 	t.Helper()
-	ms := map[string]*mcp{}
+	cmd := exec.Command(os.Args[0]) //nolint:gosec // G204: the test binary itself, as a driver
+	cmd.Env = env(dir, "ROVER_TEST_NO_AUTOSTART=1", "ROVER_TEST_DRIVER=1", "DRIVER_ROVER="+bins.rover,
+		"DRIVER_ECHO="+bins.echo, "DRIVER_SECRET="+secretPath, "DRIVER_ORDER="+order)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("driver %s: %v\n%s", order, err, stderr.String())
+	}
+	var r driverResult
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatalf("driver output %q: %v", out, err)
+	}
+	if err := json.Unmarshal(r.Last, &last); err != nil {
+		t.Fatal(err)
+	}
+	return last, r.Sessions
+}
+
+// runTrifectaDriver is the driver process (ROVER_TEST_DRIVER=1).
+func runTrifectaDriver() int {
+	var r driverResult
+	for _, phase := range strings.Split(os.Getenv("DRIVER_ORDER"), "|") {
+		last, ids, err := driverPhase(strings.Split(phase, ","))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "driver:", err)
+			return 1
+		}
+		r.Last, r.Sessions = last, append(r.Sessions, ids...)
+	}
+	b, _ := json.Marshal(r)
+	fmt.Println(string(b))
+	return 0
+}
+
+type driverWrap struct {
+	cmd    *exec.Cmd
+	in     io.WriteCloser
+	out    *bufio.Reader
+	stderr bytes.Buffer
+}
+
+func (w *driverWrap) call(line string) (json.RawMessage, error) {
+	if _, err := fmt.Fprintln(w.in, line); err != nil {
+		return nil, err
+	}
+	return w.out.ReadBytes('\n')
+}
+
+func driverPhase(order []string) (last json.RawMessage, sessions []string, err error) {
+	ws := map[string]*driverWrap{}
 	for _, n := range []string{"files", "web", "mail"} {
-		ms[n] = wrapAs(t, dir, n)
+		w := &driverWrap{cmd: exec.Command(os.Getenv("DRIVER_ROVER"), "wrap", "--name", n, "--", os.Getenv("DRIVER_ECHO"))} //nolint:gosec // G204: binaries the test built
+		w.in, _ = w.cmd.StdinPipe()
+		stdout, _ := w.cmd.StdoutPipe()
+		w.out = bufio.NewReader(stdout)
+		w.cmd.Stderr = &w.stderr
+		if err = w.cmd.Start(); err != nil {
+			return nil, nil, err
+		}
+		if _, err = w.call(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`); err != nil {
+			return nil, nil, err
+		}
+		ws[n] = w
 	}
 	for i, n := range order {
+		line := toolCall(i+1, "echo", `{"text":"hello from `+n+`"}`)
 		if n == "files" {
-			last = ms[n].call(toolCall(i+1, "read_file", fmt.Sprintf(`{"path":%q}`, secretPath)))
-			if !strings.Contains(fmt.Sprint(last["result"]), "s3cret") {
-				t.Fatalf("files.read_file must succeed: %v", last)
-			}
-			continue
+			line = toolCall(i+1, "read_file", fmt.Sprintf(`{"path":%q}`, os.Getenv("DRIVER_SECRET")))
 		}
-		last = ms[n].call(toolCall(i+1, "echo", `{"text":"hello from `+n+`"}`))
+		if last, err = ws[n].call(line); err != nil {
+			return nil, nil, err
+		}
+		if n == "files" && !strings.Contains(string(last), "s3cret") {
+			return nil, nil, fmt.Errorf("files.read_file failed: %s", last)
+		}
 	}
-	ids := map[string]bool{}
 	for _, n := range []string{"files", "web", "mail"} {
-		ms[n].close()
-		match := sessionRE.FindStringSubmatch(ms[n].stderr.String())
-		if match == nil {
-			t.Fatalf("%s: no session on stderr: %s", n, ms[n].stderr.String())
+		_ = ws[n].in.Close()
+		if err = ws[n].cmd.Wait(); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w\n%s", n, err, ws[n].stderr.String())
 		}
-		ids[match[1]] = true
+		m := sessionRE.FindStringSubmatch(ws[n].stderr.String())
+		if m == nil {
+			return nil, nil, fmt.Errorf("%s: no session on stderr: %s", n, ws[n].stderr.String())
+		}
+		sessions = append(sessions, m[1])
 	}
-	if len(ids) != 1 {
-		t.Fatalf("the three wrappers must share one session: %v", ids)
+	return last, sessions, nil
+}
+
+func oneSession(t *testing.T, ids []string) string {
+	t.Helper()
+	for _, id := range ids {
+		if id != ids[0] {
+			t.Fatalf("the wrappers of one driver must share one session: %v", ids)
+		}
 	}
-	for id := range ids {
-		session = id
-	}
-	return last, session
+	return ids[0]
 }
 
 // Acceptance (M8): a private read on one server, an untrusted read on a
@@ -111,23 +175,29 @@ func TestTrifectaEndToEnd(t *testing.T) {
 		!regexp.MustCompile(`mail\s+\(any other tool\)\s+egress,reads_untrusted\s+default`).MatchString(out) {
 		t.Fatalf("policy labels: %v\n%s", err, out)
 	}
-	daemonErr := startDaemon(t, dir)
+	startDaemon(t, dir)
 
-	// Act: sequence A, then (after roverd closed that session) sequence B.
-	blocked, sessA := trifectaSession(t, dir, secret, "files", "web", "mail")
-	waitFor(t, daemonErr, "session "+sessA+": closed")
-	allowed, sessB := trifectaSession(t, dir, secret, "files", "mail")
+	// Act: A and B are two agents (two driver processes). C is one agent
+	// whose wrappers all exit after the two reads and come back for mail.
+	blocked, sessA := trifectaSession(t, dir, secret, "files,web,mail")
+	allowed, sessB := trifectaSession(t, dir, secret, "files,mail")
+	restarted, sessC := trifectaSession(t, dir, secret, "files,web|mail")
 
 	// Assert
 	res, _ := blocked["result"].(map[string]any)
 	if res == nil || res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "rule trifecta-no-egress)") {
 		t.Fatalf("A: mail.echo after files and web must be blocked by trifecta-no-egress: %v", blocked)
 	}
-	if sessA == sessB {
-		t.Fatalf("B must run in a fresh session (both %s)", sessA)
+	if oneSession(t, sessA) == oneSession(t, sessB) {
+		t.Fatalf("B must run in a fresh session (both %s)", sessA[0])
 	}
 	if !strings.Contains(fmt.Sprint(allowed["result"]), "hello from mail") {
 		t.Fatalf("B: mail.echo before any untrusted read must be allowed: %v", allowed)
+	}
+	oneSession(t, sessC) // the restarted wrappers rejoined the lingering session
+	res, _ = restarted["result"].(map[string]any)
+	if res == nil || res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "rule trifecta-no-egress)") {
+		t.Fatalf("C: restarting the servers must not wash out the taint: %v", restarted)
 	}
 }
 

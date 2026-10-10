@@ -83,8 +83,13 @@ func labelServers(cfg config.Config) []string {
 func printLabels(w io.Writer, servers []string, user map[string]map[string][]string) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "SERVER\tTOOL\tLABELS\tSOURCE")
+	var warnings []string
 	for _, s := range servers {
-		known := labels.KnownServer(s)
+		known, how := labels.Match(s)
+		if how == labels.MatchTrimmed {
+			warnings = append(warnings, fmt.Sprintf("warning: %s matched the built-in %s labels only by its name (prefix/suffix removed); "+
+				"a wrapper started without --name is named after its command, so check it really is the official %s server", s, known, known))
+		}
 		for _, r := range labels.List(s, user) {
 			src := r.Source
 			if src == labels.SourceBuiltIn && known != s {
@@ -95,6 +100,9 @@ func printLabels(w io.Writer, servers []string, user map[string]map[string][]str
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s, "(any other tool)", labelText(labels.Default()), labels.SourceDefault)
 	}
 	_ = tw.Flush()
+	for _, l := range warnings {
+		_, _ = fmt.Fprintln(w, l)
+	}
 }
 
 func labelText(ls []string) string {

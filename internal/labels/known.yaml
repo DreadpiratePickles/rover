@@ -60,21 +60,26 @@ servers:
       git_create_branch: [destructive]
       git_init: [destructive]
 
-  github:  # @modelcontextprotocol/server-github: issue and PR text is untrusted
+  # github, slack, memory, postgres: a read returns BOTH the user's data
+  # (private repos, DMs, rows) and text other people wrote (issues, messages,
+  # notes the agent stored from a web page), so it carries both labels: a
+  # chain on one server (read an issue, read a private file, open a PR) then
+  # trips the guard by itself.
+  github:  # @modelcontextprotocol/server-github
     tools:
-      get_file_contents: [reads_untrusted]
-      get_issue: [reads_untrusted]
-      get_pull_request: [reads_untrusted]
-      get_pull_request_comments: [reads_untrusted]
-      get_pull_request_files: [reads_untrusted]
-      get_pull_request_reviews: [reads_untrusted]
-      get_pull_request_status: [reads_untrusted]
-      list_commits: [reads_untrusted]
-      list_issues: [reads_untrusted]
-      list_pull_requests: [reads_untrusted]
-      search_code: [reads_untrusted]
-      search_issues: [reads_untrusted]
-      search_repositories: [reads_untrusted]
+      get_file_contents: [reads_private, reads_untrusted]
+      get_issue: [reads_private, reads_untrusted]
+      get_pull_request: [reads_private, reads_untrusted]
+      get_pull_request_comments: [reads_private, reads_untrusted]
+      get_pull_request_files: [reads_private, reads_untrusted]
+      get_pull_request_reviews: [reads_private, reads_untrusted]
+      get_pull_request_status: [reads_private, reads_untrusted]
+      list_commits: [reads_private, reads_untrusted]
+      list_issues: [reads_private, reads_untrusted]
+      list_pull_requests: [reads_private, reads_untrusted]
+      search_code: [reads_private, reads_untrusted]
+      search_issues: [reads_private, reads_untrusted]
+      search_repositories: [reads_private, reads_untrusted]
       search_users: [reads_untrusted]
       create_or_update_file: [egress]
       push_files: [egress]
@@ -93,9 +98,9 @@ servers:
 
   memory:  # @modelcontextprotocol/server-memory
     tools:
-      read_graph: [reads_private]
-      search_nodes: [reads_private]
-      open_nodes: [reads_private]
+      read_graph: [reads_private, reads_untrusted]
+      search_nodes: [reads_private, reads_untrusted]
+      open_nodes: [reads_private, reads_untrusted]
       create_entities: [destructive]
       create_relations: [destructive]
       add_observations: [destructive]
@@ -108,15 +113,15 @@ servers:
       slack_post_message: [egress]
       slack_reply_to_thread: [egress]
       slack_add_reaction: [egress]
-      slack_list_channels: [reads_untrusted]
-      slack_get_channel_history: [reads_untrusted]
-      slack_get_thread_replies: [reads_untrusted]
-      slack_get_users: [reads_untrusted]
-      slack_get_user_profile: [reads_untrusted]
+      slack_list_channels: [reads_private, reads_untrusted]
+      slack_get_channel_history: [reads_private, reads_untrusted]
+      slack_get_thread_replies: [reads_private, reads_untrusted]
+      slack_get_users: [reads_private, reads_untrusted]
+      slack_get_user_profile: [reads_private, reads_untrusted]
 
-  postgres:  # @modelcontextprotocol/server-postgres (read-only queries)
+  postgres:  # @modelcontextprotocol/server-postgres (read-only queries; rows hold user text)
     tools:
-      query: [reads_private]
+      query: [reads_private, reads_untrusted]
 
   puppeteer:  # @modelcontextprotocol/server-puppeteer
     tools:

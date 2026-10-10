@@ -72,6 +72,9 @@ type Options struct {
 	RoverPath      string
 	TamperDebounce time.Duration
 	TamperRetry    <-chan time.Time
+	// PIDAlive reports whether an agent pid exists (sessionlife.go); nil
+	// means kill(pid, 0).
+	PIDAlive func(int) bool
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -112,6 +115,9 @@ func New(o Options) *Server {
 	}
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
+	}
+	if o.PIDAlive == nil {
+		o.PIDAlive = pidAlive
 	}
 	if o.Notifier == nil {
 		o.Notifier = pin.NopNotifier{}
@@ -176,6 +182,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer t.Stop()
 		s.rec.Start(t.C)
 	}
+	s.startSweeper(ctx)
 	go func() {
 		<-ctx.Done()
 		s.Close()
@@ -364,13 +371,13 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	server := hello.ServerName
 	m := jsonrpc.Parse(f.Raw)
 	now := s.o.Now()
-	e, req := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
+	e, req, evicted := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
 	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, req.cursor, now)
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
 	}
-	entries := append(append(pinEntries(e, j.pinEvents), poisonEntries(e, j.poisoned)...), e)
+	entries := append(append(append(evictedEntries(sess, now, evicted), pinEntries(e, j.pinEvents)...), poisonEntries(e, j.poisoned)...), e)
 	if j.action == ipc.ActionBlock && m.Kind == jsonrpc.KindRequest {
 		sess.forget(server, f.Dir, m.ID)
 	}

@@ -22,6 +22,9 @@ import (
 var bins struct{ rover, echo string }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("ROVER_TEST_DRIVER") == "1" { // trifecta_test.go: this process is an agent
+		os.Exit(runTrifectaDriver())
+	}
 	dir, err := os.MkdirTemp("", "rover-bins-")
 	if err != nil {
 		panic(err)
@@ -173,6 +176,12 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 		var e audit.Entry
 		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
 			t.Fatal(err)
+		}
+		if e.Kind == "session" { // M8: the last wrapper left, the session lingers
+			if e.Action != "session_lingering" {
+				t.Fatalf("session entry: %+v", e)
+			}
+			continue
 		}
 		if e.Server != "echo" || e.Action != "forward" {
 			t.Fatalf("entry missing server/action: %+v", e)

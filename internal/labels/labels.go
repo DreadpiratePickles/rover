@@ -120,14 +120,36 @@ var (
 	nameSuffixes = []string{"-mcp-server", "-mcp"}
 )
 
+// How a configured server name matched a built-in one (Match).
+const (
+	MatchExact   = "exact"
+	MatchAlias   = "alias"
+	MatchTrimmed = "trimmed" // after removing a packaging prefix/suffix
+)
+
 // KnownServer returns the canonical built-in name a configured server name
-// matches, or "". The match is exact (case-sensitive) on the name or an
-// alias; failing that, one packaging prefix and one suffix are removed and
-// the rest must match exactly. Nothing fuzzier: the built-in labels are
-// less conservative than the default, so a loose match would weaken it.
+// matches, or "" (see Match).
 func KnownServer(server string) string {
+	c, _ := Match(server)
+	return c
+}
+
+// Match returns the canonical built-in name a configured server name
+// matches and how, or ("", ""). The match is exact (case-sensitive) on the
+// name or an alias; failing that, one packaging prefix and one suffix are
+// removed and the rest must match exactly. Nothing fuzzier: the built-in
+// labels are less conservative than the default, so a loose match would
+// weaken it.
+//
+// A trimmed match is usually a wrapper started without --name, whose name
+// is then the command's base name ("mcp-server-git"). That name says what
+// the binary is called, not what it is: `rover policy labels` warns.
+func Match(server string) (canonical, kind string) {
 	if c, ok := known.names[server]; ok {
-		return c
+		if c == server {
+			return c, MatchExact
+		}
+		return c, MatchAlias
 	}
 	trimmed := server
 	for _, p := range namePrefixes {
@@ -142,7 +164,10 @@ func KnownServer(server string) string {
 			break
 		}
 	}
-	return known.names[trimmed]
+	if c, ok := known.names[trimmed]; ok && trimmed != server {
+		return c, MatchTrimmed
+	}
+	return "", ""
 }
 
 // BuiltIn returns the built-in labels of one tool and whether there are any.
