@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -52,16 +53,31 @@ const (
 	pkcheckNoAgent      = 2 // needs interaction and nobody can provide it
 	pkcheckDismissed    = 3
 	methodPolkit        = "polkit"
-	defaultPkcheckPath  = "pkcheck"
 	procStatStartField  = 22 // starttime, 1-based, in /proc/<pid>/stat
 	procStatFieldsAfter = procStatStartField - 2
 )
+
+// pkcheckPaths are where pkcheck is looked for, in order. Never PATH:
+// roverd inherits PATH from whatever started it, and a pkcheck planted
+// first on PATH that exits 0 would approve everything (review M9).
+var pkcheckPaths = []string{"/usr/bin/pkcheck", "/bin/pkcheck"}
+
+// findPkcheck returns the first pkcheck in pkcheckPaths that exists.
+func findPkcheck() (string, error) {
+	for _, p := range pkcheckPaths {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("polkit: pkcheck not found in %s (install polkit)", strings.Join(pkcheckPaths, ", "))
+}
 
 // Polkit authenticates through pkcheck. The reason text cannot be passed to
 // pkcheck (the action file's message is shown), so roverd's notification
 // and details page carry the specifics.
 type Polkit struct {
-	// Pkcheck is the binary; tests point it at a fake script.
+	// Pkcheck is the binary's absolute path; tests point it at a fake
+	// script. Empty means the first of pkcheckPaths that exists.
 	Pkcheck string
 	// PID and UID name the subject; zero means this process.
 	PID, UID int
@@ -90,7 +106,12 @@ func (p Polkit) Authenticate(ctx context.Context, _ string) (bool, string, error
 	}
 	bin := p.Pkcheck
 	if bin == "" {
-		bin = defaultPkcheckPath
+		if bin, err = findPkcheck(); err != nil {
+			return false, methodPolkit, err
+		}
+	}
+	if !filepath.IsAbs(bin) {
+		return false, methodPolkit, fmt.Errorf("polkit: pkcheck path %q is not absolute", bin)
 	}
 	subject := fmt.Sprintf("%d,%d,%d", pid, start, uid)
 	cmd := exec.CommandContext(ctx, bin, "--action-id", PolkitAction, "--process", subject, "--allow-user-interaction") //nolint:gosec // G204: fixed binary and arguments built from integers

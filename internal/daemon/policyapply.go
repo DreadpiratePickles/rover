@@ -6,6 +6,7 @@ import (
 
 	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
+	"github.com/DreadpiratePickles/rover/internal/policy"
 )
 
 // LESSON (M9): `rover policy apply` is only a messenger. It tells roverd
@@ -49,7 +50,7 @@ func (s *Server) applyPolicy(f ipc.Frame) ipc.Frame {
 		return fail(fmt.Errorf("not applied: the policy files changed since you looked (on disk %s, asked for %s)", short12(hash), short12(f.Hash)))
 	}
 	res := ApplyResult{Hash: hash, Mode: string(cfg.Mode)}
-	method, err := s.authenticate(fmt.Sprintf("Rover: approve policy %s (mode %s)?", short12(hash), cfg.Mode))
+	method, err := s.authenticate(fmt.Sprintf("Rover: approve policy %s (%s, mode %s)?", short12(hash), policySummary(pol), cfg.Mode))
 	if err != nil {
 		res.Decision, res.Reason = ApplyDenied, err.Error()
 		switch {
@@ -84,4 +85,23 @@ func short12(h string) string {
 		return h[:12]
 	}
 	return h
+}
+
+// policySummary is "N permits, M forbids" for the apply dialog, so the
+// human sees at a glance whether the policy they approve is the one they
+// wrote (a permit-everything policy is one permit and no forbids).
+func policySummary(p Policy) string {
+	lister, ok := p.(interface{ Policies() []policy.Info })
+	if !ok {
+		return "policy"
+	}
+	var permits, forbids int
+	for _, i := range lister.Policies() {
+		if i.Effect == "forbid" {
+			forbids++
+		} else {
+			permits++
+		}
+	}
+	return fmt.Sprintf("%d permits, %d forbids", permits, forbids)
 }

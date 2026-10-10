@@ -82,7 +82,7 @@ func runDaemon(args []string) int {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	pol, cfg, note := loadApprovedAtStart(dirs, db, logf)
+	pol, cfg, note, reset := loadApprovedAtStart(dirs, db, startFacts{lastAudit: log.LastTime(), stateCreated: stateCreated, hadHistory: hadHistory}, logf)
 	sock, err := paths.SocketPath(dirs)
 	if err != nil {
 		logf("%v", err)
@@ -122,13 +122,15 @@ func runDaemon(args []string) int {
 		TamperFiles: watchedConfigs(dirs, logf),
 		RoverPath:   roverPathForDaemon(logf),
 
-		StateDBCreated:  stateCreated,
-		AuditHadHistory: hadHistory,
+		StateDBCreated:   stateCreated,
+		AuditHadHistory:  hadHistory,
+		StateResetReason: reset,
 
-		Prompter:       flow,
-		Authenticator:  auth,
-		PolicyLoader:   policyLoader(dirs),
-		OnPolicyLoaded: onLoad,
+		Prompter:         flow,
+		Authenticator:    auth,
+		PolicyLoader:     policyLoader(dirs),
+		PendingApprovals: flow.Pending,
+		OnPolicyLoaded:   onLoad,
 	})
 	go reloadOnHUP(hup, reloader{dirs: dirs, db: db, srv: srv, onLoad: onLoad, logf: logf}, note)
 	if err := srv.Listen(); err != nil {

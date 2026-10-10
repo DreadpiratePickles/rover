@@ -18,19 +18,13 @@ import (
 // approval like any other. roverd only loads a policy whose hash a human
 // approved: `rover policy apply` shows the OS dialog first and records the
 // hash. Editing policy.cedar (or config.yaml, which holds the mode) and
-// sending SIGHUP does nothing but log a refusal. The very first policy is
-// the exception: `rover policy init` records it without a dialog, method
-// "init". That is trust on first use (TOFU), the same bargain as the tool
-// pins of M4: whatever is there first is trusted, and every change after
-// that needs a human. Only the most recently approved hash is accepted, so
+// sending SIGHUP does nothing but log a refusal. There is no exception for
+// the first policy: `rover policy init` asks for the dialog too. (An earlier
+// version trusted the first policy on first use, and deleting state.db made
+// any policy "the first" again.) Only the most recently approved hash is
+// accepted, so
 // an agent cannot roll back to an older, looser policy a human once
 // approved either.
-
-// Policy approval methods besides an Authenticator's.
-const (
-	// MethodInit is the first policy, recorded by `rover policy init`.
-	MethodInit = "init"
-)
 
 // PolicyApproval is one approved policy hash.
 type PolicyApproval struct {

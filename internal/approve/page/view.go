@@ -50,6 +50,7 @@ func (s *Server) view(rec approve.Record, l link) view {
 	}
 	rows := []row{
 		{Text: "state " + stateText, Urgent: pending},
+		{Text: "id " + approve.ShortID(rec.ID) + " (the system dialog shows the same)"},
 		{Text: "client " + clean(rec.Client, "unknown")},
 		{Text: "server " + clean(rec.Server, "-")},
 		{Text: "tool " + clean(rec.Tool, "-")},

@@ -140,6 +140,9 @@ func (w *Wrapper) apply(v ipc.Frame, line []byte, dst, back io.Writer) error {
 	case ipc.ActionBlock:
 		m := jsonrpc.Parse(line)
 		w.Errf("blocked %s %s: %s", m.Kind, m.Method, v.Reason)
+		if v.Drop {
+			return nil // the requester cancelled it: no reply at all
+		}
 		if m.Kind != jsonrpc.KindRequest && !m.InvalidRequest() {
 			return nil // notifications, responses and other invalid lines are simply dropped
 		}

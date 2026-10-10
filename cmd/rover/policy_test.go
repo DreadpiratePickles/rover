@@ -197,8 +197,8 @@ func TestPolicyApplyNeedsALoadablePolicyAndAuthentication(t *testing.T) {
 	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err == nil || !strings.Contains(out, "not applied") {
 		t.Fatalf("apply with no policy must exit 1: %v\n%s", err, out)
 	}
-	if out, err := run(dir, "policy", "init"); err != nil || !strings.Contains(out, "method init") {
-		t.Fatalf("init must record the first policy (TOFU): %v\n%s", err, out)
+	if out, err := run(dir, "policy", "init"); err != nil || !strings.Contains(out, "nothing was recorded") {
+		t.Fatalf("init without the dialog records nothing: %v\n%s", err, out)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config", "policy.cedar"), []byte(e2ePolicy), 0o600); err != nil {
 		t.Fatal(err)

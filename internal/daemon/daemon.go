@@ -62,6 +62,9 @@ type Options struct {
 	// StateDBCreated (state.db did not exist) and AuditHadHistory (the audit
 	// anchor existed) together mean every pin was lost: see reportStateLoss.
 	StateDBCreated, AuditHadHistory bool
+	// StateResetReason, when set, says why roverd distrusts its approved
+	// policy (M9): reported like a lost state.db (audit, log, notification).
+	StateResetReason string
 	// DisableDetection turns detection tier 1 off. Tests only: it exists so
 	// a test can measure what detection adds to a decision (plan §6 M5).
 	DisableDetection bool
@@ -83,6 +86,12 @@ type Options struct {
 	// pin reset` and `rover policy apply` change anything (M9). Nil
 	// refuses all three.
 	Authenticator approve.Authenticator
+	// MaxHoldsPerSession and MaxHolds cap pending approvals (M9); zero
+	// means DefaultMaxHoldsPerSession and DefaultMaxHolds.
+	MaxHoldsPerSession, MaxHolds int
+	// PendingApprovals lists the approvals waiting for the human
+	// (approvals_list); nil lists none.
+	PendingApprovals func() []approve.PendingApproval
 	// PolicyLoader loads the policy files as they are on disk now and
 	// returns their bundle hash (policy_apply, M9). Nil refuses the op.
 	PolicyLoader func() (Policy, config.Config, string, error)
@@ -284,6 +293,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 	}
 
 	cn := &conn{c: uc, w: bufio.NewWriterSize(uc, 64<<10)}
+	defer s.dropHolds(cn) // a call held for this wrapper can never be released to it
 	r := bufio.NewReaderSize(uc, 64<<10)
 	hello, err := s.readFrame(r)
 	if errors.Is(err, io.EOF) {

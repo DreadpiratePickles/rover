@@ -3,6 +3,8 @@ package approve
 import (
 	"context"
 	"errors"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -56,6 +58,45 @@ type Flow struct {
 	Logf     func(format string, a ...any)
 
 	override atomic.Int64 // SetTimeout, nanoseconds
+
+	mu      sync.Mutex
+	pending map[string]PendingApproval // by id, while the human is asked
+}
+
+// PendingApproval is one entry of `rover approvals list`.
+type PendingApproval struct {
+	ID       string    `json:"id"`
+	Client   string    `json:"client"`
+	Server   string    `json:"server"`
+	Tool     string    `json:"tool"`
+	Created  time.Time `json:"created"`
+	Deadline time.Time `json:"deadline"`
+	URL      string    `json:"url,omitempty"`
+}
+
+// Pending lists the approvals waiting for the human, oldest first.
+func (f *Flow) Pending() []PendingApproval {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]PendingApproval, 0, len(f.pending))
+	for _, p := range f.pending {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })
+	return out
+}
+
+func (f *Flow) track(p PendingApproval, on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pending == nil {
+		f.pending = map[string]PendingApproval{}
+	}
+	if on {
+		f.pending[p.ID] = p
+	} else {
+		delete(f.pending, p.ID)
+	}
 }
 
 // SetTimeout replaces Timeout for approvals started from now on (roverd
@@ -79,13 +120,17 @@ func (f *Flow) Prompt(ctx context.Context, r Request) (Decision, error) {
 		// No record, no approval: a call nobody can audit is not approved.
 		return Decision{Reason: ReasonDenied, Method: "record_failed"}, err
 	}
+	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	answers := make(chan answer, 2)
 	if r.Elicitor != nil {
 		go f.elicit(ctx, r, answers)
 	}
-	f.notify(r)
+	pend := PendingApproval{ID: r.ID, Client: Clean(orUnknown(r.Client)), Server: Clean(r.Server), Tool: Clean(r.Tool), Created: r.Created, Deadline: r.Deadline}
+	pend.URL = f.notify(r)
+	f.track(pend, true)
+	defer f.track(pend, false)
 	go f.authenticate(ctx, r, answers)
 
 	var a answer
@@ -94,7 +139,7 @@ func (f *Flow) Prompt(ctx context.Context, r Request) (Decision, error) {
 	case <-clock.After(timeout):
 		a = answer{method: "timeout", reason: ReasonTimedOut}
 	case <-ctx.Done():
-		a = answer{method: "cancelled", reason: ReasonDenied}
+		a = answer{method: cancelMethod(parent), reason: ReasonDenied}
 	}
 	cancel() // closes the dialog and forgets the elicitation
 	d := Decision{Allow: a.allow, Method: a.method, Reason: a.reason}
@@ -104,6 +149,8 @@ func (f *Flow) Prompt(ctx context.Context, r Request) (Decision, error) {
 		st = StateAllowed
 	case d.Reason == ReasonTimedOut:
 		st = StateTimedOut
+	case d.Method == StateWrapperGone || d.Method == StateCancelled:
+		st = d.Method
 	}
 	rec := Record{Request: r, State: st, Method: d.Method, Reason: d.Reason, DecidedAt: clock.Now().UTC()}
 	if err := f.Store.Put(rec); err != nil {
@@ -112,6 +159,18 @@ func (f *Flow) Prompt(ctx context.Context, r Request) (Decision, error) {
 	}
 	logf("approval %s: %s %s.%s for %s (%s)", r.ID, st, Clean(r.Server), Clean(r.Tool), Clean(orUnknown(r.Client)), d.Method)
 	return d, nil
+}
+
+// cancelMethod names why ctx was cancelled (roverd passes ErrWrapperGone
+// or ErrCancelledByClient as the cause).
+func cancelMethod(ctx context.Context) string {
+	switch cause := context.Cause(ctx); {
+	case errors.Is(cause, ErrWrapperGone):
+		return StateWrapperGone
+	case errors.Is(cause, ErrCancelledByClient):
+		return StateCancelled
+	}
+	return "cancelled"
 }
 
 // elicit asks the agent app. Only a decline answers; an accept or an
@@ -154,21 +213,22 @@ func (f *Flow) authenticate(ctx context.Context, r Request, out chan<- answer) {
 // notify sends the desktop notification. One line, lower case, no
 // exclamation marks (plan §4.7); the URL first so a truncated
 // notification still carries it.
-func (f *Flow) notify(r Request) {
-	if f.Notifier == nil {
-		return
-	}
+func (f *Flow) notify(r Request) (url string) {
 	where := "no details page"
 	if f.Pages != nil {
-		url, err := f.Pages.Register(r)
+		u, err := f.Pages.Register(r)
 		if err != nil {
 			f.logf()("approval %s: details page: %v", r.ID, err)
 		} else {
-			where = url
+			where, url = u, u
 		}
 	}
-	f.Notifier.Notify("rover: approval needed",
-		where+" "+Clean(orUnknown(r.Client))+" wants to run "+Clean(r.Server)+"."+Clean(r.Tool))
+	if f.Notifier == nil {
+		return url
+	}
+	f.Notifier.Notify("rover: approval needed ["+ShortID(r.ID)+"]",
+		where+" "+Clean(orUnknown(r.Client))+" wants to run "+Clean(r.Server)+"."+Clean(r.Tool)+". run: rover approvals list")
+	return url
 }
 
 func (f *Flow) clock() Clock {

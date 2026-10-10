@@ -217,14 +217,15 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 		t.Fatalf("verify: %v\n%s", err, out)
 	}
 	data, _ := os.ReadFile(logPath) //nolint:gosec // G304: test's own file
+	callLine := 1 + bytes.Count(data[:bytes.Index(data, []byte(`"method":"tools/call"`))], []byte("\n"))
 	data = bytes.Replace(data, []byte(`"method":"tools/call"`), []byte(`"method":"tools/cull"`), 1)
 	if err := os.WriteFile(logPath, data, 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
 	vout, verr := run(dir, "log", "--verify")
-	// Line 1 is the policy approval `rover policy apply` recorded (M9).
-	if verr == nil || !strings.Contains(vout, "line 5") {
-		t.Fatalf("tampered log must fail --verify at line 5: err=%v\n%s", verr, vout)
+	// Policy entries (M9: init, apply) come first; the edit is on callLine.
+	if verr == nil || !strings.Contains(vout, fmt.Sprintf("line %d", callLine)) {
+		t.Fatalf("tampered log must fail --verify at line %d: err=%v\n%s", callLine, verr, vout)
 	}
 }
 
@@ -327,6 +328,24 @@ func TestWrapRejectsBadServerName(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dir, "run", "roverd.pid")); err == nil {
 			t.Fatal("roverd was auto-started despite a bad --name")
+		}
+	}
+}
+
+// Review M9 MEDIUM-1: an auto-started roverd gets a minimal, explicit
+// environment, not the wrapper's (which the agent controls).
+func TestDaemonEnvIsMinimal(t *testing.T) {
+	in := []string{"PATH=/tmp/evil:/usr/bin", "HOME=/h", "ROVER_DIR=/r", "LANG=C.UTF-8", "LD_PRELOAD=/tmp/x.so", "DYLD_INSERT_LIBRARIES=/tmp/y",
+		"XDG_RUNTIME_DIR=/run/user/1", "TMPDIR=/t", "AWS_SECRET_ACCESS_KEY=s", "DBUS_SESSION_BUS_ADDRESS=unix:path=/b", "GIT_SSH_COMMAND=evil"}
+	got := strings.Join(daemonEnv(in), "\n")
+	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "ROVER_DIR=/r", "LANG=C.UTF-8", "XDG_RUNTIME_DIR=/run/user/1", "TMPDIR=/t", "DBUS_SESSION_BUS_ADDRESS=unix:path=/b"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"/tmp/evil", "LD_PRELOAD", "DYLD_", "AWS_SECRET", "GIT_SSH"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("%s leaked into roverd's environment:\n%s", bad, got)
 		}
 	}
 }

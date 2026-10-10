@@ -154,20 +154,45 @@ func (r *rootList) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
+// Reader reads one file for Load (config.yaml and the normalizers file).
+type Reader func(path string) ([]byte, error)
+
+// ReadFile is the default Reader: the file, capped at 1 MiB.
+func ReadFile(path string) ([]byte, error) { return readLimited(path) }
+
 // Load reads dir/config.yaml. A missing file yields Default().
-func Load(dir string) (Config, error) {
-	b, err := readLimited(filepath.Join(dir, FileName))
+func Load(dir string) (Config, error) { return LoadWith(dir, ReadFile) }
+
+// LoadWith is Load reading every file through read. roverd passes a reader
+// that serves a normalizers file outside the config directory from the
+// snapshot it hashed, so the file is read exactly once (review M9).
+func LoadWith(dir string, read Reader) (Config, error) {
+	b, err := read(filepath.Join(dir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return Default(), nil
 	}
 	if err != nil {
 		return Config{}, err
 	}
-	return Parse(b, dir)
+	return parse(b, dir, read)
 }
 
 // Parse decodes config.yaml. dir resolves a relative normalizers path.
-func Parse(b []byte, dir string) (Config, error) {
+func Parse(b []byte, dir string) (Config, error) { return parse(b, dir, ReadFile) }
+
+// NormalizersPath is the absolute path of the normalizers file config.yaml
+// (b) names, or "" when it names none. It reads nothing.
+func NormalizersPath(b []byte, dir string) (string, error) {
+	var f struct {
+		Normalizers string `yaml:"normalizers"`
+	}
+	if err := yaml.Unmarshal(b, &f); err != nil || f.Normalizers == "" {
+		return "", err
+	}
+	return expandPath(f.Normalizers, dir)
+}
+
+func parse(b []byte, dir string, read Reader) (Config, error) {
 	var f file
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
@@ -200,7 +225,7 @@ func Parse(b []byte, dir string) (Config, error) {
 	}
 	cfg.Approvals = Approvals{TimeoutS: f.Approvals.TimeoutS, ShowArgs: f.Approvals.ShowArgs}
 	if f.Normalizers != "" {
-		n, p, err := loadNormalizers(f.Normalizers, dir)
+		n, p, err := loadNormalizers(f.Normalizers, dir, read)
 		if err != nil {
 			return Config{}, err
 		}
@@ -237,12 +262,12 @@ func checkLabels(byServer map[string]map[string][]string) error {
 	return nil
 }
 
-func loadNormalizers(path, dir string) (normalize.Config, string, error) {
+func loadNormalizers(path, dir string, read Reader) (normalize.Config, string, error) {
 	p, err := expandPath(path, dir)
 	if err != nil {
 		return normalize.Config{}, "", fmt.Errorf("config: normalizers: %w", err)
 	}
-	b, err := readLimited(p)
+	b, err := read(p)
 	if err != nil {
 		return normalize.Config{}, "", fmt.Errorf("config: normalizers: %w", err)
 	}

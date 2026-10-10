@@ -69,13 +69,16 @@ const (
 	// takes its wrapped servers as the new baseline, clears its tamper
 	// alerts and watches it; OpTamperForget (after `rover uninstall`) clears
 	// its alerts and stops watching it. Both are audited.
-	// TODO(M9): like pin approval, these should need OS authentication.
+	// Both show the OS authentication dialog in roverd first (M9).
 	OpTamperResolve = "tamper_resolve"
 	OpTamperForget  = "tamper_forget"
 	// OpPolicyApply (M9) asks roverd to approve and load the policy files
 	// whose bundle hash is Hash. roverd shows the OS authentication dialog
 	// itself; the frame alone approves nothing.
 	OpPolicyApply = "policy_apply"
+	// OpApprovalsList (M9) lists the pending approvals with their details
+	// page links. Read-only.
+	OpApprovalsList = "approvals_list"
 )
 
 // MaxPath bounds the path in a tamper_resolve or tamper_forget frame.
@@ -143,6 +146,9 @@ type Frame struct {
 	// sends back to the requester instead of its default error (for example
 	// a tools/call result with isError true that explains the rule).
 	ResponseRaw []byte `json:"response_raw,omitempty"`
+	// Drop, on a block release, means the requester gets no reply at all:
+	// the client cancelled the request (plan §4.3).
+	Drop bool `json:"drop,omitempty"`
 
 	// error, and an admin_result's note
 	Message string `json:"message,omitempty"`
@@ -228,6 +234,9 @@ func (f Frame) Validate() error {
 		if len(f.ResponseRaw) > 0 && f.Action != ActionBlock {
 			return fmt.Errorf("%w: response_raw is only valid on block", ErrBadFrame)
 		}
+		if f.Drop && (f.Type != TypeRelease || f.Action != ActionBlock || len(f.ResponseRaw) > 0) {
+			return fmt.Errorf("%w: drop is only valid on a block release without a response", ErrBadFrame)
+		}
 	case TypeInject:
 		if len(f.Raw) == 0 || len(f.Raw) > MaxInject {
 			return fmt.Errorf("%w: inject needs raw of 1..%d bytes", ErrBadFrame, MaxInject)
@@ -268,7 +277,7 @@ func validateAdmin(f Frame) error {
 			return fmt.Errorf("%w: policy_apply needs only a 64-hex-digit hash", ErrBadFrame)
 		}
 		return nil
-	case OpObservationsDump, OpDoctorState:
+	case OpObservationsDump, OpDoctorState, OpApprovalsList:
 		needServer = false
 		if f.ServerName != "" {
 			return fmt.Errorf("%w: %s takes no server", ErrBadFrame, f.Op)

@@ -104,7 +104,7 @@ func TestAuthenticationSuccessAllowsAndIsRecorded(t *testing.T) {
 	if !ok || rec.State != StateAllowed || rec.Method != "fake" || rec.DecidedAt.IsZero() || rec.Args != nil {
 		t.Fatalf("record %+v", rec)
 	}
-	if auth.reason != "Rover: allow claude-code to run github.push_files (push to main)?" {
+	if auth.reason != "Rover ["+r.ID[:8]+"]: allow claude-code to run github.push_files (push to main)?" {
 		t.Fatalf("dialog text %q", auth.reason)
 	}
 	if len(n.msgs) != 1 || !strings.Contains(n.msgs[0], "http://127.0.0.1:1/approval/"+r.ID) || strings.Contains(n.msgs[0], "!") {
@@ -217,7 +217,7 @@ func TestUnrecordableApprovalIsDenied(t *testing.T) {
 func TestDialogTextIsCleaned(t *testing.T) {
 	r := Request{Server: "evil", Tool: "x\n\u202eexe.txt", Summary: strings.Repeat("a", 500)}
 	got := DialogText(r)
-	if strings.ContainsAny(got, "\n\u202e") || !strings.HasPrefix(got, "Rover: allow an unknown client to run evil.x ") || len(got) > 300 {
+	if strings.ContainsAny(got, "\n\u202e") || !strings.HasPrefix(got, "Rover []: allow an unknown client to run evil.x ") || len(got) > 300 {
 		t.Fatalf("%q", got)
 	}
 }

@@ -80,3 +80,26 @@ func TestServerToClientRoverIDIsNotSpecialInTheWrapper(t *testing.T) {
 		t.Fatalf("got %q", client.String())
 	}
 }
+
+// Review M9 LOW: a release that says drop writes nothing to anyone.
+func TestDropReleaseWritesNothing(t *testing.T) {
+	line := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"x"}}` + "\n"
+	var server, client bytes.Buffer
+	if err := New(&fakeDecider{}).apply(ipc.Frame{Action: ipc.ActionBlock, Drop: true, Reason: "cancelled by client"}, []byte(line), &server, &client); err != nil {
+		t.Fatal(err)
+	}
+	if server.Len() != 0 || client.Len() != 0 {
+		t.Fatalf("server %q client %q", server.String(), client.String())
+	}
+}
+
+func TestInjectAllowsCancellingRoversOwnRequestOnly(t *testing.T) {
+	var client bytes.Buffer
+	w := New(&fakeDecider{})
+	if err := w.Inject([]byte(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"rover-1","reason":"decided"}}`), &client); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Inject([]byte(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`), &client); !errors.Is(err, ErrBadInject) {
+		t.Fatalf("cancelling someone else's request: %v", err)
+	}
+}

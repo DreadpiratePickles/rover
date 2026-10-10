@@ -89,6 +89,18 @@ const (
 	StateAllowed  = "allowed"
 	StateDenied   = "denied"
 	StateTimedOut = "timed_out"
+	// StateWrapperGone: the wrapper's connection closed while the call was
+	// held; the call is never forwarded.
+	StateWrapperGone = "wrapper_gone"
+	// StateCancelled: the client cancelled the request (notifications/cancelled).
+	StateCancelled = "cancelled"
+)
+
+// Causes roverd cancels a running approval with (context.WithCancelCause);
+// the record says which.
+var (
+	ErrWrapperGone       = errors.New(StateWrapperGone)
+	ErrCancelledByClient = errors.New(StateCancelled)
 )
 
 // ErrNoAuthAgent is returned by an Authenticator that has nobody to ask.
@@ -114,11 +126,21 @@ const maxText = 120
 // DialogText is the reason string the OS dialog shows (plan M9 Flow 4).
 // Server and tool names come from the server, so they are cleaned.
 func DialogText(r Request) string {
-	s := fmt.Sprintf("Rover: allow %s to run %s.%s", Clean(orUnknown(r.Client)), Clean(r.Server), Clean(r.Tool))
+	s := fmt.Sprintf("Rover [%s]: allow %s to run %s.%s", ShortID(r.ID), Clean(orUnknown(r.Client)), Clean(r.Server), Clean(r.Tool))
 	if r.Summary != "" {
 		s += " (" + Clean(r.Summary) + ")"
 	}
 	return s + "?"
+}
+
+// ShortID is the first 8 characters of an approval id, shown in the
+// dialog, the notification, the page and `rover approvals list` so that
+// several pending approvals can be told apart.
+func ShortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func orUnknown(s string) string {
@@ -138,7 +160,11 @@ func Clean(s string) string {
 			return ' '
 		}
 		// Bidi controls can make text read backwards in a dialog.
-		if (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) || r == 0x200e || r == 0x200f {
+		if (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) || r == 0x200e || r == 0x200f || r == 0x061c {
+			return -1
+		}
+		// Zero-width characters hide text or join look-alikes.
+		if (r >= 0x200b && r <= 0x200d) || r == 0xfeff {
 			return -1
 		}
 		return r

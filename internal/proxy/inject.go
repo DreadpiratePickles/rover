@@ -30,15 +30,23 @@ const injectMethod = "elicitation/create"
 
 // Inject writes raw, a request roverd sends to the client, to toClient.
 // It must be exactly one elicitation/create request with a string id that
-// starts with ipc.InjectIDPrefix: the wrapper does not take roverd's word
-// for it, so a bug in roverd cannot make it write anything else.
+// starts with ipc.InjectIDPrefix, or a notifications/cancelled for such an
+// id: the wrapper does not take roverd's word for it, so a bug in roverd
+// cannot make it write anything else.
 func (w *Wrapper) Inject(raw []byte, toClient io.Writer) error {
 	if bytes.ContainsAny(raw, "\r\n") {
 		return fmt.Errorf("%w: the message contains a newline", ErrBadInject)
 	}
 	m := jsonrpc.Parse(raw)
-	if m.Kind != jsonrpc.KindRequest || m.Method != injectMethod || !ipc.IsInjectID(m.ID) {
-		return fmt.Errorf("%w: want an %s request with a %q id", ErrBadInject, injectMethod, ipc.InjectIDPrefix)
+	ok := m.Kind == jsonrpc.KindRequest && m.Method == injectMethod && ipc.IsInjectID(m.ID)
+	if m.Kind == jsonrpc.KindNotification && m.Method == "notifications/cancelled" {
+		// Rover withdrawing its own elicitation once the call is decided.
+		fields, err := jsonrpc.Object(m.Params)
+		id, has := fields.Get("requestId")
+		ok = err == nil && has && ipc.IsInjectID(id)
+	}
+	if !ok {
+		return fmt.Errorf("%w: want an %s request with a %q id, or its cancellation", ErrBadInject, injectMethod, ipc.InjectIDPrefix)
 	}
 	_, err := toClient.Write(append(append([]byte{}, raw...), '\n'))
 	return err

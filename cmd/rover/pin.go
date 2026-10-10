@@ -106,6 +106,14 @@ func adminCall(req ipc.Frame) (json.RawMessage, error) {
 	if !errors.Is(err, ipc.ErrNoDaemon) {
 		return nil, err
 	}
+	// Never create state.db here when the audit log has history: that
+	// would hide its loss from roverd, which reports it when it starts
+	// (review M9: rm state.db; rover policy init --force).
+	logPath := filepath.Join(dirs.State, "audit.jsonl")
+	_, serr := os.Stat(filepath.Join(dirs.State, "state.db"))
+	if _, aerr := os.Stat(anchorPath(logPath)); errors.Is(serr, os.ErrNotExist) && aerr == nil {
+		return nil, errors.New("state.db is missing although the audit log has history: start roverd once (it records and reports the loss), then retry")
+	}
 	db, err := state.Open(filepath.Join(dirs.State, "state.db"))
 	if errors.Is(err, state.ErrLocked) {
 		return nil, errors.New("roverd holds the state database but did not answer on its socket; is it stuck?")
@@ -116,7 +124,6 @@ func adminCall(req ipc.Frame) (json.RawMessage, error) {
 	defer func() { _ = db.Close() }()
 	o := daemon.Options{State: db, Authenticator: newAuthenticator(errf), PolicyLoader: policyLoader(dirs)}
 	if req.Op != ipc.OpPinList {
-		logPath := filepath.Join(dirs.State, "audit.jsonl")
 		log, err := audit.Open(logPath)
 		if err != nil {
 			return nil, fmt.Errorf("audit log: %w", err)

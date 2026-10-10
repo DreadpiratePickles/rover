@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -215,6 +217,7 @@ func spawnDaemon(dirs paths.Dirs) error {
 	defer func() { _ = logf.Close() }()
 	cmd := exec.Command(exe, append(daemonExtraArgs(), "daemon")...) //nolint:gosec // G204: re-executing our own binary
 	cmd.Stdin = nil
+	cmd.Env = daemonEnv(os.Environ())
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -222,4 +225,28 @@ func spawnDaemon(dirs paths.Dirs) error {
 		return err
 	}
 	return cmd.Process.Release()
+}
+
+// daemonPassEnv are the variables an auto-started roverd keeps from the
+// wrapper's environment: where Rover's files are (HOME, ROVER_DIR, the XDG
+// directories, TMPDIR for the short socket path), the locale, and what the
+// desktop notification and the polkit agent need. Everything else (PATH,
+// LD_PRELOAD, DYLD_*, tokens) comes from the agent and stays out.
+var daemonPassEnv = []string{"HOME", "ROVER_DIR", "LANG", "LC_ALL", "TMPDIR", "USER", "LOGNAME",
+	"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
+
+// daemonPath is roverd's PATH: system directories only (osascript,
+// notify-send); pkcheck is run by absolute path anyway.
+const daemonPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+
+// daemonEnv is the explicit, minimal environment of an auto-started roverd.
+func daemonEnv(environ []string) []string {
+	out := []string{daemonPath}
+	for _, kv := range environ {
+		k, _, ok := strings.Cut(kv, "=")
+		if ok && slices.Contains(daemonPassEnv, k) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }

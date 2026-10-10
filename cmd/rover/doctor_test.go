@@ -37,8 +37,9 @@ func TestDoctorCheckFunctions(t *testing.T) {
 		{checkSocket(junkFile(t, dir, "notsock", 0o600), 0), statusFail},
 		{checkDirs(paths.Dirs{Config: mkdir(t, dir, "c", 0o700), State: mkdir(t, dir, "s", 0o700), Run: mkdir(t, dir, "r", 0o700)}), statusPass},
 		{checkDirs(paths.Dirs{Config: mkdir(t, dir, "open", 0o755), State: dir, Run: dir}), statusFail},
-		{checkPolicy("", "", errors.New("no policy")), statusFail},
-		{checkPolicy("enforce", "", nil), statusPass},
+		{checkPolicy("", "", errors.New("no policy"), nil), statusFail},
+		{checkPolicy("enforce", "", nil, nil), statusPass},
+		{checkPolicy("observe", "", nil, &daemon.DoctorState{Mode: "enforce"}), statusFail}, // roverd runs with no policy
 		{checkPolicyApproval(hashA, nil, &approve.PolicyApproval{Hash: hashA, Method: "init"}, nil), statusPass},
 		{checkPolicyApproval(hashB, nil, &approve.PolicyApproval{Hash: hashA, Method: "init"}, nil), statusFail}, // tampered
 		{checkPolicyApproval(hashA, nil, nil, nil), statusFail},                                                  // never approved

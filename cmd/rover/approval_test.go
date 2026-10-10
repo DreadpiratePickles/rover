@@ -57,8 +57,8 @@ func TestApprovalEndToEnd(t *testing.T) {
 			if answer == "deny" && (!strings.Contains(got, "isError:true") || !strings.Contains(got, "approval denied") || !strings.Contains(got, "ask-echo")) {
 				t.Fatalf("deny must block with approval denied: %v", r)
 			}
-			waitFor(t, logs, "[test-auth] dialog: Rover: allow an unknown client to run echo.echo (args: text)?")
-			link := regexp.MustCompile(`\[test-notify\] rover: approval needed: (http://127\.0\.0\.1:\d+/approval/[0-9a-f-]+\?t=[0-9a-f]{32}) `).FindStringSubmatch(logs.String())
+			waitFor(t, logs, "]: allow an unknown client to run echo.echo (args: text)?")
+			link := regexp.MustCompile(`\[test-notify\] rover: approval needed \[[0-9a-f]{8}\]: (http://127\.0\.0\.1:\d+/approval/[0-9a-f-]+\?t=[0-9a-f]{32}) `).FindStringSubmatch(logs.String())
 			if link == nil {
 				t.Fatalf("no notification with a details link:\n%s", logs.String())
 			}
@@ -252,5 +252,46 @@ func TestPingsFlowWhileACallIsHeld(t *testing.T) {
 	// Assert
 	if strings.Join(order, " ") != `"p1" "p2" 2` {
 		t.Fatalf("replies came back in order %v; the pings must not wait for the held call", order)
+	}
+}
+
+// Review M9 MEDIUM-5: `rover approvals list` shows a pending hold.
+func TestApprovalsListCLI(t *testing.T) {
+	dir := roverDir(t)
+	usePolicy(t, dir, approvalPolicy, "enforce")
+	startDaemonFlags(t, dir, "--test-auth=allow", "--test-auth-delay=3s")
+	m := wrapEcho(t, dir)
+	defer m.close()
+	m.call(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if _, err := fmt.Fprintln(m.in, echoText); err != nil {
+		t.Fatal(err)
+	}
+	var out string
+	for i := 0; i < 100; i++ {
+		out, _ = run(dir, "approvals", "list")
+		if strings.Contains(out, "echo.echo") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !regexp.MustCompile(`(?m)^ID\s+CLIENT\s+CALL\s+AGE\s+PAGE\n[0-9a-f]{8}\s+an unknown client\s+echo\.echo\s+\S+\s+http://127\.0\.0\.1:\d+/approval/`).MatchString(out) {
+		t.Fatalf("approvals list:\n%s", out)
+	}
+}
+
+// Review M9 MEDIUM-6: install tells roverd to watch the new config; roverd
+// asks the dialog first and install says what came of it.
+func TestInstallReportsTheTamperDialog(t *testing.T) {
+	for answer, want := range map[string]string{"deny": "tamper watch was not updated", "allow": "ok    roverd is watching this file"} {
+		t.Run(answer, func(t *testing.T) {
+			dir := roverDir(t)
+			cfg := filepath.Join(dir, "home", ".cursor", "mcp.json")
+			writeFile(t, cfg, `{"mcpServers":{"fs":{"command":"npx","args":["fs"]}}}`)
+			daemonProc(t, dir, answer)
+			out, err := run(dir, "install", "--client", "cursor", "--yes")
+			if err != nil || !strings.Contains(out, want) {
+				t.Fatalf("install (err %v):\n%s", err, out)
+			}
+		})
 	}
 }

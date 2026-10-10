@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/audit"
@@ -52,15 +52,18 @@ func (s *Server) startApproval(h held) {
 	if h.sess.Elicitation() {
 		r.Elicitor = &elicitor{s: s, sess: h.sess, cn: h.cn}
 	}
-	ctx, cancel := context.WithCancel(s.ctx)
-	key, entry := holdKey(h.sess, h.server, h.m.ID), &holdEntry{cancel: cancel}
-	s.holds.mu.Lock()
-	s.holds.m[key] = entry
-	s.holds.mu.Unlock()
+	ctx, cancel := context.WithCancelCause(s.ctx)
+	key, entry := holdKey(h.sess, h.server, h.m.ID), &holdEntry{cancel: cancel, cn: h.cn, sess: h.sess.ID}
+	if !s.holds.add(key, entry, s.capPerSession(), s.capTotal()) {
+		cancel(nil)
+		s.o.Logf("approval %s: denied: %s", r.ID, ReasonTooManyApprovals)
+		s.releaseHeld(h, r, approve.Decision{Method: "limit", Reason: ReasonTooManyApprovals})
+		return
+	}
 	s.approvWG.Add(1)
 	go func() {
 		defer s.approvWG.Done()
-		defer cancel()
+		defer cancel(nil)
 		d, err := s.o.Prompter.Prompt(ctx, r)
 		s.holds.mu.Lock()
 		if s.holds.m[key] == entry {
@@ -71,8 +74,8 @@ func (s *Server) startApproval(h held) {
 			s.o.Logf("approval %s: %v", r.ID, err)
 			d.Allow = false
 		}
-		if entry.cancelled.Load() {
-			d = approve.Decision{Method: "client", Reason: ReasonCancelledByClient}
+		if errors.Is(context.Cause(ctx), approve.ErrCancelledByClient) {
+			d = approve.Decision{Method: approve.StateCancelled, Reason: ReasonCancelledByClient}
 		}
 		s.releaseHeld(h, r, d)
 	}()
@@ -96,7 +99,11 @@ func (s *Server) releaseHeld(h held, r approve.Request, d approve.Decision) {
 	}
 	f := ipc.Frame{Type: ipc.TypeRelease, Seq: h.seq, Action: action, Reason: reason, RuleIDs: h.j.ruleIDs}
 	if action == ipc.ActionBlock {
-		f.ResponseRaw = policy.BlockResponse(h.m, reason, h.j.ruleIDs)
+		if d.Method == approve.StateCancelled {
+			f.Drop = true // the client cancelled it: no reply (plan §4.3)
+		} else {
+			f.ResponseRaw = policy.BlockResponse(h.m, reason, h.j.ruleIDs)
+		}
 		if h.m.Kind == jsonrpc.KindRequest {
 			h.sess.forget(h.server, h.dir, h.m.ID)
 		}
@@ -186,6 +193,11 @@ func (e *elicitor) Elicit(ctx context.Context, r approve.Request) (bool, error) 
 	case m := <-ch:
 		return approve.ParseElicitReply(m)
 	case <-ctx.Done():
+		// Decided elsewhere: withdraw the question in the agent app.
+		if note, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled",
+			"params": map[string]string{"requestId": id, "reason": "decided"}}); err == nil {
+			_ = e.cn.send(ipc.Frame{Type: ipc.TypeInject, Raw: note})
+		}
 		return false, ctx.Err()
 	}
 }
@@ -231,8 +243,68 @@ type holdTable struct {
 }
 
 type holdEntry struct {
-	cancel    context.CancelFunc
-	cancelled atomic.Bool
+	cancel context.CancelCauseFunc
+	cn     *conn  // the wrapper that will receive the release
+	sess   string // session id, for the per-session cap
+}
+
+// Pending-approval caps (review M9): a burst of held calls must not pile
+// dialogs and notifications on the human until they click without reading.
+const (
+	DefaultMaxHoldsPerSession = 5
+	DefaultMaxHolds           = 20
+	// ReasonTooManyApprovals denies a hold beyond the caps at once.
+	ReasonTooManyApprovals = "too many pending approvals"
+)
+
+func (s *Server) capPerSession() int {
+	if s.o.MaxHoldsPerSession > 0 {
+		return s.o.MaxHoldsPerSession
+	}
+	return DefaultMaxHoldsPerSession
+}
+
+func (s *Server) capTotal() int {
+	if s.o.MaxHolds > 0 {
+		return s.o.MaxHolds
+	}
+	return DefaultMaxHolds
+}
+
+// add registers e unless the caps are reached.
+func (t *holdTable) add(key string, e *holdEntry, perSession, total int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.m) >= total {
+		return false
+	}
+	n := 0
+	for _, o := range t.m {
+		if o.sess == e.sess {
+			n++
+		}
+	}
+	if n >= perSession {
+		return false
+	}
+	t.m[key] = e
+	return true
+}
+
+// dropHolds cancels every approval whose wrapper connection is gone: its
+// call can never be released, and the dialog for it must close (review M9).
+func (s *Server) dropHolds(cn *conn) {
+	s.holds.mu.Lock()
+	var gone []*holdEntry
+	for _, e := range s.holds.m {
+		if e.cn == cn {
+			gone = append(gone, e)
+		}
+	}
+	s.holds.mu.Unlock()
+	for _, e := range gone {
+		e.cancel(approve.ErrWrapperGone)
+	}
 }
 
 // holdKey names a held request; the id is compacted so 7 and " 7" match.
@@ -264,7 +336,6 @@ func (s *Server) cancelHeld(sess *Session, server, dir string, m jsonrpc.Message
 	e := s.holds.m[holdKey(sess, server, id)]
 	s.holds.mu.Unlock()
 	if e != nil {
-		e.cancelled.Store(true)
-		e.cancel()
+		e.cancel(approve.ErrCancelledByClient)
 	}
 }

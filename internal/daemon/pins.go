@@ -155,6 +155,13 @@ func (s *Server) Admin(f ipc.Frame) ipc.Frame {
 			return fail(errors.New("roverd audit log failed earlier; restart roverd"))
 		}
 	}
+	if f.Op == ipc.OpApprovalsList {
+		list := []approve.PendingApproval{}
+		if s.o.PendingApprovals != nil {
+			list = append(list, s.o.PendingApprovals()...)
+		}
+		return adminResult(list, "")
+	}
 	if f.Op == ipc.OpPolicyApply {
 		return s.applyPolicy(f)
 	}

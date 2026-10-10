@@ -70,6 +70,12 @@ func TestPolicyApplyFrameAloneApprovesNothing(t *testing.T) {
 				if !found || cur.Hash != hash || cur.Method != "osauth:test" || v.Action != ipc.ActionForward {
 					t.Fatalf("allowed: approved %+v (%v), read_file %+v", cur, found, v)
 				}
+				ta, _ := tc.auth.(*testAuth)
+				ta.mu.Lock()
+				defer ta.mu.Unlock()
+				if len(ta.reasons) != 1 || ta.reasons[0] != "Rover: approve policy "+hash[:12]+" (1 permits, 0 forbids, mode observe)?" {
+					t.Fatalf("dialog %q", ta.reasons)
+				}
 				return
 			}
 			if found || v.Action != ipc.ActionBlock {

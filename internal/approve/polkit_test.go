@@ -95,3 +95,31 @@ func TestDenyAuthenticatorAlwaysDenies(t *testing.T) {
 		t.Fatalf("ok %v err %v", ok, err)
 	}
 }
+
+// Review M9 MEDIUM-1: roverd inherits PATH from whoever started it (a
+// wrapper the agent spawned); a pkcheck planted early on PATH that exits 0
+// must never be run.
+func TestPkcheckIsNeverFoundThroughPATH(t *testing.T) {
+	// Arrange
+	evil, _ := fakePkcheck(t, "0")
+	t.Setenv("PATH", filepath.Dir(evil)+":"+os.Getenv("PATH"))
+	old := pkcheckPaths
+	pkcheckPaths = []string{filepath.Join(t.TempDir(), "usr", "bin", "pkcheck")}
+	defer func() { pkcheckPaths = old }()
+
+	// Act
+	ok, _, err := Polkit{PID: 1, UID: 1, StartTime: func(int) (uint64, error) { return 1, nil }}.Authenticate(context.Background(), "x")
+
+	// Assert
+	if ok || err == nil || !strings.Contains(err.Error(), "pkcheck not found") {
+		t.Fatalf("ok %v err %v: the pkcheck on PATH was used", ok, err)
+	}
+}
+
+func TestPkcheckDefaultsAreAbsolute(t *testing.T) {
+	for _, p := range pkcheckPaths {
+		if !filepath.IsAbs(p) {
+			t.Fatalf("%q is not absolute", p)
+		}
+	}
+}

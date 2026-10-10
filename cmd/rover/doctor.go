@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/DreadpiratePickles/rover/internal/clients"
+	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
 )
@@ -68,7 +69,7 @@ func doctorChecks() ([]check, error) {
 	_, cfg, note, _, perr := loadAll(dirs)
 	disk, diskErr := loadedHash(dirs)
 	approved, apprErr := approvedPolicy(st, stErr, filepath.Join(dirs.State, "state.db"))
-	out = append(out, checkPolicy(string(cfg.Mode), note, perr), checkPolicyApproval(disk, diskErr, approved, apprErr))
+	out = append(out, checkPolicy(string(cfg.Mode), note, perr, daemonState(st, stErr)), checkPolicyApproval(disk, diskErr, approved, apprErr))
 	if roverErr != nil {
 		out = append(out, fail("client", "cannot tell which rover binary this is: %v", roverErr))
 	} else {
@@ -108,4 +109,12 @@ func writeDoctorJSON(w io.Writer, checks []check) error {
 		OK     bool    `json:"ok"`
 		Checks []check `json:"checks"`
 	}{doctorExit(checks) == 0, checks})
+}
+
+// daemonState is st when roverd answered, else nil.
+func daemonState(st *daemon.DoctorState, err error) *daemon.DoctorState {
+	if err != nil {
+		return nil
+	}
+	return st
 }

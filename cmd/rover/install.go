@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/DreadpiratePickles/rover/internal/clients"
+	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
 )
@@ -244,6 +245,9 @@ func tellRoverd(out io.Writer, f clients.ConfigFile, op string) {
 		if op == ipc.OpTamperResolve {
 			_, _ = fmt.Fprintln(out, "note  roverd is not running; it watches this file from its next start")
 		}
+		return
+	case err != nil && strings.Contains(err.Error(), daemon.ErrNotAuthenticated.Error()):
+		_, _ = fmt.Fprintln(out, "WARN  roverd's tamper watch was not updated: the system authentication dialog did not confirm it; run the command again")
 		return
 	case err != nil:
 		_, _ = fmt.Fprintf(out, "WARN  roverd's tamper watch was NOT updated: %v; restart roverd\n", err)

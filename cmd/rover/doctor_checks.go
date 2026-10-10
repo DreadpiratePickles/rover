@@ -102,8 +102,13 @@ func checkDirs(d paths.Dirs) check {
 	return pass("dirs", "config, state and run are 0700 and yours")
 }
 
-// checkPolicy loads the policy exactly as roverd does (loadAll).
-func checkPolicy(mode, note string, err error) check {
+// checkPolicy loads the policy exactly as roverd does (loadAll). st is
+// roverd's view (nil when it is not running): files that load but are not
+// approved leave roverd with no policy, in enforce.
+func checkPolicy(mode, note string, err error, st *daemon.DoctorState) check {
+	if st != nil && !st.PolicyLoaded {
+		return fail("policy", "no policy (%s): roverd blocks every policed message until `rover policy apply` succeeds", orDash(st.Mode))
+	}
 	if err != nil {
 		return fail("policy", "%v; roverd blocks every policed message until it loads (`rover policy validate`)", err)
 	}

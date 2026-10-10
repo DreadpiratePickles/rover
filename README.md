@@ -85,7 +85,10 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 # the OS authentication dialog. Yes forwards the call; cancel, failure or no
 # answer in approvals.timeout_s (default 120) returns "approval denied" /
 # "approval timed out". Other calls keep flowing meanwhile. Observe mode never
-# holds: it forwards and logs would_deny.
+# holds: it forwards and logs would_deny. The dialog, the notification and the
+# page show the approval id's first 8 characters; at most 5 approvals per
+# session and 20 in all are pending, more are denied at once.
+./bin/rover approvals list           # pending approvals: id, client, server.tool, age, page link
 ./bin/rover install --polkit         # Linux: prints the sudo commands that install the polkit
                                      # action org.rover.approve (rover never runs sudo); without a
                                      # polkit agent (headless) every approval is denied: no_auth_agent
@@ -141,8 +144,11 @@ message is still forwarded and logged as `would_deny`; switch to
 enforce to observe needs `rover policy apply` and roverd's dialog like any
 other policy change (if roverd cannot show the dialog it answers deny:
 "no interactive authentication from the daemon; see the spike notes"; the
-fallback is a signed helper app, plan §9): the first policy `rover policy init` writes is trusted on first
-use (method `init`), every later one needs the OS dialog, and `rover doctor`
+fallback is a signed helper app, plan §9). `rover policy init` asks the
+dialog too: without a yes it records nothing and roverd runs enforce with no
+policy. roverd distrusts a state.db it cannot have written (recreated, empty
+of approvals, or with an approval newer than the audit log) and reports a
+state reset; `rover doctor`
 fails `policy-approval` when the files on disk are not the approved ones.
 Lines that are not unambiguous JSON-RPC (unknown members, duplicate keys or
 keys that differ only in case, such as `name` and `Name`) are blocked as

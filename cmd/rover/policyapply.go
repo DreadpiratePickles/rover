@@ -6,46 +6,45 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"time"
 
-	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
-	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
-// approveFirstPolicy records the starter policy's hash with method "init"
-// when no policy was ever approved: trust on first use (TOFU, see package
-// approve). It only does so with no roverd running (it needs the state
-// database); with roverd running, run `rover policy apply`. Every later
-// change needs `rover policy apply` and the OS dialog.
+// approveFirstPolicy asks for the policy `rover policy init` just wrote to
+// be approved, with the OS dialog, in this process (case (a): the CLI is
+// the process that shows it; roverd is not running). There is no trust on
+// first use for policies any more (review M9): a state.db deleted by an
+// agent followed by `init --force` must not yield an approved policy. With
+// no yes, the files are written but nothing is recorded, and roverd runs in
+// enforce with no policy until `rover policy apply` succeeds.
 func approveFirstPolicy(dirs paths.Dirs) {
+	if pingDaemon(dirs) == nil {
+		fmt.Println("roverd is running: approve these files with `rover policy apply` (OS authentication)")
+		return
+	}
 	hash, err := loadedHash(dirs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "note: could not hash the new policy files:", err)
 		return
 	}
-	if pingDaemon(dirs) == nil {
-		fmt.Println("roverd is running: approve these files with `rover policy apply` (OS authentication)")
-		return
+	notRecorded := "nothing was recorded: roverd will run enforce with no policy until `rover policy apply` succeeds"
+	fmt.Printf("asking for approval of policy %s: answer the system authentication dialog\n", short(hash))
+	raw, err := adminCall(ipc.Frame{Op: ipc.OpPolicyApply, Hash: hash})
+	var res daemon.ApplyResult
+	if err == nil {
+		err = json.Unmarshal(raw, &res)
 	}
-	db, err := state.Open(filepath.Join(dirs.State, "state.db"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "note: could not record the first policy:", err)
-		return
+	switch {
+	case err != nil:
+		fmt.Printf("%s (%v)\n", notRecorded, err)
+	case res.Decision != daemon.ApplyAllowed:
+		fmt.Printf("%s (%s: %s)\n", notRecorded, res.Decision, res.Reason)
+	default:
+		fmt.Printf("approved policy %s (mode %s, %s)\n", short(res.Hash), res.Mode, res.Method)
 	}
-	defer func() { _ = db.Close() }()
-	if _, found, cerr := approve.CurrentPolicy(db); cerr != nil || found {
-		fmt.Println("an approved policy already exists: run `rover policy apply` to approve these files (OS authentication)")
-		return
-	}
-	if err := approve.RecordPolicy(db, hash, approve.MethodInit, time.Now()); err != nil {
-		fmt.Fprintln(os.Stderr, "note: could not record the first policy:", err)
-		return
-	}
-	fmt.Printf("recorded policy %s as approved (method init: the first policy is trusted on first use)\n", short(hash))
 }
 
 // policyApply asks for the policy on disk to be approved and loaded (M9).

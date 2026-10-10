@@ -146,7 +146,7 @@ func TestHeldCallsDoNotBlockThePipe(t *testing.T) {
 	auth.mu.Lock()
 	reasons := strings.Join(auth.reasons, "\n")
 	auth.mu.Unlock()
-	if !strings.Contains(reasons, "Rover: allow an unknown client to run echo.echo?") {
+	if !strings.Contains(reasons, "]: allow an unknown client to run echo.echo?") || !strings.HasPrefix(reasons, "Rover [") {
 		t.Fatalf("dialog texts %q", reasons)
 	}
 	var allowed, denied int

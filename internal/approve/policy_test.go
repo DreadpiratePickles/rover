@@ -35,7 +35,7 @@ func TestApprovePolicyKeepsOnlyTheLatestCurrent(t *testing.T) {
 	}
 	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
 	a, b := PolicyHash([]PolicyPart{{Name: "a"}}), PolicyHash([]PolicyPart{{Name: "b"}})
-	if perr := RecordPolicy(db, a, MethodInit, now); perr != nil {
+	if perr := RecordPolicy(db, a, "osauth:test", now); perr != nil {
 		t.Fatal(perr)
 	}
 	if perr := RecordPolicy(db, b, "fake", now.Add(time.Second)); perr != nil {

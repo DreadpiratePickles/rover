@@ -6,11 +6,12 @@ or block. M9 adds a third answer, **hold**: the call waits while Rover asks
 you, and only your answer in the operating system's own authentication
 dialog (Touch ID or your password on macOS, polkit on Linux) lets it
 through. The same dialog now guards everything that changes Rover itself:
-`rover policy apply`, `rover pin approve`, `rover pin reset`, and switching
-enforce back to observe. Lesson focus: human-in-the-loop design, confused
-deputies, "the agent can click anything it can reach", platform
-authentication, PID-reuse races, and trust on first use for the first
-policy.
+`rover policy init`, `rover policy apply`, `rover pin approve`, `rover pin
+reset`, `rover install`/`uninstall`'s changes to the tamper watch, and
+switching enforce back to observe. Lesson focus: human-in-the-loop design,
+confused deputies, "the agent can click anything it can reach", platform
+authentication, PID-reuse races, and why there is no trust on first use for
+policies.
 
 ## (a) What was built
 
@@ -25,7 +26,11 @@ policy.
      it an `elicitation/create` with id `rover-<uuid>`; a decline denies, an
      accept does **not** approve (it only means "show me the dialog");
   3. send a desktop notification with a link to the details page;
-  4. show the OS dialog: `Rover: allow <client> to run <server>.<tool> (args: <names>)?`;
+  4. show the OS dialog: `Rover [a1b2c3d4]: allow <client> to run <server>.<tool> (args: <names>)?`
+     (the bracket is the approval id's start, also on the notification, the
+     page and in `rover approvals list`, so concurrent approvals can be told
+     apart; at most 5 per session and 20 in all, beyond which a new one is
+     denied at once: `too many pending approvals`);
   5. yes forwards; cancel, failure, or no answer within
      `approvals.timeout_s` (default 120 s) denies with the §5.1 isError body
      `approval denied` / `approval timed out`.
@@ -55,8 +60,9 @@ policy.
 - **Approved policy.** roverd loads only a policy whose hash (of the policy
   file, `config.yaml`, the schema and the normalizers file, read from a
   private snapshot so nothing can be swapped between hashing and loading)
-  is the one recorded in `approved_policy`. `rover policy init` records the
-  first one with method `init`. `rover policy apply` is only a messenger:
+  is the one recorded in `approved_policy`. `rover policy init` asks for the
+  dialog too (in the CLI); without a yes it writes the files and records
+  nothing. `rover policy apply` is only a messenger:
   it checks the files load and sends roverd an admin frame `policy_apply
   {hash}`; **roverd itself** shows the dialog (`Rover: approve policy <hash>
   (mode <m>)?`) and only on its yes records the hash and loads the policy.
@@ -151,6 +157,13 @@ apply` runs in the CLI (case (a)) and still works.
   approval silently cover the next few minutes of agent calls. A headless
   machine has no polkit agent, pkcheck exits 2, and the call is denied
   (`no_auth_agent`). That is the right answer for CI.
+- **Whose pkcheck?** roverd runs `/usr/bin/pkcheck` (else `/bin/pkcheck`),
+  never "pkcheck" looked up on PATH: an auto-started roverd used to inherit
+  the wrapper's environment, which the agent controls, and a fake pkcheck
+  first on PATH that exits 0 would approve everything. An auto-started
+  roverd now gets a minimal environment (`PATH=/usr/bin:/bin:/usr/sbin:/sbin`,
+  HOME, ROVER_DIR, the XDG and locale variables, what notifications need)
+  and nothing else: no LD_PRELOAD, no DYLD_*, no tokens.
 
 ### 5. PID-reuse races and the start-time form
 
@@ -162,13 +175,38 @@ start time comes from field 22 of `/proc/<pid>/stat`, counted after the
 *last* `)` because the command name may itself contain `) `. A new process
 with the old PID has a different start time and polkit refuses.
 
-### 6. Trust on first use for the first policy
+### 6. No trust on first use for policies
 
-Something has to be trusted without a dialog, or Rover could never start.
-`rover policy init` records the starter policy as approved with method
-`init`, exactly like a tool pin's first sight in M4. The window is small
-(only when no policy was ever approved) and visible (`rover doctor` prints the
-method, `init`). After that every change needs the dialog.
+Tool pins (M4) trust the first tools/list a server sends: there is no human
+to ask at that moment and nothing better to compare with. A first version of
+M9 did the same for the first policy: `rover policy init` recorded it
+without a dialog, "only while no policy was ever approved". That window was
+not small at all: `kill roverd; rm state/state.db; rover policy init
+--force` reopened it whenever an agent wanted, and the restarted roverd ran
+whatever the agent wrote. So now:
+
+- `rover policy init` shows the dialog (in the CLI, since roverd is not
+  running); without a yes the files are written, nothing is recorded, and
+  roverd runs in enforce with **no** policy until `rover policy apply`;
+- roverd distrusts its own database at start when it cannot be the one it
+  wrote: state.db recreated or without any approval while the audit log has
+  history, or an approval newer than the newest audit entry (roverd audits
+  every approval it records, so a newer record came from someone else). It
+  then loads no policy, stays in enforce, audits a `state` `reset` entry and
+  sends a notification, and `rover doctor` fails.
+
+### 7. Why the page looks like cwm
+
+The details page copies cwm, OpenBSD's calm window manager (plan §4.7):
+one face, one size, black on white, one 1px border, no icons, no colour but
+the urgent orange of a pending approval. That restraint is a security
+property here. There is nothing to misread (no logo, no green "safe" badge
+for a server to imitate in its tool name), nothing to click by accident (no
+buttons at all), and nothing an agent could forge convincingly: a fake page
+would look exactly as plain, and it still could not approve, because only
+the system dialog can. The PR needs a side-by-side screenshot of the page
+(`docs/images/approval-page.png`) next to cwm; that cwm screenshot has to
+come from Bobby (an xterm under cwm), since none was available here.
 
 ## (c) Exercise it by hand
 
@@ -205,7 +243,8 @@ roverd and run `rover policy apply` (it then runs in the CLI, case (a)).
 
 ```bash
 export ROVER_DIR=$(mktemp -d /tmp/rover-m9-XXXX)
-./bin/rover policy init         # "recorded policy ... (method init ...)"
+./bin/rover policy init         # writes the files and asks the dialog; say no for now
+                                # ("nothing was recorded ...")
 cat > "$ROVER_DIR/config/policy.cedar" <<'EOF'
 @id("echo-list") permit (principal, action == Action::"list_tools", resource == Server::"echo");
 @id("ask-echo") @rover_require("approval")
@@ -223,7 +262,7 @@ sed -i '' 's/^mode: observe/mode: enforce/' "$ROVER_DIR/config/config.yaml"
 ```
 
 The ping answers at once while id 2 waits. A notification appears with the
-page link; open it, then answer the dialog. Yes: id 2 returns `hi`. Cancel:
+page link (or run `rover approvals list`); open it, then answer the dialog. Yes: id 2 returns `hi`. Cancel:
 `Blocked by Rover policy (rule ask-echo): approval denied`. Wait 120 s
 instead: `approval timed out`. `rover log` shows the `approval` entries.
 
@@ -272,5 +311,6 @@ loads it. (Tests: `TestTamperedPolicyIsNotLoadedAndDoctorReportsIt`,
    `--process pid` leaves open?
 4. Why does roverd hash `config.yaml` and not just `policy.cedar`, and why
    does it hash a private copy rather than the files themselves?
-5. `rover policy init` approves without a dialog. When is that safe, what
-   is the name of that bargain, and where else in Rover did you meet it?
+5. Tool pins trust the first tools/list on first use, but policies no
+   longer do. What attack did that close, and how does roverd notice a
+   state.db it did not write?

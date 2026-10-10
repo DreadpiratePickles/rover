@@ -31,24 +31,60 @@ func policyLoader(dirs paths.Dirs) func() (daemon.Policy, config.Config, string,
 	}
 }
 
+// startFacts are what roverd knows about its own history at start.
+type startFacts struct {
+	lastAudit                time.Time // the newest audit entry's time
+	stateCreated, hadHistory bool      // state.db was just created; the audit anchor exists
+}
+
 // loadApprovedAtStart loads the policy and checks its hash against
 // approved_policy (M9). A policy nobody approved is not loaded; roverd
 // then blocks every policed message until `rover policy apply`.
-func loadApprovedAtStart(dirs paths.Dirs, db *state.DB, logf func(string, ...any)) (daemon.Policy, config.Config, string) {
+//
+// It also distrusts approved_policy itself when the database cannot be the
+// one roverd wrote (review M9 HIGH): it was just created while the audit
+// log has history, it has no approval while the log has history, or its
+// approval is newer than the newest audit entry (roverd audits every
+// approval it records, so a newer record was written by someone else).
+// reset is then the reason, which roverd audits and notifies (state reset).
+func loadApprovedAtStart(dirs paths.Dirs, db *state.DB, f startFacts, logf func(string, ...any)) (pol daemon.Policy, cfg config.Config, note, reset string) {
 	pol, cfg, note, hash, err := loadAll(dirs)
 	if note != "" {
 		logf("policy precedence: %s", note)
 	}
-	if err != nil {
+	reset = distrust(db, f)
+	switch {
+	case err != nil:
 		logf("POLICY NOT LOADED: %v; every tools/call, tools/list, resources/read, sampling and elicitation request is blocked (no_policy)", err)
-		return nil, notApproved(), note
+		return nil, notApproved(), note, reset
+	case reset != "":
+		logf("POLICY NOT LOADED: %s; every policed request is blocked until you run `rover policy apply`", reset)
+		return nil, notApproved(), note, reset
 	}
 	if why := unapproved(db, hash); why != "" {
 		logf("POLICY NOT LOADED: %s; every policed request is blocked until you run `rover policy apply`", why)
-		return nil, notApproved(), note
+		return nil, notApproved(), note, ""
 	}
 	logf("policy loaded (mode %s); approved hash %s", cfg.Mode, short(hash))
-	return pol, cfg, note
+	return pol, cfg, note, ""
+}
+
+// distrust says why approved_policy cannot be trusted at start, or "".
+func distrust(db *state.DB, f startFacts) string {
+	if f.stateCreated && f.hadHistory {
+		return "" // reportStateLoss already reports a recreated state.db
+	}
+	cur, found, err := approve.CurrentPolicy(db)
+	switch {
+	case err != nil:
+		return "approved_policy unreadable: " + err.Error()
+	case !found && f.hadHistory:
+		return "state.db has no approved policy although the audit log has history: approvals were lost or removed"
+	case found && cur.ApprovedAt.After(f.lastAudit):
+		return fmt.Sprintf("approved_policy says %s was approved at %s, after the newest audit entry (%s): roverd did not write that record",
+			short(cur.Hash), cur.ApprovedAt.UTC().Format(time.RFC3339Nano), f.lastAudit.UTC().Format(time.RFC3339Nano))
+	}
+	return ""
 }
 
 // unapproved says why hash may not be loaded, or "" if it is the approved
