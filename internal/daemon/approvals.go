@@ -44,7 +44,7 @@ func (s *Server) startApproval(h held) {
 	client, _ := h.sess.Client()
 	r := approve.Request{
 		ID: approve.NewID(), Session: h.sess.ID, Client: client, Server: h.server,
-		Tool: h.m.ToolName(), Summary: summarize(h.m), Args: s.approvalArgs(h.m), RuleIDs: h.j.ruleIDs,
+		Tool: h.m.ToolName(), Summary: s.summarize(h.m), Args: s.approvalArgs(h.m), RuleIDs: h.j.ruleIDs,
 	}
 	if r.Tool == "" {
 		r.Tool = h.m.Method
@@ -135,14 +135,17 @@ func (s *Server) approvalArgs(m jsonrpc.Message) json.RawMessage {
 
 // summarize is the "<short summary>" of the dialog: the argument NAMES
 // only (values, even redacted, are long; names say what kind of call it is).
-func summarize(m jsonrpc.Message) string {
+// A name is redacted like a value (M10 review: a member name can be a
+// secret, and the summary reaches the OS dialog, the notification and
+// the approval record in state.db).
+func (s *Server) summarize(m jsonrpc.Message) string {
 	fields, err := jsonrpc.Object(callArgs(m))
 	if err != nil || len(fields) == 0 {
 		return ""
 	}
 	names := make([]string, 0, len(fields))
 	for _, f := range fields {
-		names = append(names, f.Key)
+		names = append(names, s.redactText(f.Key))
 	}
 	slices.Sort(names)
 	return "args: " + strings.Join(names, ", ")

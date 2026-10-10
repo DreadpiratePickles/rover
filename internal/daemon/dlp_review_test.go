@@ -1,14 +1,18 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cedar-policy/cedar-go/types"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/learn"
@@ -149,6 +153,9 @@ func TestJointScanCatchesSplitsAndKeepsTheNextBlock(t *testing.T) {
 		{"key AKIAEXAMPLE", "000000001 end", "000000001", " end"},
 		{"password=hunter2hunter2\n", "[default]\nregion=eu", "hunter2", "[default]\\nregion=eu"},
 		{"password=hunter2hunter2 ", "[default] x", "hunter2", "[default] x"},
+		// Port review M1: a PEM block cut at one of its own newlines.
+		{"-----BEGIN PRIVATE KEY-----\nTQJy6LaB6WVuxafqmhTH+1trAplG0k6VO12LP7UJwKAh9K1O09cyC46/1mT5Vd8/", "\n7zm5Cv7mXecvUDEHV1nVZDV7oFfECS", "7zm5Cv7mXecvUDEHV1nVZDV7oFfECS", ""},
+		{"Output truncated:\n-----BEGIN PRIVATE KEY-----", "\nTQJy6LaB6WVuxafqmhTH+1trAplG0k6VO12LP7UJwKAh9K1O09cyC46/1mT5Vd8/\n7zm5Cv7mXecvUDEHV1nVZDV7oFfECS", "TQJy6LaB6WVuxafqmhTH", "Output truncated:"},
 	} {
 		s := start(t, Options{Audit: audit.New(&syncBuf{}), Policy: engine(t, dlpPolicy), Config: dlpConfig()})
 		c := dial(t, s)
@@ -183,5 +190,46 @@ func TestLearnShapeNamesAreRedacted(t *testing.T) {
 	out := s.redactRecord(r)
 	if out.Len() != 2 || strings.Contains(fmt.Sprint(out), fakeAKIA) {
 		t.Fatalf("%v", out)
+	}
+}
+
+// Port review H1: a secret used as an argument NAME of a held call must
+// not reach the OS dialog text, the notification or the approval record
+// in state.db (the summary lists argument names).
+func TestHeldCallSummaryRedactsSecretArgumentNames(t *testing.T) {
+	// Arrange
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	auth := &testAuth{ok: false}
+	flow := &approve.Flow{Store: approve.NewBoltStore(db), Auth: auth, Timeout: time.Minute}
+	s := start(t, Options{Audit: audit.New(&syncBuf{}), Policy: engine(t, approvalPolicy), Config: dlpConfig(), Prompter: flow, State: db})
+	c := dialEcho(t, s, "")
+
+	// Act
+	v, rel, err := c.Decide("c2s", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"`+fakeAKIA+`":"x","`+fakeGHP+`":"y"}}}`))
+	if err != nil || v.Action != ipc.ActionHold {
+		t.Fatalf("%+v %v", v, err)
+	}
+	_ = waitRelease(t, rel)
+	s.Close()
+	_ = db.Close()
+
+	// Assert
+	auth.mu.Lock()
+	reasons := strings.Join(auth.reasons, "|")
+	auth.mu.Unlock()
+	if strings.Contains(reasons, fakeAKIA) || strings.Contains(reasons, fakeGHP) || !strings.Contains(reasons, "[REDACTED:aws-access-key]") {
+		t.Errorf("dialog text: %q", reasons)
+	}
+	b, err := os.ReadFile(dbPath) //nolint:gosec // G304: the test's own temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte(fakeAKIA)) || bytes.Contains(b, []byte(fakeGHP)) {
+		t.Error("state.db holds a secret argument name")
 	}
 }

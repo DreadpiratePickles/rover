@@ -55,6 +55,9 @@ func (s *Server) redactJoints(res []byte, member string, kind detect.Kind) ([]by
 // joint are non-white-space, so the token really continues across it (a
 // key split in two blocks, after "GITHUB_TOKEN=" or not); a secret that
 // ends at a line break does not run on into the next block ("[default]").
+// A PEM block is the one kind whose own span holds line breaks, so a
+// cross-joint PEM match is kept whatever the bytes at the joint: cut at a
+// newline, its tail alone is below every other detector's threshold.
 func (s *Server) jointMatches(tail, head string) []dlp.Match {
 	cut := len(tail)
 	var out []dlp.Match
@@ -70,7 +73,7 @@ func (s *Server) jointMatches(tail, head string) []dlp.Match {
 	}
 	continues := cut > 0 && len(head) > 0 && !isWhite(tail[cut-1]) && !isWhite(head[0])
 	for _, m := range s.dlp.Find([]byte(tail + head)) {
-		if m.Start >= cut || m.End <= cut || continues {
+		if m.Start >= cut || m.End <= cut || continues || m.Kind == dlp.KindPrivateKey {
 			out = append(out, m)
 		}
 	}
