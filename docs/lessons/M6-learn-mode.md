@@ -49,7 +49,7 @@ agent ──► rover wrap ──► roverd decide ──► audit entry ──�
 | email | domain | `alice@example.org` → `example.org` |
 | shell_command | program | `rm -rf /tmp/x` → `rm` |
 | sql | statement keyword | `select * from users …` → `SELECT` |
-| no normaliser | JSON type only; the value too only when the argument name is enum-like (branch, ref, mode, method, format, level, state, sort, direction, order, visibility, status, type, kind, lang, language, encoding, scope) AND the value matches `^[A-Za-z][A-Za-z0-9_.-]{0,31}$` AND it is not secret-shaped (an sk_live_/ghp_/xoxb-/AKIA… prefix, a `=` or `:`, or 16+ characters with more than 3.5 bits of entropy per character) | `mode: "ro"` → `string "ro"`; `token: "abc"` → `string`; `type: "password=x"` → `string` |
+| no normaliser | JSON type only; the value too only when the argument name is enum-like (branch, ref, mode, method, format, level, sort, direction, order, visibility, status, type, kind, lang, language, encoding; not state or scope, which OAuth uses for opaque values) AND the value matches `^[A-Za-z][A-Za-z0-9_.-]{0,31}$` AND it is not secret-shaped (an sk_live_/ghp_/xoxb-/AKIA… prefix, a `=` or `:`, or, from 8 characters on, more than 3.5 bits of entropy per character or a mix of digits and letters such as `hunter2xyz`) | `mode: "ro"` → `string "ro"`; `token: "abc"` → `string`; `type: "password=x"` → `string` |
 
 So the bucket holds resolved paths, hosts, domains, programs, SQL keywords,
 JSON type names and short enum-like words: never a file's contents, a message
@@ -85,7 +85,9 @@ newest 16 MB.
   it (it would cancel the constraint): its calls without that argument are
   listed as "<server>/<tool> called N time(s) without path; write this rule by
   hand". **tools/list seen** → a list_tools permit per server.
-  **resources/read** is never proposed (URIs are not recorded).
+  **resources/read** is never proposed: URIs are not recorded (they can
+  carry secrets), so each server gets the note "resources/read is not
+  proposed: … write this rule by hand (N call(s))".
 - **Flags on a tool's description**: a medium or high finding on a tool's
   description (or a pin mismatch for it) flags every later call to that tool
   until a clean listing; those calls are listed as suspicious.

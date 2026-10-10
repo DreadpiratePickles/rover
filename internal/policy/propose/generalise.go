@@ -139,19 +139,23 @@ func (b *builder) callDrafts(server, tool string, obs []learn.Observation) []dra
 	}
 	sort.Strings(order)
 	var out []draft
+	without := 0
 	for _, k := range order {
 		d, err := b.callDraft(server, tool, parts[k])
 		switch {
 		case err != nil:
 			b.note("%d %s/%s call(s) not proposed: %v", len(parts[k]), server, tool, err)
 		case constrainable && !d.constrained:
-			if args == "" {
-				args = "a mapped argument"
-			}
-			b.note("%s/%s called %d time(s) without %s; write this rule by hand", server, tool, len(parts[k]), args)
+			without += len(parts[k]) // one note per (server, tool, args), below
 		default:
 			out = append(out, d)
 		}
+	}
+	if without > 0 {
+		if args == "" {
+			args = "a mapped argument"
+		}
+		b.note("%s/%s called %d time(s) without %s; write this rule by hand", server, tool, without, args)
 	}
 	return out
 }

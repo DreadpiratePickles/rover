@@ -196,7 +196,11 @@ func Key(client, server, tool string, ts time.Time, seq uint64) []byte {
 		b.WriteByte(0)
 	}
 	var n [16]byte
-	binary.BigEndian.PutUint64(n[:8], uint64(ts.UnixNano())) //nolint:gosec // G115: times before 1970 do not occur; order only
+	var nanos uint64 // times before 1970 do not occur; they sort first
+	if v := ts.UnixNano(); v > 0 {
+		nanos = uint64(v)
+	}
+	binary.BigEndian.PutUint64(n[:8], nanos)
 	binary.BigEndian.PutUint64(n[8:], seq)
 	b.Write(n[:])
 	return b.Bytes()

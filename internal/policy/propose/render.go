@@ -30,8 +30,6 @@ func cedarRule(r ProposedRule, d draft) string {
 	case learn.ActionList:
 		b.WriteString(`permit (principal, action == Action::"list_tools", resource == Server::"` + d.server + `");` + "\n")
 		return b.String()
-	case learn.ActionRead:
-		b.WriteString("permit (\n  principal,\n  action == Action::\"read_resource\",\n  resource in Server::\"" + d.server + "\"\n)")
 	default:
 		b.WriteString("permit (\n  principal,\n  action == Action::\"call_tool\",\n  resource == Tool::\"" + d.server + "/" + d.tool + "\"\n)")
 	}

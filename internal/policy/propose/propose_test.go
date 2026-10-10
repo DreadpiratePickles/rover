@@ -246,7 +246,6 @@ func TestBuildNoYAMLForListOnlyServerOrOtherArgNames(t *testing.T) {
 	for name, obs := range map[string][]learn.Observation{
 		"list only":      {{TS: t0, Server: "quiet", Action: learn.ActionList}},
 		"not named path": {callObs(0, "files", "copy", map[string]learn.Arg{"source": {Type: "path", Value: "/srv/x/p/a"}})},
-		"resources":      {{TS: t0, Server: "docs", Action: learn.ActionRead, Shape: map[string]learn.Arg{"uri": {Type: "string", Value: "file:///readme"}}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := build(t, obs, nil)
@@ -382,7 +381,7 @@ func TestBuildNoPlainPermitBesideConstrainedRule(t *testing.T) {
 	if len(p.Rules) != 1 || !strings.Contains(p.Rules[0].Cedar, "under_p") {
 		t.Fatalf("rules %+v", p.Rules)
 	}
-	if len(p.Notes) != 2 || !strings.Contains(p.Notes[0], "files/read_file called 1 time(s) without path; write this rule by hand") {
+	if len(p.Notes) != 1 || p.Notes[0] != "files/read_file called 2 time(s) without path; write this rule by hand" {
 		t.Fatalf("notes %q", p.Notes)
 	}
 }
@@ -410,5 +409,24 @@ func TestBuildSkipsObservationsWithDroppedArgs(t *testing.T) {
 	p := build(t, []learn.Observation{o}, nil)
 	if len(p.Rules) != 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "bound its size") {
 		t.Fatalf("rules %+v notes %q", p.Rules, p.Notes)
+	}
+}
+
+// resources/read is never proposed: URIs are not recorded. One honest note
+// per server, with the count.
+func TestBuildNeverProposesResourceReads(t *testing.T) {
+	read := func(server string) learn.Observation {
+		return learn.Observation{TS: t0, Server: server, Action: learn.ActionRead, Shape: map[string]learn.Arg{"uri": {Type: "string"}}}
+	}
+	p := build(t, []learn.Observation{read("docs"), read("docs"), read("wiki")}, nil)
+	if len(p.Rules) != 0 || strings.Contains(string(p.Cedar), "read_resource") {
+		t.Fatalf("rules %+v", p.Rules)
+	}
+	want := []string{
+		"docs: resources/read is not proposed: URIs are not recorded (they can carry secrets); write this rule by hand (2 call(s))",
+		"wiki: resources/read is not proposed: URIs are not recorded (they can carry secrets); write this rule by hand (1 call(s))",
+	}
+	if strings.Join(p.Notes, "|") != strings.Join(want, "|") {
+		t.Fatalf("notes %q", p.Notes)
 	}
 }

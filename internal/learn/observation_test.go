@@ -100,7 +100,7 @@ func TestShapeOfArgumentsWithoutNormaliser(t *testing.T) {
 
 	// Assert
 	want := map[string]Arg{
-		"mode": {Type: "string", Value: "ro"}, "branch": {Type: "string"}, "state": {Type: "string", Value: "open"},
+		"mode": {Type: "string", Value: "ro"}, "branch": {Type: "string"}, "state": {Type: "string"},
 		"text": {Type: "string"}, "id": {Type: "string"}, "n": {Type: "number"}, "ok": {Type: "boolean"},
 		"obj": {Type: "object"}, "list": {Type: "array"}, "format": {Type: "string", Value: "json"}, "level": {Type: "string"},
 	}
@@ -179,5 +179,22 @@ func TestEncodeCappedDropsOldest(t *testing.T) {
 	var back []Observation
 	if err := json.Unmarshal(b, &back); err != nil || len(back) != 2 || back[0].Server != "mid" {
 		t.Fatalf("%s: %v", b, err)
+	}
+}
+
+// Re-verification LOW-1: "state" and "scope" are not enum-like enough, and
+// a word that mixes digits and letters (8+ characters) looks like a secret.
+func TestLiteralRejectsShortSecretsAndKeepsWords(t *testing.T) {
+	for name, val := range map[string]string{"state": "open", "scope": "repo", "mode": "hunter2xyz", "kind": "Passw0rdX", "type": "x=y"} {
+		if got := shapeOf(t, nil, types.RecordMap{types.String(name): types.String(val)}, nil); got[name].Value != "" {
+			t.Errorf("%s=%q kept", name, val)
+		}
+	}
+	got := shapeOf(t, nil, types.RecordMap{"branch": types.String("main"), "mode": types.String("fast"), "sort": types.String("desc"),
+		"format": types.String("json"), "lang": types.String("go1"), "order": types.String("ascending")}, nil)
+	for n, v := range map[string]string{"branch": "main", "mode": "fast", "sort": "desc", "format": "json", "lang": "go1", "order": "ascending"} {
+		if got[n].Value != v {
+			t.Errorf("%s=%q not kept: %+v", n, v, got[n])
+		}
 	}
 }

@@ -58,7 +58,7 @@ type Proposal struct {
 // ProposedRule is one rule of the proposal.
 type ProposedRule struct {
 	ID, Server, Tool string
-	Action           string // learn.ActionCall, ActionList or ActionRead
+	Action           string // learn.ActionCall or learn.ActionList
 	Derived          string // what it was derived from, in one sentence
 	Calls            int
 	First, Last      time.Time
@@ -192,7 +192,7 @@ func (b *builder) group(k groupKey, obs []learn.Observation) {
 	case learn.ActionList:
 		b.add(draft{server: k.server, tool: "list-tools", action: k.action, obs: obs, derived: []string{"the agent listed the tools of " + k.server}})
 	case learn.ActionRead:
-		b.readRule(k.server, obs)
+		b.note("%s: resources/read is not proposed: URIs are not recorded (they can carry secrets); write this rule by hand (%d call(s))", k.server, len(obs))
 	case learn.ActionCall:
 		for _, d := range b.callDrafts(k.server, k.tool, obs) {
 			b.add(d)
@@ -208,7 +208,6 @@ type draft struct {
 	obs                  []learn.Observation
 	conds                []string // Cedar boolean expressions, ANDed
 	derived              []string
-	resourceIn           bool     // read_resource: resource in Server
 	yamlWhen             []string // YAML when: entries; nil with yamlNo set
 	constrained          bool     // has a path or host condition
 	yamlNo               string   // why this rule has no YAML form
@@ -248,26 +247,6 @@ func span(obs []learn.Observation) (first, last time.Time) {
 		}
 	}
 	return first.UTC(), last.UTC()
-}
-
-// readRule permits read_resource of the URIs seen on server.
-func (b *builder) readRule(server string, obs []learn.Observation) {
-	uris := map[string]bool{}
-	for _, o := range obs {
-		u := o.Shape["uri"].Value
-		if !safeLiteral.MatchString(u) {
-			b.note("%d resources/read call(s) on %s not proposed: a URI was too long, had white space or characters Rover will not write into Cedar; write this rule by hand", len(obs), server)
-			return
-		}
-		uris[u] = true
-	}
-	list := sortedSet(uris)
-	b.add(draft{
-		server: server, tool: "read-resource", action: learn.ActionRead, obs: obs, resourceIn: true,
-		conds:   []string{cedarStringSet(list) + ".contains(resource.uri)"},
-		derived: []string{"resources/read of " + strings.Join(list, ", ")},
-		yamlNo:  "YAML has no read_resource rule",
-	})
 }
 
 func sortedSet(m map[string]bool) []string {

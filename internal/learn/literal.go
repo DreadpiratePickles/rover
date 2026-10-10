@@ -9,13 +9,14 @@ import (
 )
 
 // literalNames are the argument names whose value a shape may keep: names
-// that usually hold one of a few fixed words. Any other argument keeps its
+// that usually hold one of a few fixed words. "state" and "scope" are not
+// among them: OAuth uses both for opaque values. Any other argument keeps its
 // JSON type only, because a short string can be a key or a password
 // (independent verification of M6 found both stored).
 var literalNames = map[string]bool{
 	"branch": true, "ref": true, "mode": true, "method": true, "format": true, "level": true,
-	"state": true, "sort": true, "direction": true, "order": true, "visibility": true, "status": true,
-	"type": true, "kind": true, "lang": true, "language": true, "encoding": true, "scope": true,
+	"sort": true, "direction": true, "order": true, "visibility": true, "status": true,
+	"type": true, "kind": true, "lang": true, "language": true, "encoding": true,
 }
 
 // literalValue is a value worth keeping: a plain word of at most 32 bytes.
@@ -24,11 +25,13 @@ var literalValue = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]{0,31}$`)
 // secretPrefixes are the token prefixes M10's redaction knows.
 var secretPrefixes = regexp.MustCompile(`^(?:sk_live_|sk_test_|rk_live_|ghp_|gho_|ghs_|ghu_|github_pat_|xox[abpr]-|AKIA|ASIA)`)
 
-// maxEntropy is the Shannon entropy (bits per character) above which a
-// value of minEntropyLen or more characters looks random: a key, not a word.
+// From minSecretLen characters on, a value looks like a secret when its
+// Shannon entropy is above maxEntropy bits per character or it mixes
+// digits and letters ("hunter2xyz"). Shorter values and plain words
+// ("main", "ascending") are kept.
 const (
-	maxEntropy    = 3.5
-	minEntropyLen = 16
+	maxEntropy   = 3.5
+	minSecretLen = 8
 )
 
 // literalShape keeps the JSON type, and the value only when the argument
@@ -47,8 +50,13 @@ func keepable(s string) bool {
 
 // secretShaped reports a value that looks like a credential.
 func secretShaped(s string) bool {
-	return secretPrefixes.MatchString(s) || strings.ContainsAny(s, "=:") ||
-		(len(s) >= minEntropyLen && entropy(s) > maxEntropy)
+	if secretPrefixes.MatchString(s) || strings.ContainsAny(s, "=:") {
+		return true
+	}
+	if len(s) < minSecretLen {
+		return false
+	}
+	return entropy(s) > maxEntropy || (strings.ContainsAny(s, "0123456789") && strings.IndexFunc(s, isLetter) >= 0)
 }
 
 // entropy is the Shannon entropy of s in bits per character.
@@ -66,3 +74,5 @@ func entropy(s string) float64 {
 	}
 	return h
 }
+
+func isLetter(r rune) bool { return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' }
