@@ -137,6 +137,9 @@ func (f *Flow) authenticate(ctx context.Context, r Request, out chan<- answer) {
 	switch {
 	case ok && err == nil:
 		out <- answer{allow: true, method: method}
+	case errors.Is(err, ErrNotInteractive):
+		f.logf()("approval %s: denied: %s", r.ID, ReasonNotInteractive)
+		out <- answer{method: "not_interactive", reason: ReasonDenied}
 	case errors.Is(err, ErrNoAuthAgent):
 		f.logf()("approval %s: denied: %s (no authentication agent; on Linux run a polkit agent, see `rover install --polkit`)", r.ID, ReasonNoAuthAgent)
 		out <- answer{method: ReasonNoAuthAgent, reason: ReasonDenied}

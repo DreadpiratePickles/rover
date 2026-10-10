@@ -72,6 +72,10 @@ const (
 	// TODO(M9): like pin approval, these should need OS authentication.
 	OpTamperResolve = "tamper_resolve"
 	OpTamperForget  = "tamper_forget"
+	// OpPolicyApply (M9) asks roverd to approve and load the policy files
+	// whose bundle hash is Hash. roverd shows the OS authentication dialog
+	// itself; the frame alone approves nothing.
+	OpPolicyApply = "policy_apply"
 )
 
 // MaxPath bounds the path in a tamper_resolve or tamper_forget frame.
@@ -148,7 +152,9 @@ type Frame struct {
 	Tool string `json:"tool,omitempty"`
 	// Digest is the digest prefix a pin_approve approves: the one the
 	// human saw in `rover pin list` (at least MinDigestPrefix hex digits).
-	Digest string          `json:"digest,omitempty"`
+	Digest string `json:"digest,omitempty"`
+	// Hash is the policy bundle hash a policy_apply approves (64 hex).
+	Hash   string          `json:"hash,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 	// Path is the config file of tamper_resolve and tamper_forget; Adapter
 	// and Scope name its client and scope (tamper_resolve).
@@ -238,6 +244,8 @@ func (f Frame) Validate() error {
 func validateAdmin(f Frame) error {
 	if (f.Path != "" || f.Adapter != "" || f.Scope != "") && f.Op != OpTamperResolve && f.Op != OpTamperForget {
 		return fmt.Errorf("%w: %s takes no path, adapter or scope", ErrBadFrame, f.Op)
+	if f.Hash != "" && f.Op != OpPolicyApply {
+		return fmt.Errorf("%w: %s takes no hash", ErrBadFrame, f.Op)
 	}
 	needServer, needTool := true, false
 	switch f.Op {
@@ -252,6 +260,9 @@ func validateAdmin(f Frame) error {
 		}
 		if len(f.Adapter) > 64 || len(f.Scope) > MaxPath || (f.Op == OpTamperResolve) != (f.Adapter != "") {
 			return fmt.Errorf("%w: tamper_resolve needs an adapter (1..64 bytes), tamper_forget none", ErrBadFrame)
+	case OpPolicyApply:
+		if len(f.Hash) != 64 || !validDigestPrefix(f.Hash) || f.ServerName != "" || f.Tool != "" || f.Digest != "" {
+			return fmt.Errorf("%w: policy_apply needs only a 64-hex-digit hash", ErrBadFrame)
 		}
 		return nil
 	case OpObservationsDump, OpDoctorState:

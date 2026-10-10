@@ -151,3 +151,20 @@ func TestAdminFrames(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyApplyFrame(t *testing.T) {
+	good := Frame{Type: TypeAdmin, Op: OpPolicyApply, Hash: strings.Repeat("a", 64)}
+	if err := good.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, f := range map[string]Frame{
+		"short hash":  {Type: TypeAdmin, Op: OpPolicyApply, Hash: "abc"},
+		"upper hash":  {Type: TypeAdmin, Op: OpPolicyApply, Hash: strings.Repeat("A", 64)},
+		"with server": {Type: TypeAdmin, Op: OpPolicyApply, Hash: strings.Repeat("a", 64), ServerName: "x"},
+		"hash on pin": {Type: TypeAdmin, Op: OpPinReset, ServerName: "x", Hash: strings.Repeat("a", 64)},
+	} {
+		if err := f.Validate(); !errors.Is(err, ErrBadFrame) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

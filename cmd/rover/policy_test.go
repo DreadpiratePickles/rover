@@ -150,7 +150,7 @@ func TestPolicyEndToEnd(t *testing.T) {
 		!strings.Contains(out, "rules=hide-read-file") || !strings.Contains(out, "3 replayed: 2 forward, 1 block") {
 		t.Fatalf("policy test: %v\n%s", err, out)
 	}
-	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err != nil || !strings.Contains(out, "reload requested") {
+	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err != nil || !strings.Contains(out, "applied policy") {
 		t.Fatalf("policy apply: %v\n%s", err, out)
 	}
 }
@@ -209,7 +209,7 @@ func TestPolicyApplyNeedsALoadablePolicyAndAuthentication(t *testing.T) {
 	if out, err := run(dir, "doctor"); err == nil || !strings.Contains(out, "FAIL  policy-approval") {
 		t.Fatalf("doctor must report the unapproved files: %v\n%s", err, out)
 	}
-	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err != nil || !strings.Contains(out, "roverd is not running and loads it when it starts") {
+	if out, err := run(dir, "--test-auth=allow", "policy", "apply"); err != nil || !strings.Contains(out, "applied policy") {
 		t.Fatalf("apply without roverd: %v\n%s", err, out)
 	}
 	if out, _ := run(dir, "doctor"); !strings.Contains(out, "PASS  policy-approval") {

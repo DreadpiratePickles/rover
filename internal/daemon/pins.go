@@ -155,6 +155,9 @@ func (s *Server) Admin(f ipc.Frame) ipc.Frame {
 			return fail(errors.New("roverd audit log failed earlier; restart roverd"))
 		}
 	}
+	if f.Op == ipc.OpPolicyApply {
+		return s.applyPolicy(f)
+	}
 	var result any
 	entry := audit.Entry{Time: s.o.Now().UTC(), Session: adminSession, Server: f.ServerName, Kind: AuditKindPin, Tool: f.Tool}
 	switch f.Op {
@@ -224,7 +227,7 @@ func (s *Server) authenticate(reason string) (string, error) {
 	defer cancel()
 	ok, method, err := s.o.Authenticator.Authenticate(ctx, reason)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrNotAuthenticated, err)
+		return "", fmt.Errorf("%w: %w", ErrNotAuthenticated, err)
 	}
 	if !ok {
 		return "", ErrNotAuthenticated

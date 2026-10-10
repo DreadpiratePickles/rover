@@ -89,7 +89,7 @@ func (s *Server) ReloadWith(p Policy, cfg config.Config, authenticated bool) err
 const AuditKindPolicy = "policy"
 
 // AuditPolicy records a policy event (M9): an approved hash, a refused
-// reload, a rejected nonce.
+// reload.
 func (s *Server) AuditPolicy(action, reason string) error {
 	return s.writeAudit(audit.Entry{Time: s.o.Now().UTC(), Session: adminSession, Kind: AuditKindPolicy, Action: action, Reason: reason})
 }

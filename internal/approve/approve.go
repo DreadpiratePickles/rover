@@ -94,6 +94,14 @@ const (
 // ErrNoAuthAgent is returned by an Authenticator that has nobody to ask.
 var ErrNoAuthAgent = errors.New(ReasonNoAuthAgent)
 
+// ErrNotInteractive is returned when the OS refuses to show a dialog for
+// this process (macOS LAErrorNotInteractive, -1004): roverd, started in
+// the background, may be such a process. It is a deny.
+var ErrNotInteractive = errors.New(ReasonNotInteractive)
+
+// ReasonNotInteractive is what a deny for ErrNotInteractive says.
+const ReasonNotInteractive = "no interactive authentication from the daemon; see the spike notes"
+
 // ErrUnsupported is returned where Rover has no OS dialog (it denies).
 var ErrUnsupported = errors.New("no OS authentication on this platform")
 

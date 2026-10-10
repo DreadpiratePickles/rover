@@ -1,13 +1,11 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/approve"
-	"github.com/DreadpiratePickles/rover/internal/approve/page"
 	"github.com/DreadpiratePickles/rover/internal/config"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/paths"
@@ -24,14 +22,19 @@ func notApproved() config.Config {
 	return c
 }
 
+// policyLoader is daemon.Options.PolicyLoader: the files as they are on
+// disk now, and their bundle hash.
+func policyLoader(dirs paths.Dirs) func() (daemon.Policy, config.Config, string, error) {
+	return func() (daemon.Policy, config.Config, string, error) {
+		pol, cfg, _, hash, err := loadAll(dirs)
+		return pol, cfg, hash, err
+	}
+}
+
 // loadApprovedAtStart loads the policy and checks its hash against
 // approved_policy (M9). A policy nobody approved is not loaded; roverd
 // then blocks every policed message until `rover policy apply`.
 func loadApprovedAtStart(dirs paths.Dirs, db *state.DB, logf func(string, ...any)) (daemon.Policy, config.Config, string) {
-	// A nonce left from before this start is never valid now.
-	if _, err := approve.ConsumeNonce(dirs.Run, time.Now()); err != nil && !errors.Is(err, approve.ErrNoNonce) {
-		logf("discarded an old apply nonce: %v", err)
-	}
 	pol, cfg, note, hash, err := loadAll(dirs)
 	if note != "" {
 		logf("policy precedence: %s", note)
@@ -73,12 +76,11 @@ func short(hash string) string {
 
 // reloader is what a SIGHUP needs.
 type reloader struct {
-	dirs paths.Dirs
-	db   *state.DB
-	srv  *daemon.Server
-	flow *approve.Flow
-	page *page.Server
-	logf func(string, ...any)
+	dirs   paths.Dirs
+	db     *state.DB
+	srv    *daemon.Server
+	onLoad func(config.Config)
+	logf   func(string, ...any)
 }
 
 // reloadOnHUP reloads on every SIGHUP (see reload). The precedence note is
@@ -92,65 +94,29 @@ func reloadOnHUP(hup <-chan os.Signal, r reloader, lastNote string) {
 	}
 }
 
-// reload loads config.yaml and the policy (policy.cedar, else policy.yaml).
-// It loads them only if
-//   - an apply nonce is present, fresh, and names the hash of these exact
-//     files: an authenticated `rover policy apply` (or, for the very first
-//     policy, `rover policy init`). The hash is then recorded as approved,
-//     and a switch from enforce to observe is allowed; or
-//   - the files are the policy approved already (a reload of the same
-//     thing), which may not switch enforce to observe.
-//
-// Anything else (an edited policy.cedar and a bare SIGHUP, a forged or
-// stale nonce, a policy that fails to load) keeps whatever ran before.
+// reload reloads config.yaml and the policy, but only the approved
+// policy: a SIGHUP approves nothing. It is for the files a human already
+// approved (say, after restoring them); it may not switch enforce to
+// observe. Approving new files is `rover policy apply`, which makes roverd
+// show the OS dialog (daemon policy_apply). An edited policy.cedar and a
+// bare SIGHUP, or a policy that fails to load, keep whatever ran before.
 func (r reloader) reload() string {
-	now := time.Now()
-	nonce, nerr := approve.ConsumeNonce(r.dirs.Run, now)
-	if nerr != nil && !errors.Is(nerr, approve.ErrNoNonce) {
-		r.refuse("apply nonce refused: " + nerr.Error())
-	}
 	pol, cfg, note, hash, err := loadAll(r.dirs)
 	if err != nil {
 		r.logf("policy reload FAILED, keeping the previous policy: %v", err)
 		return note
 	}
-	cur, found, derr := approve.CurrentPolicy(r.db)
-	authorized := false
-	switch {
-	case derr != nil:
-		r.refuse("policy reload REFUSED: approved_policy unreadable: " + derr.Error())
-		return note
-	case nerr == nil && nonce.Hash != hash:
-		r.refuse(fmt.Sprintf("policy reload REFUSED: the files changed after `rover policy apply` authenticated (approved %s, on disk %s)", short(nonce.Hash), short(hash)))
-		return note
-	case nerr == nil && nonce.Method == approve.MethodInit && found:
-		r.refuse("policy reload REFUSED: `rover policy init` may only approve the first policy; run `rover policy apply`")
-		return note
-	case nerr == nil:
-		authorized = true
-	case !found || cur.Hash != hash:
-		r.refuse("policy reload REFUSED: " + unapproved(r.db, hash) + "; run `rover policy apply` (OS authentication)")
+	if why := unapproved(r.db, hash); why != "" {
+		why = "policy reload REFUSED: " + why + "; run `rover policy apply` (OS authentication)"
+		r.logf("%s", why)
+		_ = r.srv.AuditPolicy("refused", why)
 		return note
 	}
-	if authorized {
-		if err := approve.RecordPolicy(r.db, hash, nonce.Method, now); err != nil {
-			r.logf("policy reload FAILED: recording the approval: %v; keeping the previous policy", err)
-			return note
-		}
-		_ = r.srv.AuditPolicy("approved", "hash "+hash+" method "+nonce.Method)
-	}
-	if err := r.srv.ReloadWith(pol, cfg, authorized); err != nil {
+	if err := r.srv.Reload(pol, cfg); err != nil {
 		r.logf("policy reload %v; keeping the previous policy and mode", err)
 		return note
 	}
-	r.flow.SetTimeout(cfg.Approvals.Timeout())
-	r.page.SetShowArgs(cfg.Approvals.ShowArgs)
+	r.onLoad(cfg)
 	r.logf("policy reloaded (mode %s); approved hash %s", cfg.Mode, short(hash))
 	return note
-}
-
-// refuse logs and audits a refused reload.
-func (r reloader) refuse(why string) {
-	r.logf("%s", why)
-	_ = r.srv.AuditPolicy("refused", why)
 }

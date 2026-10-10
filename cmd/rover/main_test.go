@@ -196,6 +196,9 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 			}
 			continue
 		}
+		if e.Kind == "policy" { // M9: `rover policy apply` records the approval
+			continue
+		}
 		if e.Server != "echo" || e.Action != "forward" {
 			t.Fatalf("entry missing server/action: %+v", e)
 		}
@@ -219,8 +222,9 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	vout, verr := run(dir, "log", "--verify")
-	if verr == nil || !strings.Contains(vout, "line 4") {
-		t.Fatalf("tampered log must fail --verify at line 4: err=%v\n%s", verr, vout)
+	// Line 1 is the policy approval `rover policy apply` recorded (M9).
+	if verr == nil || !strings.Contains(vout, "line 5") {
+		t.Fatalf("tampered log must fail --verify at line 5: err=%v\n%s", verr, vout)
 	}
 }
 

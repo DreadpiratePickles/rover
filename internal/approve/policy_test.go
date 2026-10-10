@@ -1,7 +1,6 @@
 package approve
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -48,44 +47,5 @@ func TestApprovePolicyKeepsOnlyTheLatestCurrent(t *testing.T) {
 	}
 	if err := RecordPolicy(db, "short", "x", now); err == nil {
 		t.Fatal("a malformed hash must be refused")
-	}
-}
-
-func TestNonceIsOneTimeFreshAndPrivate(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
-	n := Nonce{Nonce: NewToken(), Hash: "h", Method: "fake", Created: now}
-	if err := WriteNonce(dir, n); err != nil {
-		t.Fatal(err)
-	}
-	got, err := ConsumeNonce(dir, now.Add(10*time.Second))
-	if err != nil || got != n {
-		t.Fatalf("got %+v err %v", got, err)
-	}
-	if _, err := ConsumeNonce(dir, now); err != ErrNoNonce {
-		t.Fatalf("second use: %v", err)
-	}
-	// Stale.
-	_ = WriteNonce(dir, n)
-	if _, err := ConsumeNonce(dir, now.Add(NonceTTL+time.Second)); err == nil {
-		t.Fatal("a stale nonce must be refused")
-	}
-	// World-readable.
-	_ = WriteNonce(dir, n)
-	if err := os.Chmod(filepath.Join(dir, NonceFile), 0o644); err != nil { //nolint:gosec // G302: the test makes it too open on purpose
-		t.Fatal(err)
-	}
-	if _, err := ConsumeNonce(dir, now); err == nil {
-		t.Fatal("a 0644 nonce must be refused")
-	}
-	if _, err := os.Lstat(filepath.Join(dir, NonceFile)); !os.IsNotExist(err) {
-		t.Fatal("a refused nonce must be deleted too")
-	}
-	// A symlink is not followed.
-	target := filepath.Join(dir, "target")
-	_ = os.WriteFile(target, []byte("{}"), 0o600)
-	_ = os.Symlink(target, filepath.Join(dir, NonceFile))
-	if _, err := ConsumeNonce(dir, now); err == nil {
-		t.Fatal("a symlinked nonce must be refused")
 	}
 }

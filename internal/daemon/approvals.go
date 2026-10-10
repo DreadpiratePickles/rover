@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/audit"
@@ -50,13 +52,27 @@ func (s *Server) startApproval(h held) {
 	if h.sess.Elicitation() {
 		r.Elicitor = &elicitor{s: s, sess: h.sess, cn: h.cn}
 	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	key, entry := holdKey(h.sess, h.server, h.m.ID), &holdEntry{cancel: cancel}
+	s.holds.mu.Lock()
+	s.holds.m[key] = entry
+	s.holds.mu.Unlock()
 	s.approvWG.Add(1)
 	go func() {
 		defer s.approvWG.Done()
-		d, err := s.o.Prompter.Prompt(s.ctx, r)
+		defer cancel()
+		d, err := s.o.Prompter.Prompt(ctx, r)
+		s.holds.mu.Lock()
+		if s.holds.m[key] == entry {
+			delete(s.holds.m, key)
+		}
+		s.holds.mu.Unlock()
 		if err != nil {
 			s.o.Logf("approval %s: %v", r.ID, err)
 			d.Allow = false
+		}
+		if entry.cancelled.Load() {
+			d = approve.Decision{Method: "client", Reason: ReasonCancelledByClient}
 		}
 		s.releaseHeld(h, r, d)
 	}()
@@ -201,4 +217,54 @@ func (s *Server) roverID(sess *Session, dir string, m jsonrpc.Message) (judgment
 		return blockJ(m, ReasonRoverIDTaken, nil, nil), true
 	}
 	return judgment{}, false
+}
+
+// ReasonCancelledByClient releases a held call whose request the client
+// cancelled (notifications/cancelled, plan §4.3).
+const ReasonCancelledByClient = "cancelled by client"
+
+// holdTable holds the cancel function of every running approval, by
+// session, server and request id.
+type holdTable struct {
+	mu sync.Mutex
+	m  map[string]*holdEntry
+}
+
+type holdEntry struct {
+	cancel    context.CancelFunc
+	cancelled atomic.Bool
+}
+
+// holdKey names a held request; the id is compacted so 7 and " 7" match.
+func holdKey(sess *Session, server string, id json.RawMessage) string {
+	var b bytes.Buffer
+	if json.Compact(&b, id) != nil {
+		b.Reset()
+		b.Write(id)
+	}
+	return sess.ID + "\x00" + server + "\x00" + b.String()
+}
+
+// cancelHeld drops the hold a client->server notifications/cancelled
+// names: its approval stops (the dialog closes) and the call is released
+// as a block. The notification itself is judged and forwarded as usual.
+func (s *Server) cancelHeld(sess *Session, server, dir string, m jsonrpc.Message) {
+	if dir != policy.DirC2S || m.Kind != jsonrpc.KindNotification || m.Method != "notifications/cancelled" {
+		return
+	}
+	fields, err := jsonrpc.Object(m.Params)
+	if err != nil {
+		return
+	}
+	id, ok := fields.Get("requestId")
+	if !ok {
+		return
+	}
+	s.holds.mu.Lock()
+	e := s.holds.m[holdKey(sess, server, id)]
+	s.holds.mu.Unlock()
+	if e != nil {
+		e.cancelled.Store(true)
+		e.cancel()
+	}
 }

@@ -56,11 +56,19 @@ policy.
   file, `config.yaml`, the schema and the normalizers file, read from a
   private snapshot so nothing can be swapped between hashing and loading)
   is the one recorded in `approved_policy`. `rover policy init` records the
-  first one with method `init`; `rover policy apply` shows the dialog,
-  then hands the hash to roverd through a one-time nonce file in `run/`
-  plus SIGHUP (or records it directly when no roverd runs). Only the latest
+  first one with method `init`. `rover policy apply` is only a messenger:
+  it checks the files load and sends roverd an admin frame `policy_apply
+  {hash}`; **roverd itself** shows the dialog (`Rover: approve policy <hash>
+  (mode <m>)?`) and only on its yes records the hash and loads the policy.
+  The reply says `allow`, `deny` or `no_auth_agent`. With no roverd running
+  the CLI runs the same code in-process, so the CLI shows the dialog. A
+  switch from enforce to observe is just another `policy_apply`. A bare
+  SIGHUP reloads only the policy already approved. Only the latest
   approved hash counts, so rolling back to an older approved policy needs
   the dialog too. `rover doctor` checks hash on disk against the approved one.
+- **Cancellation.** A `notifications/cancelled` for a held request stops
+  its approval (the dialog closes) and releases it as a block, reason
+  `cancelled by client` (plan §4.3).
 - **Pins.** `rover pin approve` and `rover pin reset` show the dialog in the
   process that makes the change (roverd, or the CLI when no roverd runs);
   the pin's method is recorded as `osauth:<method>`.
@@ -99,19 +107,29 @@ An agent with a shell can run `curl`, `rover`, `kill` and `echo > file`. So:
   GET that reads. A wrong token gets **404, not 403** (a 403 would confirm
   the id exists), compared in constant time, and the Host header must be
   the page's own address, which stops DNS rebinding from a web page;
-- the CLI cannot approve by itself: `rover policy apply` and `rover pin
-  approve` show the OS dialog first, and the dialog wants a finger or a
-  password the agent does not have;
+- the CLI cannot approve by itself: `rover policy apply`, `rover pin
+  approve` and `rover pin reset` only ask; the process that makes the
+  change (roverd) shows the OS dialog, and the dialog wants a finger or a
+  password the agent does not have. Sending the admin frame from a script
+  is exactly as powerless as running the CLI;
 - a file cannot approve a policy: editing `policy.cedar` and sending
-  SIGHUP only logs `policy reload REFUSED` and audits it.
+  SIGHUP only logs `policy reload REFUSED` and audits it. There is no
+  token or "approved" marker file anywhere for the agent to forge.
 
-**Honest limit.** The apply nonce in `run/` proves "an authenticated CLI
-ran" only against an agent that cannot write files there. A same-user
-process that can write anywhere you can could forge it; the plan (§3)
-accepts that same-user code can always attack Rover, and the Claude Code
-deny rules from M7 cover Rover's directories. The stronger design is for
-roverd to show the dialog itself on `policy apply`, as it already does for
-held calls and pin changes; that depends on the spike below.
+**Why the dialog moved into roverd.** A first version let the CLI show the
+dialog and then leave roverd a one-time "nonce" file in `run/`. But the
+agent can write to `run/` too, so it could forge the nonce and skip the
+dialog: the gate was theatre. The lesson: a proof of a human must be
+checked by the process that acts on it, never handed over in something the
+agent can also write.
+
+**This depends on the spike (b).** If macOS will not show the dialog for
+roverd (a background process started with setsid), roverd answers every
+`policy apply`, pin change and held call with deny, reason `no
+interactive authentication from the daemon; see the spike notes`. The
+fallback is the signed helper app `RoverAuth.app`, which needs Bobby's
+Apple Developer account (plan §9). With no roverd running, `rover policy
+apply` runs in the CLI (case (a)) and still works.
 
 ### 4. Platform authentication
 
@@ -125,7 +143,9 @@ held calls and pin changes; that depends on the spike below.
   and the password are both accepted (both prove the device owner is
   present, D9) and there is no `auth.require_password`. LocalAuthentication
   needs cgo: the release builds use `CGO_ENABLED=0` today, so a release
-  macOS binary denies every approval until M14 builds darwin with cgo.
+  macOS binary denies every approval, and `rover daemon` says so at
+  startup (`WARN approvals will always deny: ...`). Darwin release builds
+  need cgo on macOS runners (M14; noted in `.goreleaser.yaml`).
 - **Linux, polkit.** The action file uses `allow_active: auth_self`: you type
   your own password each time. Never `auth_self_keep`, which would let one
   approval silently cover the next few minutes of agent calls. A headless
@@ -173,12 +193,13 @@ with an external keyboard), run (a) once more and record the code. Expected
 codes: `-2` user cancel, `-1` failed, `-4` system cancel, `-1004` not
 interactive.
 
-If (b) shows no dialog or returns `-1004`: approvals of held calls and pin
-changes cannot work from roverd, and the plan's fallback is a signed helper
-app (`RoverAuth.app`) that roverd launches. That needs your Apple Developer
-account (plan §9), so it was not built; stop and tell me what (b) printed.
-`rover policy apply` still works either way: its dialog runs in the CLI,
-which is case (a).
+If (b) shows no dialog or returns `-1004`: held calls, pin changes and
+`rover policy apply` cannot be approved while roverd runs (roverd denies
+them with `no interactive authentication from the daemon; see the spike
+notes`), and the plan's fallback is a signed helper app (`RoverAuth.app`)
+that roverd launches. That needs your Apple Developer account (plan §9), so
+it was not built; stop and tell me what (b) printed. Until then, stop
+roverd and run `rover policy apply` (it then runs in the CLI, case (a)).
 
 ### Approvals
 
@@ -234,8 +255,12 @@ kill -HUP $(cat "$ROVER_DIR/run/roverd.pid")
 roverd logs `policy reload REFUSED: the policy files changed ...` and keeps
 the approved policy; `rover doctor` reports `FAIL policy-approval TAMPERED`;
 restarting roverd loads no policy at all and blocks every policed call.
-Then try writing `run/apply.nonce` by hand: read section (b)3 on what that
-shows. (Test: `TestTamperedPolicyIsNotLoadedAndDoctorReportsIt`.)
+Then forge an approval: write `run/apply.nonce` naming your file's hash
+(the old design read it) and SIGHUP again: still refused, nothing reads it.
+And send `{"type":"admin","op":"policy_apply","hash":"<hash>"}` to the
+socket yourself: roverd shows *its* dialog, and only your yes there
+loads it. (Tests: `TestTamperedPolicyIsNotLoadedAndDoctorReportsIt`,
+`TestForgedNonceFileDoesNothing`, `TestPolicyApplyFrameAloneApprovesNothing`.)
 
 ## (e) Five explain-back questions
 

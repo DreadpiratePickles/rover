@@ -1,10 +1,6 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"time"
-
 	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/pin"
 )
@@ -30,24 +26,3 @@ var stripTestFlags = func(args []string) []string { return args }
 // daemonExtraArgs are given to a roverd the wrapper auto-starts, before
 // "daemon" (a testauth build passes its flags on).
 var daemonExtraArgs = func() []string { return nil }
-
-// cliAuthTimeout bounds the dialog the CLI shows (`rover policy apply`).
-const cliAuthTimeout = 150 * time.Second
-
-// errNotAuthenticated refuses a change the human did not confirm.
-var errNotAuthenticated = errors.New("refused: OS authentication did not succeed")
-
-// authenticateCLI shows the dialog from the CLI and returns the method to
-// record ("osauth:<method>").
-func authenticateCLI(reason string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), cliAuthTimeout)
-	defer cancel()
-	ok, method, err := newAuthenticator(errf).Authenticate(ctx, reason)
-	if err != nil {
-		return "", errors.Join(errNotAuthenticated, err)
-	}
-	if !ok {
-		return "", errNotAuthenticated
-	}
-	return pin.MethodOSAuth + ":" + method, nil
-}

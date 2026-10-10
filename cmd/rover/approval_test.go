@@ -5,10 +5,15 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/DreadpiratePickles/rover/internal/paths"
 )
 
 // approvalPolicy permits echo only with a human's approval.
@@ -122,12 +127,14 @@ func TestTamperedPolicyIsNotLoadedAndDoctorReportsIt(t *testing.T) {
 	}
 }
 
-// Review M2 / M9: enforce -> observe needs an authenticated apply.
-func TestModeDowngradeNeedsAuthenticatedApply(t *testing.T) {
+// Review M2 / M9: enforce -> observe needs an approved apply, and the
+// dialog that approves it is roverd's, not the CLI's: a CLI that "says"
+// allow changes nothing while roverd's dialog says no.
+func TestModeDowngradeNeedsRoverdsDialog(t *testing.T) {
 	// Arrange
 	dir := roverDir(t)
 	usePolicy(t, dir, e2ePolicy, "enforce")
-	logs := startDaemon(t, dir)
+	stop, logs := daemonProc(t, dir, "deny")
 	cfgPath := filepath.Join(dir, "config", "config.yaml")
 	cfg, err := os.ReadFile(cfgPath) //nolint:gosec // G304: the test's ROVER_DIR
 	if err != nil {
@@ -140,17 +147,79 @@ func TestModeDowngradeNeedsAuthenticatedApply(t *testing.T) {
 	}
 	hup(t, dir)
 	waitFor(t, logs, "policy reload REFUSED")
-	denied, derr := run(dir, "--test-auth=deny", "policy", "apply")
-	applied, aerr := run(dir, "--test-auth=allow", "policy", "apply")
+	denied, derr := run(dir, "--test-auth=allow", "policy", "apply") // the CLI's fake says allow; roverd's says deny
+	stop()
+	_, logs2 := daemonProc(t, dir, "allow")
+	applied, aerr := run(dir, "policy", "apply") // the CLI's (testauth default) says deny; roverd's says allow
 
 	// Assert
-	if derr == nil || !strings.Contains(denied, "OS authentication did not succeed") {
-		t.Fatalf("apply without the dialog's yes: %v\n%s", derr, denied)
+	if derr == nil || !strings.Contains(denied, "not applied: deny") || strings.Contains(logs.String(), "policy reloaded (mode observe)") {
+		t.Fatalf("roverd's deny must win: %v\n%s\n%s", derr, denied, logs.String())
 	}
-	if aerr != nil || !strings.Contains(applied, "mode observe") {
+	if aerr != nil || !strings.Contains(applied, "applied policy") || !strings.Contains(applied, "mode observe") {
 		t.Fatalf("apply: %v\n%s", aerr, applied)
 	}
-	waitFor(t, logs, "policy reloaded (mode observe)")
+	waitFor(t, logs2, "policy reloaded (mode observe)")
+}
+
+// daemonProc starts roverd with the fake dialog answering answer and
+// returns a stop function and its stderr.
+func daemonProc(t *testing.T, dir, answer string) (func(), *lockedBuf) {
+	t.Helper()
+	cmd := exec.Command(bins.rover, "--test-auth="+answer, "daemon") //nolint:gosec // G204: test runs the binary it just built
+	cmd.Env = env(dir)
+	logs := &lockedBuf{}
+	cmd.Stderr = logs
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stopped := false
+	stop := func() {
+		if !stopped {
+			stopped = true
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			_ = cmd.Wait()
+		}
+	}
+	t.Cleanup(stop)
+	waitFor(t, logs, "listening on")
+	return stop, logs
+}
+
+// Acceptance (M9 change): no nonce file exists any more, and a forged one
+// does nothing. The agent writes run/apply.nonce naming the hash of its own
+// policy and sends SIGHUP: refused; the policy is not loaded.
+func TestForgedNonceFileDoesNothing(t *testing.T) {
+	// Arrange
+	dir := roverDir(t)
+	usePolicy(t, dir, e2ePolicy, "enforce")
+	logs := startDaemon(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "config", "policy.cedar"), []byte(`permit (principal, action, resource);`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := loadedHash(paths.Dirs{Config: filepath.Join(dir, "config"), Run: filepath.Join(dir, "run")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := `{"nonce":"` + strings.Repeat("a", 32) + `","hash":"` + hash + `","method":"osauth:macos_local_authentication","created":"` + time.Now().UTC().Format(time.RFC3339) + `"}`
+	if err := os.WriteFile(filepath.Join(dir, "run", "apply.nonce"), []byte(forged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Act
+	hup(t, dir)
+	waitFor(t, logs, "policy reload REFUSED")
+	m := wrapEcho(t, dir)
+	r := m.call(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/etc/hosts"}}}`)
+	m.close()
+
+	// Assert
+	if !strings.Contains(fmt.Sprint(r["result"]), "isError:true") {
+		t.Fatalf("a forged nonce must not load the agent's policy: %v", r)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "run", "apply.nonce")); err != nil {
+		t.Fatalf("nothing reads the nonce file any more, so it must still be there untouched: %v", err)
+	}
 }
 
 // Acceptance (M9): concurrent calls flow while one is held, end to end

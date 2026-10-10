@@ -16,6 +16,7 @@ import (
 	"github.com/DreadpiratePickles/rover/internal/approve/page"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
+	"github.com/DreadpiratePickles/rover/internal/config"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
@@ -97,7 +98,14 @@ func runDaemon(args []string) int {
 		pages = nil
 	}
 	defer func() { _ = details.Close() }()
+	if why := approve.PlatformLimit(); why != "" {
+		logf("WARN approvals will always deny: %s", why)
+	}
 	flow := &approve.Flow{Store: store, Auth: auth, Notifier: notifier, Pages: pages, Timeout: cfg.Approvals.Timeout(), Logf: logf}
+	onLoad := func(c config.Config) {
+		flow.SetTimeout(c.Approvals.Timeout())
+		details.SetShowArgs(c.Approvals.ShowArgs)
+	}
 	srv := daemon.New(daemon.Options{
 		SocketPath: sock,
 		Audit:      log,
@@ -117,10 +125,12 @@ func runDaemon(args []string) int {
 		StateDBCreated:  stateCreated,
 		AuditHadHistory: hadHistory,
 
-		Prompter:      flow,
-		Authenticator: auth,
+		Prompter:       flow,
+		Authenticator:  auth,
+		PolicyLoader:   policyLoader(dirs),
+		OnPolicyLoaded: onLoad,
 	})
-	go reloadOnHUP(hup, reloader{dirs: dirs, db: db, srv: srv, flow: flow, page: details, logf: logf}, note)
+	go reloadOnHUP(hup, reloader{dirs: dirs, db: db, srv: srv, onLoad: onLoad, logf: logf}, note)
 	if err := srv.Listen(); err != nil {
 		logf("%v", err)
 		return 1

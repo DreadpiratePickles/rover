@@ -79,9 +79,16 @@ type Options struct {
 	// Prompter runs the approval of a held call (M9, approvals.go). Nil
 	// means approvals are unavailable: a held call is blocked at once.
 	Prompter approve.Prompter
-	// Authenticator shows the OS dialog before `rover pin approve` and
-	// `rover pin reset` change anything (M9). Nil refuses both.
+	// Authenticator shows the OS dialog before `rover pin approve`, `rover
+	// pin reset` and `rover policy apply` change anything (M9). Nil
+	// refuses all three.
 	Authenticator approve.Authenticator
+	// PolicyLoader loads the policy files as they are on disk now and
+	// returns their bundle hash (policy_apply, M9). Nil refuses the op.
+	PolicyLoader func() (Policy, config.Config, string, error)
+	// OnPolicyLoaded is told about every newly loaded config (roverd
+	// updates the approval timeout and the details page).
+	OnPolicyLoaded func(config.Config)
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -113,6 +120,7 @@ type Server struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	elicits  elicitTable // elicitations waiting for the client (approvals.go)
+	holds    holdTable   // held calls, for notifications/cancelled (approvals.go)
 	approvWG sync.WaitGroup
 }
 
@@ -142,7 +150,7 @@ func New(o Options) *Server {
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
 		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescerWith(o.Notifier, o.Now, blockedMessage),
-		closedDone: make(chan struct{}), elicits: elicitTable{m: map[string]elicitWait{}}}
+		closedDone: make(chan struct{}), elicits: elicitTable{m: map[string]elicitWait{}}, holds: holdTable{m: map[string]*holdEntry{}}}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if o.State != nil {
 		s.rec = learn.NewRecorder(o.State, o.Logf)
@@ -346,6 +354,7 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame, cn *conn) i
 	now := s.o.Now()
 	e, req, evicted := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
 	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, req.cursor, now)
+	s.cancelHeld(sess, server, f.Dir, m)
 	if j.action == ipc.ActionHold && s.o.Prompter == nil {
 		j = blockJ(m, ReasonApprovalUnavailable, j.ruleIDs, j.findings)
 	}

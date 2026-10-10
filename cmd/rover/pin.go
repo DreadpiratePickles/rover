@@ -61,7 +61,7 @@ func runPin(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	result, err := pinAdmin(req)
+	result, err := adminCall(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "rover pin:", err)
 		return 1
@@ -84,9 +84,10 @@ func runPin(args []string) int {
 	return 0
 }
 
-// pinAdmin asks roverd; if none is running it does the same work itself on
-// the state database (whose lock keeps a daemon from starting meanwhile).
-func pinAdmin(req ipc.Frame) (json.RawMessage, error) {
+// adminCall asks roverd; if none is running it does the same work itself
+// on the state database (whose lock keeps a daemon from starting
+// meanwhile), and then this process shows any OS dialog the op needs.
+func adminCall(req ipc.Frame) (json.RawMessage, error) {
 	dirs, err := paths.Resolve()
 	if err == nil {
 		err = paths.Ensure(dirs)
@@ -113,7 +114,7 @@ func pinAdmin(req ipc.Frame) (json.RawMessage, error) {
 		return nil, err
 	}
 	defer func() { _ = db.Close() }()
-	o := daemon.Options{State: db, Authenticator: newAuthenticator(errf)}
+	o := daemon.Options{State: db, Authenticator: newAuthenticator(errf), PolicyLoader: policyLoader(dirs)}
 	if req.Op != ipc.OpPinList {
 		logPath := filepath.Join(dirs.State, "audit.jsonl")
 		log, err := audit.Open(logPath)

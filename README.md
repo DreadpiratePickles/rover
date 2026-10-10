@@ -49,9 +49,11 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover policy validate  # type-check it against the schema (and run `cedar validate` if installed)
 ./bin/rover policy labels    # each tool's labels and where they came from (built-in, config, default);
                              # the starter's trifecta guard blocks egress after private + untrusted
-./bin/rover policy apply     # approve it in the system authentication dialog (Touch ID or password;
-                             # polkit on Linux), then roverd loads it. roverd loads ONLY the approved
-                             # policy: an edited policy.cedar or config.yaml changes nothing until apply
+./bin/rover policy apply     # roverd shows the system authentication dialog (Touch ID or password;
+                             # polkit on Linux) and loads the policy only on your yes. roverd loads ONLY
+                             # the approved policy: edited files change nothing until apply. Needs the
+                             # dialog to work from roverd (M9 spike (b), pending); with roverd stopped,
+                             # apply runs in the CLI and shows the dialog itself
 
 # or write the policy in YAML (plan §5.4) and read the Cedar it compiles to
 ./bin/rover policy init --yaml          # policy.yaml instead of policy.cedar
@@ -136,8 +138,10 @@ Rover denies by default: with no `policy.cedar` or `policy.yaml`, roverd blocks 
 (reason `no_policy`). `config.yaml` starts in `mode: observe`, where a denied
 message is still forwarded and logged as `would_deny`; switch to
 `mode: enforce` once `rover log` shows no surprises. Switching back from
-enforce to observe needs an authenticated `rover policy apply` like any other
-policy change: the first policy `rover policy init` writes is trusted on first
+enforce to observe needs `rover policy apply` and roverd's dialog like any
+other policy change (if roverd cannot show the dialog it answers deny:
+"no interactive authentication from the daemon; see the spike notes"; the
+fallback is a signed helper app, plan §9): the first policy `rover policy init` writes is trusted on first
 use (method `init`), every later one needs the OS dialog, and `rover doctor`
 fails `policy-approval` when the files on disk are not the approved ones.
 Lines that are not unambiguous JSON-RPC (unknown members, duplicate keys or

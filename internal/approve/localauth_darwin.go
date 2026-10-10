@@ -148,5 +148,11 @@ func (LocalAuth) Authenticate(ctx context.Context, reason string) (bool, string,
 	case r.code == LAErrorUserCancel:
 		return false, MethodLocalAuth, nil
 	}
+	if r.code == LAErrorNotInteractive {
+		return false, MethodLocalAuth, fmt.Errorf("%w: %w", ErrNotInteractive, &LAError{Code: r.code, Msg: r.msg})
+	}
 	return false, MethodLocalAuth, &LAError{Code: r.code, Msg: r.msg}
 }
+
+// PlatformLimit says why approvals can never succeed in this build, or "".
+func PlatformLimit() string { return "" }
