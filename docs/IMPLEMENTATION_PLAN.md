@@ -1,6 +1,6 @@
 # Rover: Implementation Plan
 
-> **Audience:** Claude Code (the builder). The human owner, Bobby, studies each milestone in a separate tutoring chat while you build.
+> **Audience:** Claude Code (the builder). The human owner studies each milestone in a separate tutoring chat while you build.
 > **Status:** A0 and A1 are done (`examples/echo-server`, the stdio proxy in `internal/proxy`). Everything below is still to build.
 > **Source of truth for decisions:** §2. Do not change a locked decision. If one seems wrong, stop and ask.
 
@@ -9,16 +9,16 @@
 ## 0. How to work through this plan
 
 1. **One milestone per branch and pull request.** Name the branch `m<N>-<slug>`, e.g. `m2-cedar-engine`. Never mix two milestones.
-2. **Stop after each milestone.** Open the PR, write the lesson notes (rule 4), and wait for Bobby to say "next". He's learning at about 10 hours a week, so don't run ahead.
+2. **Stop after each milestone.** Open the PR, write the lesson notes (rule 4), and wait for the maintainer to say "next". They're learning at about 10 hours a week, so don't run ahead.
 3. **Verify before you build.** Items marked 🔍 are facts nobody has confirmed: API paths, library behaviour, platform support. Confirm them from official docs or source first. If a fact turns out false, apply the stated fallback and record what you found in the PR description.
 4. **Lesson notes.** Every milestone ends with `docs/lessons/<milestone>.md`, containing:
    - (a) what was built, in plain language
    - (b) each design decision and the attack it prevents
    - (c) how to exercise it by hand, with copy-paste commands
-   - (d) three attacks Bobby should try against it
+   - (d) three attacks the maintainer should try against it
    - (e) five explain-back questions
 
-   Bobby is taught from these, so write them for someone who is new to security, not for a reviewer.
+   The maintainer is taught from these, so write them for someone who is new to security, not for a reviewer.
 5. **Definition of done, for every milestone:**
    - `make test` is green: `go vet`, `go test -race ./...`, and `golangci-lint` once added.
    - Every parser touched has a fuzz target that runs in `make fuzz`.
@@ -33,7 +33,7 @@
    - Nothing user-facing writes to stdout except the MCP protocol stream.
    - Add a new dependency only with a one-line justification in the PR. Prefer the standard library and well-known modules.
    - Test everything that is time-based with an injected clock.
-7. **Commit attribution:** follow the repository's git conventions. Commits are authored as Bobby.
+7. **Commit attribution:** follow the repository's git conventions. Commits are authored as the maintainer.
 
 ---
 
@@ -307,7 +307,7 @@ rules:
 roots: { projects: "~/projects" }
 ```
 
-- `rover policy compile` prints the generated Cedar. Bobby learns Cedar by reading it.
+- `rover policy compile` prints the generated Cedar. The maintainer learns Cedar by reading it.
 - **Strictness:** an unknown key, an unknown server or tool (once pins exist), or a condition with no Cedar mapping is an **error**, never ignored.
 - Golden-file tests: `testdata/yaml2cedar/*.yaml` → `*.cedar`.
 
@@ -437,7 +437,7 @@ Phases group milestones into releases. Each milestone below lists **Build**, **A
   - Doctor detects a manually unwrapped server.
 - **Lesson focus:** configuration as attack surface, atomic writes, and defence in depth.
 
-**Release v0.1.0 here:** a goreleaser snapshot and a tagged pre-release. Bobby dogfoods it on his main Mac.
+**Release v0.1.0 here:** a goreleaser snapshot and a tagged pre-release. The maintainer dogfoods it on their main Mac.
 
 ### Phase 2: deeper protection → `v0.2.0`
 
@@ -561,7 +561,7 @@ Phases group milestones into releases. Each milestone below lists **Build**, **A
     - `rover net apply`: if-match on ETag, refuses if the remote changed since pull.
     - `rover net test`: runs the policy's `tests` and `sshTests` through validation.
   - A **break-glass check:** refuse to apply a policy whose tests don't include a rule keeping the configured admin device able to reach everything.
-- **Accept:** against a mock API server, a concurrent remote edit makes apply refuse; break-glass is enforced; a real dry run against Bobby's tailnet (`--dry-run`) prints a diff.
+- **Accept:** against a mock API server, a concurrent remote edit makes apply refuse; break-glass is enforced; a real dry run against the maintainer's tailnet (`--dry-run`) prints a diff.
 - **Lesson focus:** GitOps, optimistic concurrency, and why you never lock yourself out.
 
 #### N2: YAML and Cedar front ends for the network
@@ -582,7 +582,7 @@ Phases group milestones into releases. Each milestone below lists **Build**, **A
 
 #### N3: Controller and posture agent
 - **Build:**
-  - **`rover net controller`** runs on a tagged node (Bobby's AWS box) using **tsnet**, so it's reachable only over the tailnet.
+  - **`rover net controller`** runs on a tagged node (the maintainer's AWS box) using **tsnet**, so it's reachable only over the tailnet.
     - It identifies callers with the local client's **WhoIs**. 🔍 Check the current import path for the local client.
     - It holds the API credentials. Devices never do.
   - **`rover net agent`** runs on macOS and Linux devices and reports posture every 5 minutes. A report includes:
@@ -592,7 +592,7 @@ Phases group milestones into releases. Each milestone below lists **Build**, **A
     - whether roverd is running in enforce mode with an approved policy
   - The controller sets custom posture attributes (`custom:rover_healthy`, `custom:rover_seen`), and treats a device as unhealthy if no report has arrived in 15 minutes (fail closed).
   - Devices with no agent (e.g. Windows) are unhealthy by design.
-  - 🔍 Confirm the custom posture attribute API endpoint, the `custom:` key format, whether expiry is supported, and **plan-tier availability on Bobby's tailnet**. If posture attributes aren't available on his plan, **stop and ask** before falling back to tags.
+  - 🔍 Confirm the custom posture attribute API endpoint, the `custom:` key format, whether expiry is supported, and **plan-tier availability on the maintainer's tailnet**. If posture attributes aren't available on his plan, **stop and ask** before falling back to tags.
 - **Accept:**
   - With a mock API: a device that stops reporting goes unhealthy after 15 minutes (injected clock); a forged report from a different node identity is rejected.
   - Lab: `yerr` (Windows, no agent) is denied access to `tag:server` by a `srcPosture` rule.
@@ -637,7 +637,7 @@ Phases group milestones into releases. Each milestone below lists **Build**, **A
     - linux arm64/amd64
   - Checksums, cosign keyless signatures, and an SBOM (syft).
   - A Homebrew tap (`DreadpiratePickles/homebrew-rover`).
-  - macOS: sign and notarise the helper if M9 needed one. **This needs an Apple Developer account. Ask Bobby before relying on it.**
+  - macOS: sign and notarise the helper if M9 needed one. **This needs an Apple Developer account. Ask the maintainer before relying on it.**
   - README: quickstart, the threat model summary including what Rover does *not* protect against, and how to verify releases.
 - **Accept:**
   - Each fuzz target has run for 10 minutes with no crash.
@@ -678,7 +678,7 @@ These belong in `docs/labs/`, built when the matching milestone lands:
 
 ---
 
-## 9. Things only Bobby can do (ask, don't work around)
+## 9. Things only the maintainer can do (ask, don't work around)
 
 - Approve each milestone's PR before the next one starts.
 - Create a Tailscale OAuth client and confirm his plan tier (N1, N3).
