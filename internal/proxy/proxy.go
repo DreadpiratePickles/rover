@@ -94,7 +94,13 @@ func (w *Wrapper) Pump(src io.Reader, dst, back io.Writer, dir Direction) error 
 			if derr != nil {
 				return fmt.Errorf("no verdict from roverd, stopping session (fail closed): %w", derr)
 			}
-			if v.Action == ipc.ActionHold {
+			if dir == ClientToServer && isRoverReply(line) {
+				// roverd has it now; the server must never see it (inject.go).
+				// A hold for it is dropped too: roverd never holds one.
+				if v.Action != ipc.ActionBlock {
+					w.Errf("roverd answered %s for a reply to a rover request; dropping it anyway", v.Action)
+				}
+			} else if v.Action == ipc.ActionHold {
 				w.held.Add(1)
 				go func(line []byte) {
 					defer w.held.Done()
@@ -134,6 +140,9 @@ func (w *Wrapper) apply(v ipc.Frame, line []byte, dst, back io.Writer) error {
 	case ipc.ActionBlock:
 		m := jsonrpc.Parse(line)
 		w.Errf("blocked %s %s: %s", m.Kind, m.Method, v.Reason)
+		if v.Drop {
+			return nil // the requester cancelled it: no reply at all
+		}
 		if m.Kind != jsonrpc.KindRequest && !m.InvalidRequest() {
 			return nil // notifications, responses and other invalid lines are simply dropped
 		}

@@ -30,6 +30,7 @@ const unwrappedFS = `"fs": {"command": "npx", "args": ["fs"]}`
 
 // tamperRig is a roverd with a tamper watch on one config in a temp dir.
 type tamperRig struct {
+	auth  *testAuth
 	cfg   string
 	db    *state.DB
 	log   *lockedWriter
@@ -55,7 +56,10 @@ func newTamperRig(t *testing.T, content string) *tamperRig {
 }
 
 func (r *tamperRig) options() Options {
-	return Options{Audit: audit.New(r.log), State: r.db, Notifier: r.notes, RoverPath: tamperRover,
+	if r.auth == nil {
+		r.auth = &testAuth{ok: true}
+	}
+	return Options{Audit: audit.New(r.log), State: r.db, Notifier: r.notes, RoverPath: tamperRover, Authenticator: r.auth,
 		TamperFiles:    []clients.ConfigFile{{Adapter: clients.NameCursor, Path: r.cfg, Scope: "global"}},
 		TamperDebounce: 50 * time.Millisecond}
 }

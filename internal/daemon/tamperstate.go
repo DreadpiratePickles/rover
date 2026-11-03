@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
@@ -116,6 +118,18 @@ func (s *Server) tamperAdmin(f ipc.Frame) ipc.Frame {
 	if !running {
 		return adminResult(map[string]bool{"watching": false}, "roverd is not watching client configs")
 	}
+	// What roverd watches is a security setting: the human confirms it in
+	// the OS dialog, like a pin approval (review M9). The frame alone,
+	// which anything running as the user can send, changes nothing.
+	question := fmt.Sprintf("Rover [%s]: trust %s config %s?", approve.ShortID(approve.NewID()), approve.Clean(cf.Adapter), approve.Clean(path))
+	if f.Op == ipc.OpTamperForget {
+		question = fmt.Sprintf("Rover [%s]: stop watching %s?", approve.ShortID(approve.NewID()), approve.Clean(path))
+	}
+	method, err := s.authenticate(question)
+	if err != nil {
+		s.o.Logf("tamper watch: %s %s REFUSED: %v", f.Op, path, err)
+		return ipc.Frame{Type: ipc.TypeError, Message: err.Error()}
+	}
 	t.mu.Lock()
 	for k, a := range t.alerts {
 		if a.File == path {
@@ -141,7 +155,7 @@ func (s *Server) tamperAdmin(f ipc.Frame) ipc.Frame {
 	s.saveTamperLocked()
 	t.mu.Unlock()
 	s.o.Logf("tamper watch: %s %s by the CLI", action, path)
-	if err := s.writeAudit(audit.Entry{Time: s.o.Now().UTC(), Session: adminSession, Kind: AuditKindTamper, Action: action, Reason: path}); err != nil {
+	if err := s.writeAudit(audit.Entry{Time: s.o.Now().UTC(), Session: adminSession, Kind: AuditKindTamper, Action: action, Reason: path + " method:" + method}); err != nil {
 		return ipc.Frame{Type: ipc.TypeError, Message: err.Error()}
 	}
 	t.mu.Lock()
@@ -161,6 +175,10 @@ type DoctorState struct {
 	TamperAlerts  []TamperAlert `json:"tamper_alerts"`
 	AuditHealthy  bool          `json:"audit_healthy"`
 	ServerVersion int           `json:"protocol_version"`
+	// ApprovedPolicy is the approved policy hash (M9), if any; doctor
+	// compares it with the files on disk.
+	ApprovedPolicy *approve.PolicyApproval `json:"approved_policy,omitempty"`
+	ApprovedErr    string                  `json:"approved_policy_error,omitempty"`
 }
 
 func (s *Server) doctorState() ipc.Frame {
@@ -178,8 +196,18 @@ func (s *Server) doctorState() ipc.Frame {
 			alerts = append(alerts, a)
 		}
 	}
-	return adminResult(DoctorState{Mode: string(l.cfg.Mode), PolicyLoaded: l.pol != nil, WatchedFiles: n,
-		TamperAlerts: alerts, AuditHealthy: healthy, ServerVersion: ipc.Version}, "")
+	st := DoctorState{Mode: string(l.cfg.Mode), PolicyLoaded: l.pol != nil, WatchedFiles: n,
+		TamperAlerts: alerts, AuditHealthy: healthy, ServerVersion: ipc.Version}
+	if s.o.State != nil {
+		a, found, err := approve.CurrentPolicy(s.o.State)
+		switch {
+		case err != nil:
+			st.ApprovedErr = err.Error()
+		case found:
+			st.ApprovedPolicy = &a
+		}
+	}
+	return adminResult(st, "")
 }
 
 // tamperNotifier gives tamper notifications their own title. The pin

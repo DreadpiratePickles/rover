@@ -83,7 +83,8 @@ type Logger struct {
 	w    io.Writer
 	f    *os.File // nil when writing to an arbitrary writer
 	path string
-	last string // hash of the last entry written
+	last string    // hash of the last entry written
+	at   time.Time // time of the last entry written
 	size int64
 	// RotateBytes is the file size that triggers rotation; 0 disables it.
 	RotateBytes int64
@@ -98,7 +99,7 @@ func Open(path string) (*Logger, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	last, err := lastHash(path)
+	last, at, err := lastEntry(path)
 	if err != nil {
 		return nil, fmt.Errorf("resume chain: %w", err)
 	}
@@ -111,7 +112,7 @@ func Open(path string) (*Logger, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	return &Logger{w: f, f: f, path: path, last: last, size: fi.Size(), RotateBytes: DefaultRotateBytes}, nil
+	return &Logger{w: f, f: f, path: path, last: last, at: at, size: fi.Size(), RotateBytes: DefaultRotateBytes}, nil
 }
 
 func openAppend(path string) (*os.File, error) {
@@ -136,6 +137,15 @@ func (l *Logger) LastHash() string {
 	return l.last
 }
 
+// LastTime returns the time of the most recent entry, zero if none. roverd
+// compares approval records with it (M9): an approval newer than the log
+// was not written by roverd.
+func (l *Logger) LastTime() time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.at
+}
+
 // Write links e to the chain and appends it as one line. Prev and Hash are
 // set here; any values the caller put in them are overwritten.
 func (l *Logger) Write(e Entry) error {
@@ -157,7 +167,7 @@ func (l *Logger) Write(e Entry) error {
 	if _, err := l.w.Write(line); err != nil {
 		return err
 	}
-	l.last = hash
+	l.last, l.at = hash, e.Time
 	l.size += int64(len(line))
 	if l.AnchorPath != "" {
 		if err := writeAnchor(l.AnchorPath, hash); err != nil {
@@ -243,33 +253,34 @@ func marshal(e Entry) ([]byte, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
-// lastHash returns the hash of the final line of an existing log, "" if the
-// file is missing or empty. A corrupt tail is an error: appending to a broken
-// chain would hide the break behind new valid entries.
-func lastHash(path string) (string, error) {
+// lastEntry returns the hash and time of the final line of an existing
+// log, "" if the file is missing or empty. A corrupt tail is an error:
+// appending to a broken chain would hide the break behind new valid entries.
+func lastEntry(path string) (string, time.Time, error) {
 	f, err := os.Open(path) //nolint:gosec // G304: Rover-owned audit-log path
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return "", time.Time{}, nil
 	}
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	defer func() { _ = f.Close() }()
 	res := Verify(f)
 	if res.Err != nil {
-		return "", fmt.Errorf("line %d: %w", res.Line, res.Err)
+		return "", time.Time{}, fmt.Errorf("line %d: %w", res.Line, res.Err)
 	}
-	return res.LastHash, nil
+	return res.LastHash, res.LastTime, nil
 }
 
 // Result is what Verify found.
 type Result struct {
-	Entries   int    // lines checked
-	LastHash  string // hash of the final entry, "" if the log is empty
-	FirstPrev string // Prev of the first entry; non-empty means it continues an earlier file
-	File      string // which file the problem is in (VerifyChain only)
-	Line      int    // 1-based line of the first problem, 0 if none
-	Err       error  // nil when the chain is intact
+	Entries   int       // lines checked
+	LastHash  string    // hash of the final entry, "" if the log is empty
+	LastTime  time.Time // time of the final entry
+	FirstPrev string    // Prev of the first entry; non-empty means it continues an earlier file
+	File      string    // which file the problem is in (VerifyChain only)
+	Line      int       // 1-based line of the first problem, 0 if none
+	Err       error     // nil when the chain is intact
 }
 
 // ChainFiles lists the log files for path in chain order: rotated files
@@ -385,7 +396,7 @@ func verify(r io.Reader, anchorSeen *bool, anchor string) Result {
 			}
 			prev = hash
 			res.Entries++
-			res.LastHash = hash
+			res.LastHash, res.LastTime = hash, e.Time
 			if hash == anchor {
 				*anchorSeen = true
 			}

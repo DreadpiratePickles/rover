@@ -33,6 +33,8 @@ func TestValidateRejectsBadFrames(t *testing.T) {
 		"replace no body":   {Type: TypeVerdict, Seq: 1, Action: ActionReplace},
 		"release hold":      {Type: TypeRelease, Seq: 1, Action: ActionHold},
 		"response on fwd":   {Type: TypeVerdict, Seq: 1, Action: ActionForward, ResponseRaw: []byte("{}")},
+		"inject no raw":     {Type: TypeInject},
+		"inject too big":    {Type: TypeInject, Raw: make([]byte, MaxInject+1)},
 		// Tool ids are "<server>/<tool>", split at the first "/" (review L4).
 		"slash in server":   {Type: TypeHello, Version: Version, WrapperPID: 1, ClientPID: 1, ServerName: "evil/echo", Transport: "stdio"},
 		"space in server":   {Type: TypeHello, Version: Version, WrapperPID: 1, ClientPID: 1, ServerName: "my server", Transport: "stdio"},
@@ -146,6 +148,23 @@ func TestAdminFrames(t *testing.T) {
 	} {
 		if _, err := Parse([]byte(bad)); err == nil {
 			t.Errorf("%.80s: accepted", bad)
+		}
+	}
+}
+
+func TestPolicyApplyFrame(t *testing.T) {
+	good := Frame{Type: TypeAdmin, Op: OpPolicyApply, Hash: strings.Repeat("a", 64)}
+	if err := good.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, f := range map[string]Frame{
+		"short hash":  {Type: TypeAdmin, Op: OpPolicyApply, Hash: "abc"},
+		"upper hash":  {Type: TypeAdmin, Op: OpPolicyApply, Hash: strings.Repeat("A", 64)},
+		"with server": {Type: TypeAdmin, Op: OpPolicyApply, Hash: strings.Repeat("a", 64), ServerName: "x"},
+		"hash on pin": {Type: TypeAdmin, Op: OpPinReset, ServerName: "x", Hash: strings.Repeat("a", 64)},
+	} {
+		if err := f.Validate(); !errors.Is(err, ErrBadFrame) {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }

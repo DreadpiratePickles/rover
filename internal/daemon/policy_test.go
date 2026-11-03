@@ -320,8 +320,8 @@ func TestSpliceResultRefusesAmbiguousMessages(t *testing.T) {
 }
 
 // Review M2: `rm config.yaml && rover policy apply` reloaded the default
-// config (observe) into an enforcing daemon. Until M9 adds OS
-// authentication, a reload may tighten the mode but never loosen it.
+// config (observe) into an enforcing daemon. A reload may tighten the mode
+// but never loosen it, unless the human approved it (M9: ReloadWith).
 func TestReloadRefusesEnforceToObserve(t *testing.T) {
 	// Arrange
 	s := start(t, Options{Audit: audit.New(&syncBuf{}), Policy: engine(t, hidingPolicy), Config: enforce()})
@@ -332,7 +332,7 @@ func TestReloadRefusesEnforceToObserve(t *testing.T) {
 	err := s.Reload(permitAll, config.Default())
 
 	// Assert: refused, and the previous policy and mode still apply.
-	if !errors.Is(err, ErrModeDowngrade) || !strings.Contains(err.Error(), "refused: switching enforce -> observe needs OS authentication (M9)") {
+	if !errors.Is(err, ErrModeDowngrade) || !strings.Contains(err.Error(), "refused: switching enforce -> observe needs an authenticated `rover policy apply`") {
 		t.Fatalf("Reload err = %v", err)
 	}
 	if v := decide(t, c, "c2s", call("1", "read_file")); v.Action != ipc.ActionBlock {
@@ -354,5 +354,9 @@ func TestReloadAllowsObserveToEnforce(t *testing.T) {
 	}
 	if err := s.Reload(engine(t, hidingPolicy), config.Default()); !errors.Is(err, ErrModeDowngrade) {
 		t.Fatalf("enforce -> observe after the upgrade: %v", err)
+	}
+	// M9: after the OS dialog (an authenticated apply), the switch is allowed.
+	if err := s.ReloadWith(engine(t, hidingPolicy), config.Default(), true); err != nil {
+		t.Fatalf("authenticated enforce -> observe: %v", err)
 	}
 }

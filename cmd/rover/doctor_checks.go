@@ -15,11 +15,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
+	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
 // Each doctor check is a function of its inputs, so tests can feed it a
@@ -100,16 +102,64 @@ func checkDirs(d paths.Dirs) check {
 	return pass("dirs", "config, state and run are 0700 and yours")
 }
 
-// checkPolicy loads the policy exactly as roverd does (loadAll).
-func checkPolicy(load func() (mode, note string, err error)) []check {
-	mode, note, err := load()
-	var out []check
-	if err != nil {
-		out = append(out, fail("policy", "%v; roverd blocks every policed message until it loads (`rover policy validate`)", err))
-	} else {
-		out = append(out, pass("policy", "loads, mode %s%s", mode, map[bool]string{true: " (" + note + ")"}[note != ""]))
+// checkPolicy loads the policy exactly as roverd does (loadAll). st is
+// roverd's view (nil when it is not running): files that load but are not
+// approved leave roverd with no policy, in enforce.
+func checkPolicy(mode, note string, err error, st *daemon.DoctorState) check {
+	if st != nil && !st.PolicyLoaded {
+		return fail("policy", "no policy (%s): roverd blocks every policed message until `rover policy apply` succeeds", orDash(st.Mode))
 	}
-	return append(out, warn("policy-approval", "the approved policy hash is not checked yet: policy approval arrives in M9"))
+	if err != nil {
+		return fail("policy", "%v; roverd blocks every policed message until it loads (`rover policy validate`)", err)
+	}
+	return pass("policy", "loads, mode %s%s", mode, map[bool]string{true: " (" + note + ")"}[note != ""])
+}
+
+// checkPolicyApproval compares the hash of the policy files on disk with
+// the approved one (M9). A mismatch means someone changed the policy, or
+// config.yaml, without `rover policy apply`: roverd will not load it.
+//
+// distrusted is what roverd's own check (distrust) says about the approval
+// in state.db; doctor fails whenever roverd would refuse it.
+func checkPolicyApproval(disk string, diskErr error, approved *approve.PolicyApproval, approvedErr error, distrusted string) check {
+	switch {
+	case distrusted != "":
+		return fail("policy-approval", "roverd will not load a policy: %s; check who changed it, then `rover policy apply`", distrusted)
+	case approvedErr != nil:
+		return fail("policy-approval", "cannot read approved_policy: %v", approvedErr)
+	case diskErr != nil:
+		return fail("policy-approval", "cannot hash the policy files: %v", diskErr)
+	case approved == nil:
+		return fail("policy-approval", "no policy has been approved; roverd loads none until `rover policy apply` (hash on disk %s)", short(disk))
+	case approved.Hash != disk:
+		return fail("policy-approval", "TAMPERED or not yet applied: the policy files on disk (hash %s) are not the approved policy %s (approved %s by %s); roverd will not load them. Check who changed them, then `rover policy apply`",
+			short(disk), short(approved.Hash), approved.ApprovedAt.UTC().Format(time.RFC3339), approved.Method)
+	}
+	return pass("policy-approval", "the files on disk are the approved policy %s (approved %s by %s)", short(disk), approved.ApprovedAt.UTC().Format(time.RFC3339), approved.Method)
+}
+
+// approvedPolicy reads the approved policy from roverd's doctor_state, or
+// from the state database when roverd is not running.
+func approvedPolicy(st *daemon.DoctorState, stErr error, stateDB string) (*approve.PolicyApproval, error) {
+	if stErr == nil {
+		if st.ApprovedErr != "" {
+			return nil, errors.New(st.ApprovedErr)
+		}
+		return st.ApprovedPolicy, nil
+	}
+	if _, err := os.Stat(stateDB); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	db, err := state.Open(stateDB)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	a, found, err := approve.CurrentPolicy(db)
+	if err != nil || !found {
+		return nil, err
+	}
+	return &a, nil
 }
 
 // checkClients reports, per config file, whether every server runs through

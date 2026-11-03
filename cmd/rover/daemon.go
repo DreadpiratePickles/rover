@@ -12,12 +12,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
+	"github.com/DreadpiratePickles/rover/internal/approve/page"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
+	"github.com/DreadpiratePickles/rover/internal/config"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
-	"github.com/DreadpiratePickles/rover/internal/pin"
 	"github.com/DreadpiratePickles/rover/internal/state"
 )
 
@@ -54,8 +56,14 @@ func runDaemon(args []string) int {
 	// note both before either file is opened (and so created).
 	logPath := filepath.Join(dirs.State, "audit.jsonl")
 	_, serr := os.Stat(filepath.Join(dirs.State, "state.db"))
-	_, aerr := os.Stat(anchorPath(logPath))
-	stateCreated, hadHistory := errors.Is(serr, os.ErrNotExist), aerr == nil
+	// History means something a roverd session recorded, not merely a
+	// declined init dialog (review M9 NEW-2).
+	history, herr := readHistory(logPath)
+	if herr != nil {
+		logf("audit log: %v", herr)
+		return 1
+	}
+	stateCreated, hadHistory := errors.Is(serr, os.ErrNotExist), history.any
 	db, err := state.Open(filepath.Join(dirs.State, "state.db"))
 	if errors.Is(err, state.ErrLocked) {
 		logf("another roverd holds the state database; exiting")
@@ -80,21 +88,29 @@ func runDaemon(args []string) int {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	pol, cfg, note, err := loadAll(dirs)
-	if note != "" {
-		logf("policy precedence: %s", note)
-	}
-	if err != nil {
-		logf("POLICY NOT LOADED: %v; every tools/call, tools/list, resources/read, sampling and elicitation request is blocked (no_policy)", err)
-		pol = nil
-	} else {
-		logf("policy loaded (mode %s)", cfg.Mode)
-	}
-
+	pol, cfg, note, reset := loadApprovedAtStart(dirs, db, startFacts{lastAudit: log.LastTime(), stateCreated: stateCreated, history: history}, logf)
 	sock, err := paths.SocketPath(dirs)
 	if err != nil {
 		logf("%v", err)
 		return 1
+	}
+	notifier := newNotifier(logf)
+	auth := newAuthenticator(logf)
+	store := approve.NewBoltStore(db)
+	details := page.New(store, cfg.Approvals.ShowArgs)
+	var pages approve.Pages = details
+	if err := details.Start(); err != nil {
+		logf("approval details page: %v; notifications will carry no link", err)
+		pages = nil
+	}
+	defer func() { _ = details.Close() }()
+	if why := approve.PlatformLimit(); why != "" {
+		logf("WARN approvals will always deny: %s", why)
+	}
+	flow := &approve.Flow{Store: store, Auth: auth, Notifier: notifier, Pages: pages, Timeout: cfg.Approvals.Timeout(), Logf: logf}
+	onLoad := func(c config.Config) {
+		flow.SetTimeout(c.Approvals.Timeout())
+		details.SetShowArgs(c.Approvals.ShowArgs)
 	}
 	srv := daemon.New(daemon.Options{
 		SocketPath: sock,
@@ -107,15 +123,22 @@ func runDaemon(args []string) int {
 		Policy:     pol,
 		Config:     cfg,
 		State:      db,
-		Notifier:   pin.OSNotifier{Logf: logf},
+		Notifier:   notifier,
 
 		TamperFiles: watchedConfigs(dirs, logf),
 		RoverPath:   roverPathForDaemon(logf),
 
-		StateDBCreated:  stateCreated,
-		AuditHadHistory: hadHistory,
+		StateDBCreated:   stateCreated,
+		AuditHadHistory:  hadHistory,
+		StateResetReason: reset,
+
+		Prompter:         flow,
+		Authenticator:    auth,
+		PolicyLoader:     policyLoader(dirs),
+		PendingApprovals: flow.Pending,
+		OnPolicyLoaded:   onLoad,
 	})
-	go reloadOnHUP(hup, dirs, srv, note, logf)
+	go reloadOnHUP(hup, reloader{dirs: dirs, db: db, srv: srv, onLoad: onLoad, logf: logf}, note)
 	if err := srv.Listen(); err != nil {
 		logf("%v", err)
 		return 1
@@ -154,32 +177,6 @@ func watchedConfigs(dirs paths.Dirs, logf func(string, ...any)) []clients.Config
 		logf("tamper watch: watching %d client config file(s)", len(files))
 	}
 	return files
-}
-
-// reloadOnHUP reloads config.yaml and the policy (policy.cedar, else
-// policy.yaml) on every SIGHUP. A failed reload, including a policy.yaml
-// that does not compile, keeps whatever was running before (a policy, or
-// none), and so does a reload that would switch enforce to observe
-// (daemon.ErrModeDowngrade). The precedence note is logged again only when
-// it changes.
-// TODO(M9): policy changes must be confirmed with OS authentication.
-func reloadOnHUP(hup <-chan os.Signal, dirs paths.Dirs, srv *daemon.Server, lastNote string, logf func(string, ...any)) {
-	for range hup {
-		pol, cfg, note, err := loadAll(dirs)
-		if note != "" && note != lastNote {
-			logf("policy precedence: %s", note)
-			lastNote = note
-		}
-		if err != nil {
-			logf("policy reload FAILED, keeping the previous policy: %v", err)
-			continue
-		}
-		if err := srv.Reload(pol, cfg); err != nil {
-			logf("policy reload %v; keeping the previous policy and mode", err)
-			continue
-		}
-		logf("policy reloaded (mode %s)", cfg.Mode)
-	}
 }
 
 // roverPathForDaemon is the binary wrapped servers must run: this one.

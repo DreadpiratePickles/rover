@@ -25,7 +25,8 @@ const (
 
 // starterConfig is the config.yaml `rover policy init` writes.
 const starterConfig = `# Rover configuration, written by ` + "`rover policy init`" + `.
-# Edit it, then run ` + "`rover policy apply`" + ` (or restart roverd).
+# Edit it, then run ` + "`rover policy apply`" + `: roverd loads only a policy you
+# approved in the system authentication dialog (editing alone changes nothing).
 
 # mode: observe or enforce.
 #   observe  every message the policy would deny is still forwarded, and the
@@ -61,6 +62,15 @@ labels: {}
 # normalizers: a normalizers.yaml replacing the built-in argument mappings
 # for the official filesystem, fetch, git and GitHub servers.
 # normalizers: normalizers.yaml
+
+# approvals: calls a permit marks @rover_require("approval") wait for you to
+# confirm them in the system authentication dialog (Touch ID or your password
+# on macOS, polkit on Linux). No answer within timeout_s means deny.
+# show_args puts the call's arguments on the read-only details page; leave it
+# off until secrets are redacted (M10).
+# approvals:
+#   timeout_s: 120
+#   show_args: false
 `
 
 // errNoPolicyFile means neither policy.cedar nor policy.yaml exists.
@@ -109,10 +119,15 @@ func checkPrivateFiles(files ...string) error {
 // file are owner-only, then checks the normalizers file it names. roverd
 // and `rover policy validate` both use it, so they refuse the same files.
 func loadConfig(configDir, policyPath string) (config.Config, error) {
+	return loadConfigWith(configDir, policyPath, config.ReadFile)
+}
+
+// loadConfigWith is loadConfig reading through read (see snapshotConfig).
+func loadConfigWith(configDir, policyPath string, read config.Reader) (config.Config, error) {
 	if err := checkPrivateFiles(filepath.Join(configDir, config.FileName), policyPath, filepath.Join(configDir, schemaFile)); err != nil {
 		return config.Config{}, err
 	}
-	cfg, err := config.Load(configDir)
+	cfg, err := config.LoadWith(configDir, read)
 	if err != nil {
 		return config.Config{}, err
 	}
@@ -200,14 +215,14 @@ func existsErr(path string) error {
 	return err
 }
 
-// loadAll loads config.yaml and the policy for roverd: policy.cedar when it
-// exists, else policy.yaml compiled at load (pickPolicyFile). The config,
-// the chosen policy file, the schema and the normalizers file must be
-// owner-only (loadConfig). On any error the caller runs (or keeps running)
-// without this pair. note says which policy file was used.
-func loadAll(dirs paths.Dirs) (pol daemon.Policy, cfg config.Config, note string, err error) {
+// loadSnapshot loads config.yaml and the policy from dirs.Config (a
+// snapshot, see loadAll): policy.cedar when it exists, else policy.yaml
+// compiled at load (pickPolicyFile). The config, the chosen policy file, the
+// schema and the normalizers file must be owner-only (loadConfig). note
+// says which policy file was used.
+func loadSnapshot(dirs paths.Dirs, read config.Reader) (pol daemon.Policy, cfg config.Config, note string, err error) {
 	file, note, perr := pickPolicyFile(dirs.Config)
-	cfg, err = loadConfig(dirs.Config, file)
+	cfg, err = loadConfigWith(dirs.Config, file, read)
 	if err != nil {
 		return nil, config.Config{}, note, err
 	}

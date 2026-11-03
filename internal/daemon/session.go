@@ -26,8 +26,11 @@ type Session struct {
 	mu         sync.Mutex
 	clientName string // from initialize params.clientInfo
 	clientVer  string
-	servers    map[string]int // server name -> connected wrappers
-	pending    map[string]pendingReq
+	// elicitation: the client advertised capabilities.elicitation in
+	// initialize, so roverd may ask it about a held call (M9).
+	elicitation bool
+	servers     map[string]int // server name -> connected wrappers
+	pending     map[string]pendingReq
 	// flags is context.session for the policy: what this agent has done
 	// across every server it uses (plan §5.1).
 	flags policy.SessionCtx
@@ -145,6 +148,7 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 			// Read strictly (exact keys); Parse already refused an
 			// ambiguous clientInfo as invalid.
 			s.clientName, s.clientVer = m.ClientInfo()
+			s.elicitation = elicitationCapable(m.Params)
 		}
 	case jsonrpc.KindResult, jsonrpc.KindError:
 		// A response travels the opposite way to its request, so look it up
@@ -163,6 +167,36 @@ func (s *Session) observe(server, dir string, m jsonrpc.Message, logBodies bool,
 		}
 	}
 	return e, req, evicted
+}
+
+// Elicitation reports whether the agent app said it supports elicitation.
+func (s *Session) Elicitation() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.elicitation
+}
+
+// elicitationCapable reads params.capabilities.elicitation strictly (exact
+// keys, no duplicates): present and an object means yes.
+func elicitationCapable(params []byte) bool {
+	fields, err := jsonrpc.Object(params)
+	if err != nil {
+		return false
+	}
+	caps, ok := fields.Get("capabilities")
+	if !ok {
+		return false
+	}
+	cf, err := jsonrpc.Object(caps)
+	if err != nil {
+		return false
+	}
+	e, ok := cf.Get("elicitation")
+	if !ok {
+		return false
+	}
+	_, err = jsonrpc.Object(e)
+	return err == nil
 }
 
 // attachObservation remembers the observation key of a pending request, so

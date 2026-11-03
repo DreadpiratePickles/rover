@@ -31,8 +31,10 @@ func TestMain(m *testing.M) {
 	}
 	bins.rover = filepath.Join(dir, "rover")
 	bins.echo = filepath.Join(dir, "echo-server")
+	// rover is built with the testauth tag (testauth.go): its hidden
+	// --test-auth flag replaces the OS dialog, so no test ever shows one.
 	for bin, pkg := range map[string]string{bins.rover: ".", bins.echo: "../../examples/echo-server"} {
-		if out, err := exec.Command("go", "build", "-o", bin, pkg).CombinedOutput(); err != nil { //nolint:gosec // G204: test builds fixed packages into a temp dir
+		if out, err := exec.Command("go", "build", "-tags", "testauth", "-o", bin, pkg).CombinedOutput(); err != nil { //nolint:gosec // G204: test builds fixed packages into a temp dir
 			panic(fmt.Sprintf("build %s: %v\n%s", pkg, err, out))
 		}
 	}
@@ -79,10 +81,21 @@ func (l *lockedBuf) String() string {
 }
 
 // startDaemon runs `rover daemon` as a subprocess, waits for its socket and
-// returns its stderr.
+// returns its stderr. Its OS dialog is the testauth fake, answering allow.
 func startDaemon(t *testing.T, dir string, args ...string) *lockedBuf {
 	t.Helper()
-	cmd := exec.Command(bins.rover, append([]string{"daemon"}, args...)...) //nolint:gosec // G204: test runs the binary it just built
+	return startDaemonArgs(t, dir, append([]string{"--test-auth=allow", "daemon"}, args...))
+}
+
+// startDaemonFlags is startDaemon with these testauth flags instead.
+func startDaemonFlags(t *testing.T, dir string, testFlags ...string) *lockedBuf {
+	t.Helper()
+	return startDaemonArgs(t, dir, append(testFlags, "daemon"))
+}
+
+func startDaemonArgs(t *testing.T, dir string, argv []string) *lockedBuf {
+	t.Helper()
+	cmd := exec.Command(bins.rover, argv...) //nolint:gosec // G204: test runs the binary it just built
 	cmd.Env = env(dir)
 	stderr := &lockedBuf{}
 	cmd.Stderr = stderr
@@ -183,6 +196,9 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 			}
 			continue
 		}
+		if e.Kind == "policy" { // M9: `rover policy apply` records the approval
+			continue
+		}
 		if e.Server != "echo" || e.Action != "forward" {
 			t.Fatalf("entry missing server/action: %+v", e)
 		}
@@ -201,13 +217,15 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 		t.Fatalf("verify: %v\n%s", err, out)
 	}
 	data, _ := os.ReadFile(logPath) //nolint:gosec // G304: test's own file
+	callLine := 1 + bytes.Count(data[:bytes.Index(data, []byte(`"method":"tools/call"`))], []byte("\n"))
 	data = bytes.Replace(data, []byte(`"method":"tools/call"`), []byte(`"method":"tools/cull"`), 1)
 	if err := os.WriteFile(logPath, data, 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
 	vout, verr := run(dir, "log", "--verify")
-	if verr == nil || !strings.Contains(vout, "line 4") {
-		t.Fatalf("tampered log must fail --verify at line 4: err=%v\n%s", verr, vout)
+	// Policy entries (M9: init, apply) come first; the edit is on callLine.
+	if verr == nil || !strings.Contains(vout, fmt.Sprintf("line %d", callLine)) {
+		t.Fatalf("tampered log must fail --verify at line %d: err=%v\n%s", callLine, verr, vout)
 	}
 }
 
@@ -310,6 +328,24 @@ func TestWrapRejectsBadServerName(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dir, "run", "roverd.pid")); err == nil {
 			t.Fatal("roverd was auto-started despite a bad --name")
+		}
+	}
+}
+
+// Review M9 MEDIUM-1: an auto-started roverd gets a minimal, explicit
+// environment, not the wrapper's (which the agent controls).
+func TestDaemonEnvIsMinimal(t *testing.T) {
+	in := []string{"PATH=/tmp/evil:/usr/bin", "HOME=/h", "ROVER_DIR=/r", "LANG=C.UTF-8", "LD_PRELOAD=/tmp/x.so", "DYLD_INSERT_LIBRARIES=/tmp/y",
+		"XDG_RUNTIME_DIR=/run/user/1", "TMPDIR=/t", "AWS_SECRET_ACCESS_KEY=s", "DBUS_SESSION_BUS_ADDRESS=unix:path=/b", "GIT_SSH_COMMAND=evil"}
+	got := strings.Join(daemonEnv(in), "\n")
+	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "ROVER_DIR=/r", "LANG=C.UTF-8", "XDG_RUNTIME_DIR=/run/user/1", "TMPDIR=/t", "DBUS_SESSION_BUS_ADDRESS=unix:path=/b"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"/tmp/evil", "LD_PRELOAD", "DYLD_", "AWS_SECRET", "GIT_SSH"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("%s leaked into roverd's environment:\n%s", bad, got)
 		}
 	}
 }

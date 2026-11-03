@@ -16,8 +16,8 @@ import (
 // Pin methods: how a digest came to be trusted.
 const (
 	MethodTOFU   = "tofu"   // first sight
-	MethodCLI    = "cli"    // `rover pin approve` (TODO(M9): OS auth)
-	MethodOSAuth = "osauth" // M9
+	MethodCLI    = "cli"    // `rover pin approve` before M9, without OS authentication
+	MethodOSAuth = "osauth" // M9: "osauth:<method>", after the OS dialog succeeded
 )
 
 // maxStoredCanonical caps the copy of a tool's canonical JSON kept for diffs.

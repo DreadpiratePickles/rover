@@ -151,7 +151,7 @@ func TestRugPullEndToEnd(t *testing.T) {
 	if got := toolNames(t, m.request(`{"jsonrpc":"2.0","id":6,"method":"tools/list"}`, 6)); strings.Join(got, ",") != "reverse" {
 		t.Fatalf("after approve, detection must still remove the poisoned echo: %v", got)
 	}
-	if out, _ := run(dir, "pin", "list", "rugpull"); strings.Contains(out, "MISMATCH") || !strings.Contains(out, "cli") {
+	if out, _ := run(dir, "pin", "list", "rugpull"); strings.Contains(out, "MISMATCH") || !strings.Contains(out, "osauth:test") {
 		t.Fatalf("pin list after approve:\n%s", out)
 	}
 	logOut, _ := run(dir, "log")
@@ -175,7 +175,11 @@ func TestPinCLIWithoutDaemon(t *testing.T) {
 	if out, err := run(dir, "pin", "approve", "srv", "tool", "0123456789ab"); err == nil || !strings.Contains(out, "nothing to approve") {
 		t.Fatalf("approve: %v\n%s", err, out)
 	}
-	if out, err := run(dir, "pin", "reset", "srv"); err != nil || !strings.Contains(out, "removed 0 pin(s)") {
+	// M9: reset needs the OS dialog, here in the CLI (no roverd).
+	if out, err := run(dir, "--test-auth=deny", "pin", "reset", "srv"); err == nil || !strings.Contains(out, "OS authentication did not succeed") {
+		t.Fatalf("reset without authentication: %v\n%s", err, out)
+	}
+	if out, err := run(dir, "--test-auth=allow", "pin", "reset", "srv"); err != nil || !strings.Contains(out, "removed 0 pin(s)") {
 		t.Fatalf("reset: %v\n%s", err, out)
 	}
 	if out, err := run(dir, "pin", "approve", "a/b", "x", "0123456789ab"); err == nil || !strings.Contains(out, "A-Za-z0-9_.-") {

@@ -26,6 +26,9 @@ const pinUsage = `usage:
                                      server changed the tool again since
   rover pin reset <server>           forget a server's pins: its next tools/list is trusted on first use
 
+approve and reset show the OS authentication dialog first (Touch ID or your
+password on macOS, polkit on Linux); nothing changes unless it succeeds.
+
 roverd holds the state database locked while it runs (bbolt allows no reader
 beside a writer), so these commands ask roverd over its socket; with no
 roverd running they open the database themselves.`
@@ -44,11 +47,10 @@ func runPin(args []string) int {
 			req.ServerName = args[1]
 		}
 	case args[0] == "approve" && len(args) == 4:
-		// TODO(M9): OS authentication. Until then anyone who can run this
-		// CLI as the user can approve, which the plan accepts for M4.
+		// The OS dialog runs where the change is made: in roverd, or here
+		// when no roverd is running (daemon.Server.Admin).
 		req = ipc.Frame{Op: ipc.OpPinApprove, ServerName: args[1], Tool: args[2], Digest: args[3]}
 	case args[0] == "reset" && len(args) == 2:
-		// TODO(M9): OS authentication.
 		req = ipc.Frame{Op: ipc.OpPinReset, ServerName: args[1]}
 	default:
 		fmt.Fprintln(os.Stderr, pinUsage)
@@ -59,7 +61,7 @@ func runPin(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	result, err := pinAdmin(req)
+	result, err := adminCall(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "rover pin:", err)
 		return 1
@@ -79,13 +81,13 @@ func runPin(args []string) int {
 		_ = json.Unmarshal(result, &r)
 		fmt.Printf("removed %d pin(s) for %s; its next tools/list is trusted on first use\n", r.Removed, req.ServerName)
 	}
-	fmt.Println("TODO(M9): this will require OS authentication")
 	return 0
 }
 
-// pinAdmin asks roverd; if none is running it does the same work itself on
-// the state database (whose lock keeps a daemon from starting meanwhile).
-func pinAdmin(req ipc.Frame) (json.RawMessage, error) {
+// adminCall asks roverd; if none is running it does the same work itself
+// on the state database (whose lock keeps a daemon from starting
+// meanwhile), and then this process shows any OS dialog the op needs.
+func adminCall(req ipc.Frame) (json.RawMessage, error) {
 	dirs, err := paths.Resolve()
 	if err == nil {
 		err = paths.Ensure(dirs)
@@ -104,6 +106,14 @@ func pinAdmin(req ipc.Frame) (json.RawMessage, error) {
 	if !errors.Is(err, ipc.ErrNoDaemon) {
 		return nil, err
 	}
+	// Never create state.db here when the audit log has history: that
+	// would hide its loss from roverd, which reports it when it starts
+	// (review M9: rm state.db; rover policy init --force).
+	logPath := filepath.Join(dirs.State, "audit.jsonl")
+	_, serr := os.Stat(filepath.Join(dirs.State, "state.db"))
+	if h, herr := readHistory(logPath); errors.Is(serr, os.ErrNotExist) && (herr != nil || h.any) {
+		return nil, errors.New("state.db is missing although the audit log has history: start roverd once (it records and reports the loss), then retry")
+	}
 	db, err := state.Open(filepath.Join(dirs.State, "state.db"))
 	if errors.Is(err, state.ErrLocked) {
 		return nil, errors.New("roverd holds the state database but did not answer on its socket; is it stuck?")
@@ -112,9 +122,8 @@ func pinAdmin(req ipc.Frame) (json.RawMessage, error) {
 		return nil, err
 	}
 	defer func() { _ = db.Close() }()
-	o := daemon.Options{State: db}
+	o := daemon.Options{State: db, Authenticator: newAuthenticator(errf), PolicyLoader: policyLoader(dirs)}
 	if req.Op != ipc.OpPinList {
-		logPath := filepath.Join(dirs.State, "audit.jsonl")
 		log, err := audit.Open(logPath)
 		if err != nil {
 			return nil, fmt.Errorf("audit log: %w", err)

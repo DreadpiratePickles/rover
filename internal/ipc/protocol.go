@@ -39,6 +39,11 @@ const (
 	TypeRelease = "release"
 	TypeBye     = "bye"
 	TypeError   = "error" // roverd -> wrapper, fatal for the connection
+	// TypeInject (M9) is pushed by roverd: the wrapper writes Raw, one
+	// server->client request of Rover's own (an elicitation/create with a
+	// "rover-" id), to the client side, and routes the client's reply back
+	// to roverd only, never to the server.
+	TypeInject = "inject"
 	// TypeAdmin is a one-shot request from the rover CLI (instead of a
 	// hello): roverd runs Op and answers admin_result (or error), then
 	// closes. The peer uid check applies as for every connection.
@@ -46,8 +51,9 @@ const (
 	TypeAdminResult = "admin_result"
 )
 
-// Admin operations (M4). TODO(M9): pin_approve and pin_reset will need OS
-// authentication; until then the CLI is the only client.
+// Admin operations (M4). pin_approve and pin_reset run the OS
+// authentication dialog in the process that executes them (roverd, or the
+// CLI when no roverd runs) before they change anything (M9).
 const (
 	OpPinList    = "pin_list"
 	OpPinApprove = "pin_approve"
@@ -63,13 +69,39 @@ const (
 	// takes its wrapped servers as the new baseline, clears its tamper
 	// alerts and watches it; OpTamperForget (after `rover uninstall`) clears
 	// its alerts and stops watching it. Both are audited.
-	// TODO(M9): like pin approval, these should need OS authentication.
+	// Both show the OS authentication dialog in roverd first (M9).
 	OpTamperResolve = "tamper_resolve"
 	OpTamperForget  = "tamper_forget"
+	// OpPolicyApply (M9) asks roverd to approve and load the policy files
+	// whose bundle hash is Hash. roverd shows the OS authentication dialog
+	// itself; the frame alone approves nothing.
+	OpPolicyApply = "policy_apply"
+	// OpApprovalsList (M9) lists the pending approvals with their details
+	// page links. Read-only.
+	OpApprovalsList = "approvals_list"
 )
 
 // MaxPath bounds the path in a tamper_resolve or tamper_forget frame.
 const MaxPath = 4096
+
+// MaxInject bounds an inject frame's message. Rover's own elicitation
+// request is a few hundred bytes.
+const MaxInject = 64 << 10
+
+// InjectIDPrefix starts the JSON-RPC id of every request roverd injects.
+// The wrapper and roverd both refuse to forward a reply with such an id to
+// the server, and roverd blocks a server request that uses the prefix.
+const InjectIDPrefix = "rover-"
+
+// IsInjectID reports whether id (raw JSON) is a string starting with
+// InjectIDPrefix: the id of a request roverd injected, or one borrowing it.
+func IsInjectID(id json.RawMessage) bool {
+	var s string
+	if len(id) < 2 || id[0] != '"' || json.Unmarshal(id, &s) != nil {
+		return false
+	}
+	return strings.HasPrefix(s, InjectIDPrefix)
+}
 
 // MaxToolName bounds the tool named in an admin frame.
 const MaxToolName = 1024
@@ -114,6 +146,9 @@ type Frame struct {
 	// sends back to the requester instead of its default error (for example
 	// a tools/call result with isError true that explains the rule).
 	ResponseRaw []byte `json:"response_raw,omitempty"`
+	// Drop, on a block release, means the requester gets no reply at all:
+	// the client cancelled the request (plan §4.3).
+	Drop bool `json:"drop,omitempty"`
 
 	// error, and an admin_result's note
 	Message string `json:"message,omitempty"`
@@ -123,7 +158,9 @@ type Frame struct {
 	Tool string `json:"tool,omitempty"`
 	// Digest is the digest prefix a pin_approve approves: the one the
 	// human saw in `rover pin list` (at least MinDigestPrefix hex digits).
-	Digest string          `json:"digest,omitempty"`
+	Digest string `json:"digest,omitempty"`
+	// Hash is the policy bundle hash a policy_apply approves (64 hex).
+	Hash   string          `json:"hash,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 	// Path is the config file of tamper_resolve and tamper_forget; Adapter
 	// and Scope name its client and scope (tamper_resolve).
@@ -197,6 +234,13 @@ func (f Frame) Validate() error {
 		if len(f.ResponseRaw) > 0 && f.Action != ActionBlock {
 			return fmt.Errorf("%w: response_raw is only valid on block", ErrBadFrame)
 		}
+		if f.Drop && (f.Type != TypeRelease || f.Action != ActionBlock || len(f.ResponseRaw) > 0) {
+			return fmt.Errorf("%w: drop is only valid on a block release without a response", ErrBadFrame)
+		}
+	case TypeInject:
+		if len(f.Raw) == 0 || len(f.Raw) > MaxInject {
+			return fmt.Errorf("%w: inject needs raw of 1..%d bytes", ErrBadFrame, MaxInject)
+		}
 	case TypeAdmin:
 		return validateAdmin(f)
 	case TypeBye, TypeError, TypeAdminResult:
@@ -209,6 +253,9 @@ func (f Frame) Validate() error {
 func validateAdmin(f Frame) error {
 	if (f.Path != "" || f.Adapter != "" || f.Scope != "") && f.Op != OpTamperResolve && f.Op != OpTamperForget {
 		return fmt.Errorf("%w: %s takes no path, adapter or scope", ErrBadFrame, f.Op)
+	}
+	if f.Hash != "" && f.Op != OpPolicyApply {
+		return fmt.Errorf("%w: %s takes no hash", ErrBadFrame, f.Op)
 	}
 	needServer, needTool := true, false
 	switch f.Op {
@@ -225,7 +272,12 @@ func validateAdmin(f Frame) error {
 			return fmt.Errorf("%w: tamper_resolve needs an adapter (1..64 bytes), tamper_forget none", ErrBadFrame)
 		}
 		return nil
-	case OpObservationsDump, OpDoctorState:
+	case OpPolicyApply:
+		if len(f.Hash) != 64 || !validDigestPrefix(f.Hash) || f.ServerName != "" || f.Tool != "" || f.Digest != "" {
+			return fmt.Errorf("%w: policy_apply needs only a 64-hex-digit hash", ErrBadFrame)
+		}
+		return nil
+	case OpObservationsDump, OpDoctorState, OpApprovalsList:
 		needServer = false
 		if f.ServerName != "" {
 			return fmt.Errorf("%w: %s takes no server", ErrBadFrame, f.Op)

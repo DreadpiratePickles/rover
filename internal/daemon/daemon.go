@@ -21,10 +21,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/DreadpiratePickles/rover/internal/approve"
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/config"
-	"github.com/DreadpiratePickles/rover/internal/framing"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 	"github.com/DreadpiratePickles/rover/internal/learn"
@@ -62,6 +62,9 @@ type Options struct {
 	// StateDBCreated (state.db did not exist) and AuditHadHistory (the audit
 	// anchor existed) together mean every pin was lost: see reportStateLoss.
 	StateDBCreated, AuditHadHistory bool
+	// StateResetReason, when set, says why roverd distrusts its approved
+	// policy (M9): reported like a lost state.db (audit, log, notification).
+	StateResetReason string
 	// DisableDetection turns detection tier 1 off. Tests only: it exists so
 	// a test can measure what detection adds to a decision (plan §6 M5).
 	DisableDetection bool
@@ -75,6 +78,26 @@ type Options struct {
 	// PIDAlive reports whether an agent pid exists (sessionlife.go); nil
 	// means kill(pid, 0).
 	PIDAlive func(int) bool
+
+	// Prompter runs the approval of a held call (M9, approvals.go). Nil
+	// means approvals are unavailable: a held call is blocked at once.
+	Prompter approve.Prompter
+	// Authenticator shows the OS dialog before `rover pin approve`, `rover
+	// pin reset` and `rover policy apply` change anything (M9). Nil
+	// refuses all three.
+	Authenticator approve.Authenticator
+	// MaxHoldsPerSession and MaxHolds cap pending approvals (M9); zero
+	// means DefaultMaxHoldsPerSession and DefaultMaxHolds.
+	MaxHoldsPerSession, MaxHolds int
+	// PendingApprovals lists the approvals waiting for the human
+	// (approvals_list); nil lists none.
+	PendingApprovals func() []approve.PendingApproval
+	// PolicyLoader loads the policy files as they are on disk now and
+	// returns their bundle hash (policy_apply, M9). Nil refuses the op.
+	PolicyLoader func() (Policy, config.Config, string, error)
+	// OnPolicyLoaded is told about every newly loaded config (roverd
+	// updates the approval timeout and the details page).
+	OnPolicyLoaded func(config.Config)
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -100,6 +123,14 @@ type Server struct {
 	taint      toolTaint     // learn mode: tools whose last listing was flagged
 	tamper     tamperState   // the client-config watch (tamper.go)
 	closedDone chan struct{} // closed when Close has finished (final flush)
+
+	// ctx lives as long as the server; Close cancels it, which denies
+	// every approval still running.
+	ctx      context.Context
+	cancel   context.CancelFunc
+	elicits  elicitTable // elicitations waiting for the client (approvals.go)
+	holds    holdTable   // held calls, for notifications/cancelled (approvals.go)
+	approvWG sync.WaitGroup
 }
 
 // New prepares a Server; call Listen then Serve.
@@ -128,7 +159,8 @@ func New(o Options) *Server {
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
 		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescerWith(o.Notifier, o.Now, blockedMessage),
-		closedDone: make(chan struct{})}
+		closedDone: make(chan struct{}), elicits: elicitTable{m: map[string]elicitWait{}}, holds: holdTable{m: map[string]*holdEntry{}}}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if o.State != nil {
 		s.rec = learn.NewRecorder(o.State, o.Logf)
 	}
@@ -211,6 +243,7 @@ func (s *Server) Close() {
 		return
 	}
 	s.closed = true
+	s.cancel()
 	conns := make([]net.Conn, 0, len(s.conns))
 	for c := range s.conns {
 		conns = append(conns, c)
@@ -223,6 +256,7 @@ func (s *Server) Close() {
 	for _, c := range conns {
 		_ = c.Close()
 	}
+	s.approvWG.Wait() // their audit entries are written before the log closes
 	if s.rec != nil {
 		if err := s.rec.Close(); err != nil {
 			s.o.Logf("learn: final write of observations failed: %v", err)
@@ -242,35 +276,6 @@ func (s *Server) Sessions() []*Session {
 	return out
 }
 
-type conn struct {
-	c  *net.UnixConn
-	w  *bufio.Writer
-	mu sync.Mutex
-}
-
-func (c *conn) send(f ipc.Frame) error {
-	line, err := ipc.Encode(f)
-	if err != nil {
-		return err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, err := c.w.Write(line); err != nil {
-		return err
-	}
-	return c.w.Flush()
-}
-
-func (s *Server) track(c net.Conn, on bool) {
-	s.mu.Lock()
-	if on {
-		s.conns[c] = struct{}{}
-	} else {
-		delete(s.conns, c)
-	}
-	s.mu.Unlock()
-}
-
 func (s *Server) handle(uc *net.UnixConn) {
 	defer func() { _ = uc.Close() }()
 	s.track(uc, true)
@@ -288,6 +293,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 	}
 
 	cn := &conn{c: uc, w: bufio.NewWriterSize(uc, 64<<10)}
+	defer s.dropHolds(cn) // a call held for this wrapper can never be released to it
 	r := bufio.NewReaderSize(uc, 64<<10)
 	hello, err := s.readFrame(r)
 	if errors.Is(err, io.EOF) {
@@ -336,7 +342,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 				_ = cn.send(ipc.Frame{Type: ipc.TypeError, Message: "decide for a session this connection does not own"})
 				return
 			}
-			v := s.decide(sess, hello, f)
+			v := s.decide(sess, hello, f, cn)
 			if err := cn.send(v); err != nil {
 				return
 			}
@@ -349,30 +355,19 @@ func (s *Server) handle(uc *net.UnixConn) {
 	}
 }
 
-// readFrame reads one line; io.EOF with no bytes means the peer hung up.
-func (s *Server) readFrame(r *bufio.Reader) (ipc.Frame, error) {
-	line, err := framing.ReadLine(r, ipc.MaxFrame)
-	if len(line) == 0 {
-		if err == nil {
-			err = io.EOF
-		}
-		return ipc.Frame{}, err
-	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		return ipc.Frame{}, err
-	}
-	return ipc.Parse(line)
-}
-
 // decide is the whole decision path: record, judge, log, answer. If the
 // audit write fails the answer is block, now and for every later message,
 // because a gateway that cannot record what it allowed is not a gateway.
-func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
+func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame, cn *conn) ipc.Frame {
 	server := hello.ServerName
 	m := jsonrpc.Parse(f.Raw)
 	now := s.o.Now()
 	e, req, evicted := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
 	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, req.cursor, now)
+	s.cancelHeld(sess, server, f.Dir, m)
+	if j.action == ipc.ActionHold && s.o.Prompter == nil {
+		j = blockJ(m, ReasonApprovalUnavailable, j.ruleIDs, j.findings)
+	}
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
@@ -395,6 +390,9 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	s.notifyPoison(j.poisoned)
 	s.noteSession(sess, server, f.Dir, m, j, req)
 	s.learnAfter(sess, server, f.Dir, m, j, req.obsKey)
+	if j.action == ipc.ActionHold {
+		s.startApproval(held{sess: sess, server: server, dir: f.Dir, seq: f.Seq, m: m, j: j, cn: cn})
+	}
 	return ipc.Frame{
 		Type: ipc.TypeVerdict, Seq: f.Seq, Action: j.action, Reason: j.reason, RuleIDs: j.ruleIDs,
 		ResponseRaw: j.responseRaw, ReplacementRaw: j.replacement,

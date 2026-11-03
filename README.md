@@ -32,7 +32,8 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | M7 | Client installers (`rover install/uninstall`, Claude Code deny rules, `--service`), tamper watch, `rover doctor`, `rover version`, goreleaser snapshot | done |
 | — | **Phase 1 complete: v0.1.0** (snapshot via `make snapshot`; tagging is Bobby's) | |
 | M8 | Session context and the lethal trifecta: per-session taint flags across servers, built-in tool labels with a conservative default, `rover policy labels`, trifecta guard active in the starter | done |
-| M9 | Approvals and OS authentication | next |
+| M9 | Approvals and OS authentication: `@rover_require("approval")` holds a call until the macOS authentication dialog (LocalAuthentication) or polkit says yes; MCP elicitation and a read-only details page inform; `rover policy apply` and `rover pin approve/reset` need the dialog; roverd loads only an approved policy hash | done, pending the macOS dialog spike (Bobby, see docs/lessons/M9-approvals.md) |
+| M10 | Secrets and data-loss prevention | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -48,7 +49,11 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover policy validate  # type-check it against the schema (and run `cedar validate` if installed)
 ./bin/rover policy labels    # each tool's labels and where they came from (built-in, config, default);
                              # the starter's trifecta guard blocks egress after private + untrusted
-./bin/rover policy apply     # ask a running roverd to reload it (enforce -> observe is refused until M9)
+./bin/rover policy apply     # roverd shows the system authentication dialog (Touch ID or password;
+                             # polkit on Linux) and loads the policy only on your yes. roverd loads ONLY
+                             # the approved policy: edited files change nothing until apply. Needs the
+                             # dialog to work from roverd (M9 spike (b), pending); with roverd stopped,
+                             # apply runs in the CLI and shows the dialog itself
 
 # or write the policy in YAML (plan §5.4) and read the Cedar it compiles to
 ./bin/rover policy init --yaml          # policy.yaml instead of policy.cedar
@@ -70,8 +75,23 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 # Later a changed or new tool is hidden and its calls blocked (pin_mismatch)
 ./bin/rover pin list                 # pins, MISMATCH/new markers and a diff of each change
 ./bin/rover pin approve filesystem read_file 3f2a9c01b7de   # the digest prefix pin list printed;
-                                     # refused if the tool changed again since (TODO(M9): OS auth)
-./bin/rover pin reset filesystem     # forget a server's pins; next list is trusted on first use
+                                     # refused if the tool changed again since; shows the OS dialog first
+./bin/rover pin reset filesystem     # forget a server's pins (OS dialog first); next list is trusted on first use
+
+# approvals (M9): a permit annotated @rover_require("approval") (in YAML:
+# require: approval) holds the call. roverd notifies you with a link to a
+# read-only details page (127.0.0.1, GET only, it cannot approve), asks the
+# agent app too if it supports MCP elicitation (a decline denies), and shows
+# the OS authentication dialog. Yes forwards the call; cancel, failure or no
+# answer in approvals.timeout_s (default 120) returns "approval denied" /
+# "approval timed out". Other calls keep flowing meanwhile. Observe mode never
+# holds: it forwards and logs would_deny. The dialog, the notification and the
+# page show the approval id's first 8 characters; at most 5 approvals per
+# session and 20 in all are pending, more are denied at once.
+./bin/rover approvals list           # pending approvals: id, client, server.tool, age, page link
+./bin/rover install --polkit         # Linux: prints the sudo commands that install the polkit
+                                     # action org.rover.approve (rover never runs sudo); without a
+                                     # polkit agent (headless) every approval is denied: no_auth_agent
 
 # detection tier 1 (M5): always on, in every mode. A poisoned tool is removed
 # from tools/list; an injected result block is replaced or gets a warning.
@@ -120,8 +140,16 @@ Rover denies by default: with no `policy.cedar` or `policy.yaml`, roverd blocks 
 `tools/call`, `tools/list`, `resources/read`, sampling and elicitation request
 (reason `no_policy`). `config.yaml` starts in `mode: observe`, where a denied
 message is still forwarded and logged as `would_deny`; switch to
-`mode: enforce` once `rover log` shows no surprises. A running roverd refuses
-to reload from enforce back to observe (that will need OS authentication, M9).
+`mode: enforce` once `rover log` shows no surprises. Switching back from
+enforce to observe needs `rover policy apply` and roverd's dialog like any
+other policy change (if roverd cannot show the dialog it answers deny:
+"no interactive authentication from the daemon; see the spike notes"; the
+fallback is a signed helper app, plan §9). `rover policy init` asks the
+dialog too: without a yes it records nothing and roverd runs enforce with no
+policy. roverd distrusts a state.db it cannot have written (recreated, empty
+of approvals, or with an approval newer than the audit log) and reports a
+state reset; `rover doctor`
+fails `policy-approval` when the files on disk are not the approved ones.
 Lines that are not unambiguous JSON-RPC (unknown members, duplicate keys or
 keys that differ only in case, such as `name` and `Name`) are blocked as
 `invalid_jsonrpc` in every mode. Every server you permit

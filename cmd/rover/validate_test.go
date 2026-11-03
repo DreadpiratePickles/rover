@@ -120,7 +120,7 @@ func TestPolicyValidateAndDaemonCheckFilePermissions(t *testing.T) {
 
 			// Act
 			out, verr := runWithPath(dir, t.TempDir(), "policy", "validate")
-			_, _, _, lerr := loadAll(paths.Dirs{Config: cfgDir})
+			_, _, _, _, lerr := loadAll(paths.Dirs{Config: cfgDir, Run: filepath.Join(dir, "run")})
 
 			// Assert
 			if verr == nil || !strings.Contains(out, "permissions too open") {

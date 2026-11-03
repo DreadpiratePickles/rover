@@ -13,6 +13,11 @@ builds:
   - id: rover
     main: ./cmd/rover
     binary: rover
+    # M9 NOTE: approvals on macOS call LocalAuthentication through cgo. With
+    # CGO_ENABLED=0 a darwin build cannot show the dialog, so it DENIES every
+    # approval (roverd logs "WARN approvals will always deny" at startup).
+    # Darwin release builds need cgo on macOS runners (M14); until then use
+    # `make build` on a Mac for approvals.
     env:
       - CGO_ENABLED=0
     goos: [darwin, linux]

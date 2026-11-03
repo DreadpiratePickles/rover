@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/policy"
 )
@@ -207,5 +208,21 @@ func TestPolicySettingsRejectBadValues(t *testing.T) {
 				t.Fatal("want an error")
 			}
 		})
+	}
+}
+
+func TestApprovalsSection(t *testing.T) {
+	c, err := Parse([]byte("approvals:\n  timeout_s: 30\n  show_args: true\n"), t.TempDir())
+	if err != nil || c.Approvals.Timeout() != 30*time.Second || !c.Approvals.ShowArgs {
+		t.Fatalf("%+v %v", c.Approvals, err)
+	}
+	d, err := Parse([]byte("mode: enforce\n"), t.TempDir())
+	if err != nil || d.Approvals.Timeout() != DefaultApprovalTimeout || d.Approvals.ShowArgs {
+		t.Fatalf("defaults %+v %v", d.Approvals, err)
+	}
+	for _, bad := range []string{"approvals:\n  timeout_s: -1\n", "approvals:\n  timeout_s: 3601\n", "approvals:\n  timeoutt: 5\n"} {
+		if _, err := Parse([]byte(bad), t.TempDir()); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
 	}
 }

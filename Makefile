@@ -13,13 +13,19 @@ export GOTOOLCHAIN ?= $(shell awk '/^toolchain /{print $$2}' go.mod)
 
 FUZZTIME := 30s
 
-.PHONY: build test vet race fuzz eval lint vuln ci tools clean snapshot
+.PHONY: build test vet race fuzz eval lint vuln ci tools clean snapshot spike-auth
 
 build:
 	go build -o bin/rover ./cmd/rover
 	go build -o bin/echo-server ./examples/echo-server
 
 test: vet race
+
+# The M9 spike: the macOS authentication dialog from a plain CLI and from a
+# setsid'd daemon. Building it shows nothing; running it asks before it
+# shows the dialog (see docs/lessons/M9-approvals.md).
+spike-auth:
+	go build -o bin/spike-auth ./cmd/spike-auth
 
 # ./... skips testdata/, so the lab-only evil servers (build tag "lab") are
 # vetted by path.
@@ -37,9 +43,10 @@ race:
 # verifier, the line reader under all of them, and (M2) tool-argument
 # conversion, path normalisation, the policy decision and tools/list filtering,
 # (M3) the policy.yaml compiler, (M4) the canonical JSON of tool pins, and
-# (M5) the detection rules and roverd's rewriting of results, and (M7) the
+# (M5) the detection rules and roverd's rewriting of results, (M7) the
 # client-config reader, which roverd's tamper watch runs on files an agent
-# can write.
+# can write, and (M9) the client's elicitation reply and the approval
+# page's request handling.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
@@ -56,6 +63,8 @@ fuzz:
 	go test ./internal/daemon -run='^$$' -fuzz=FuzzUnescape -fuzztime=$(FUZZTIME)
 	go test ./internal/policy/propose -run='^$$' -fuzz=FuzzBuild -fuzztime=$(FUZZTIME)
 	go test ./internal/clients -run='^$$' -fuzz=FuzzParseDoc -fuzztime=$(FUZZTIME)
+	go test ./internal/approve -run='^$$' -fuzz=FuzzElicitReply -fuzztime=$(FUZZTIME)
+	go test ./internal/approve/page -run='^$$' -fuzz=FuzzPageRequest -fuzztime=$(FUZZTIME)
 
 # The detection gates (plan §6 M5): recall, false positives and corpus size
 # on testdata/corpus. Exits non-zero if a gate fails.

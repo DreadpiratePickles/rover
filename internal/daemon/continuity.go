@@ -15,16 +15,25 @@ const stateLossReason = "state.db missing: all pins and approvals lost; every se
 // pin is gone and every server will be trusted on first use again, which
 // an attacker who can delete one file would love to arrange quietly. So it
 // is audited, logged loudly and notified. A failed audit write stops roverd.
+//
+// From M9 the same report covers a state.db roverd distrusts although it
+// exists (Options.StateResetReason): one with no approved policy while the
+// log has history, or with an approval newer than the log. roverd then runs
+// with no policy in enforce mode.
 func (s *Server) reportStateLoss() error {
-	if !s.o.StateDBCreated || !s.o.AuditHadHistory {
+	reason := s.o.StateResetReason
+	if s.o.StateDBCreated && s.o.AuditHadHistory {
+		reason = stateLossReason
+	}
+	if reason == "" {
 		return nil
 	}
-	s.o.Logf("STATE LOST: %s", stateLossReason)
-	e := audit.Entry{Time: s.o.Now().UTC(), Session: adminSession, Kind: AuditKindState, Action: "reset", Reason: stateLossReason}
+	s.o.Logf("STATE LOST: %s", reason)
+	e := audit.Entry{Time: s.o.Now().UTC(), Session: adminSession, Kind: AuditKindState, Action: "reset", Reason: reason}
 	if err := s.writeAudit(e); err != nil {
 		return err
 	}
-	s.o.Notifier.Notify("Rover lost its pins", stateLossReason)
+	s.o.Notifier.Notify("rover: state reset, no policy loaded", reason+". run `rover doctor`.")
 	return nil
 }
 

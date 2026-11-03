@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/DreadpiratePickles/rover/internal/clients"
+	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
 )
@@ -25,6 +26,7 @@ type clientFlags struct {
 	yes     bool
 	dryRun  bool
 	service bool
+	polkit  bool
 	rover   string
 }
 
@@ -39,6 +41,7 @@ func parseClientFlags(name string, args []string) clientFlags {
 	fs.BoolVar(&cf.dryRun, "dry-run", false, "show what would change and write nothing")
 	fs.BoolVar(&cf.service, "service", false, "the roverd login service (launchd agent on macOS, systemd user unit on Linux) instead of client configs")
 	if name == "install" {
+		fs.BoolVar(&cf.polkit, "polkit", false, "print the commands that install the polkit action for approvals (Linux; needs sudo, which rover never runs)")
 		fs.StringVar(&cf.rover, "rover", "", "absolute path of the rover binary written into configs (default: this binary)")
 	}
 	_ = fs.Parse(args)
@@ -132,6 +135,9 @@ func confirm(out io.Writer, in *bufio.Reader, cf clientFlags, question string) b
 
 func runInstall(args []string) int {
 	cf := parseClientFlags("install", args)
+	if cf.polkit {
+		return installPolkit(os.Stdout, goos)
+	}
 	rover, err := selfPath(cf.rover)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "rover install:", err)
@@ -239,6 +245,9 @@ func tellRoverd(out io.Writer, f clients.ConfigFile, op string) {
 		if op == ipc.OpTamperResolve {
 			_, _ = fmt.Fprintln(out, "note  roverd is not running; it watches this file from its next start")
 		}
+		return
+	case err != nil && strings.Contains(err.Error(), daemon.ErrNotAuthenticated.Error()):
+		_, _ = fmt.Fprintln(out, "WARN  roverd's tamper watch was not updated: the system authentication dialog did not confirm it; run the command again")
 		return
 	case err != nil:
 		_, _ = fmt.Fprintf(out, "WARN  roverd's tamper watch was NOT updated: %v; restart roverd\n", err)

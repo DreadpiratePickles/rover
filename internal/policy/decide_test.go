@@ -298,17 +298,24 @@ func TestNormaliserRejectBlocks(t *testing.T) {
 	}
 }
 
-func TestApprovalAnnotationBlocksUntilM9(t *testing.T) {
+func TestApprovalAnnotationHoldsInEnforceAndForwardsInObserve(t *testing.T) {
 	// Arrange
 	e := mustLoad(t, `@id("ask") @rover_require("approval")
 permit (principal, action == Action::"call_tool", resource == Tool::"echo/echo");`)
+	enforce := input(DirC2S, toolsCall("1", "echo", `{}`))
+	observe := enforce
+	observe.Mode = ModeObserve
 
 	// Act
-	out := e.Decide(input(DirC2S, toolsCall("1", "echo", `{}`)))
+	held := e.Decide(enforce)
+	seen := e.Decide(observe)
 
 	// Assert
-	if out.Action != ipc.ActionBlock || out.Reason != ReasonApprovalM2 || !contains(out.RuleIDs, "ask") {
-		t.Fatalf("%+v", out)
+	if held.Action != ipc.ActionHold || held.Reason != ReasonApprovalRequired || !contains(held.RuleIDs, "ask") || len(held.Response) == 0 {
+		t.Fatalf("enforce: %+v", held)
+	}
+	if seen.Action != ipc.ActionForward || !seen.WouldDeny || seen.Reason != ReasonApprovalRequired {
+		t.Fatalf("observe: %+v", seen)
 	}
 }
 
