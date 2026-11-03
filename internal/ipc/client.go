@@ -31,6 +31,8 @@ type Client struct {
 	// inject receives the message of every inject frame (M9); nil drops
 	// them, which only means no elicitation reaches the client.
 	inject func(raw []byte)
+	// tlsGroup goes on every decide (M11 bridge); "" for wrap.
+	tlsGroup string
 }
 
 // Hello identifies the wrapper to roverd.
@@ -88,6 +90,17 @@ func (c *Client) SetInjectHandler(fn func(raw []byte)) {
 	c.mu.Unlock()
 }
 
+// SetTLSGroup records the key exchange group of the bridge's newest TLS
+// connection; later decides carry it for the audit log.
+func (c *Client) SetTLSGroup(g string) {
+	if !ValidTLSGroup(g) {
+		return
+	}
+	c.mu.Lock()
+	c.tlsGroup = g
+	c.mu.Unlock()
+}
+
 // SessionID is the id roverd assigned in welcome.
 func (c *Client) SessionID() string { return c.session }
 
@@ -110,9 +123,10 @@ func (c *Client) Decide(dir string, raw []byte) (Frame, <-chan Frame, error) {
 	// nobody waiting would otherwise be lost and the held message stuck.
 	c.waiting[seq] = ch
 	c.released[seq] = rel
+	group := c.tlsGroup
 	c.mu.Unlock()
 
-	if err := c.send(Frame{Type: TypeDecide, SessionID: c.session, Seq: seq, Dir: dir, Raw: raw}); err != nil {
+	if err := c.send(Frame{Type: TypeDecide, SessionID: c.session, Seq: seq, Dir: dir, Raw: raw, TLSGroup: group}); err != nil {
 		c.forget(seq)
 		return Frame{}, nil, err
 	}

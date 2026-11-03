@@ -88,8 +88,8 @@ type Status string
 // Server statuses.
 const (
 	StatusStdio   Status = "stdio"   // a local server, not wrapped
-	StatusWrapped Status = "wrapped" // command is `rover`, args start with "wrap"
-	StatusRemote  Status = "remote"  // url / type http|sse|ws: left alone until M11
+	StatusWrapped Status = "wrapped" // command is `rover`, args start with "wrap" (or "bridge", M11)
+	StatusRemote  Status = "remote"  // url / type http|sse|ws: converted to `rover bridge` when possible (M11)
 	StatusUnknown Status = "unknown" // not an object, or fields of the wrong type
 )
 
@@ -101,9 +101,17 @@ type Server struct {
 	Command string   // for stdio and wrapped
 	Args    []string // for stdio and wrapped
 	Problem string   // why it is StatusUnknown
+	// Bridged: a wrapped entry that is `rover bridge`, not `rover wrap` (M11).
+	Bridged bool
+	// For StatusRemote: the url, the transport type ("" if none) and
+	// whether the entry carries its own headers.
+	URL, RemoteType string
+	HasHeaders      bool
 
-	cmd, args *field // offsets into Doc.Orig
-	argElems  []element
+	cmd, args  *field // offsets into Doc.Orig
+	argElems   []element
+	urlF, typF *field
+	obj        [2]int // the server object's own span in Doc.Orig
 }
 
 // Doc is a parsed config file: the original bytes, untouched, and the
@@ -155,7 +163,7 @@ func parseDoc(s spec, cf ConfigFile, orig []byte) (Doc, error) {
 }
 
 func classify(src []byte, scope string, m field) Server {
-	sv := Server{Scope: scope, Key: m.Key, Status: StatusUnknown}
+	sv := Server{Scope: scope, Key: m.Key, Status: StatusUnknown, obj: [2]int{m.Start, m.End}}
 	obj, err := objectAt(src, m)
 	if err != nil {
 		sv.Problem = "not a JSON object: " + err.Error()
@@ -172,7 +180,12 @@ func classify(src []byte, scope string, m field) Server {
 			sv.Problem = "type is not a string"
 			return sv
 		case remoteTypes[typ]:
-			sv.Status = StatusRemote
+			sv.Status, sv.RemoteType, sv.typF = StatusRemote, typ, &t
+			_, sv.HasHeaders = obj.get("headers")
+			if f, ok := obj.get("url"); ok {
+				sv.URL, _ = stringValue(f.Value)
+				sv.urlF = &f
+			}
 			return sv
 		case typ != "stdio":
 			sv.Problem = fmt.Sprintf("unknown type %q", typ)
@@ -205,9 +218,14 @@ func classify(src []byte, scope string, m field) Server {
 		}
 		sv.args, sv.argElems = &a, elems
 	}
+	if f, ok := obj.get("type"); ok {
+		sv.typF = &f
+	}
 	sv.Status = StatusStdio
 	if IsRoverForm(sv.Command, sv.Args) {
 		sv.Status = StatusWrapped
+	} else if IsBridgeForm(sv.Command, sv.Args) {
+		sv.Status, sv.Bridged = StatusWrapped, true
 	}
 	return sv
 }

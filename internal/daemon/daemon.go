@@ -377,6 +377,11 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame, cn *conn) i
 		j = blockJ(m, ReasonApprovalUnavailable, j.ruleIDs, j.findings)
 	}
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
+	if hello.Transport == "http" && f.TLSGroup != "" {
+		// M11: the bridge's negotiated key exchange, one finding per entry,
+		// so `rover log` shows which calls crossed a post-quantum channel.
+		e.Findings = append(append([]string(nil), e.Findings...), TLSFindingPrefix+f.TLSGroup)
+	}
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
 	}

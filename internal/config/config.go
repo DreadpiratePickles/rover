@@ -64,6 +64,8 @@ type Config struct {
 	Approvals Approvals
 	// Audit configures the audit log (M10).
 	Audit Audit
+	// Bridges are the remote servers of `rover bridge` (M11), by name.
+	Bridges map[string]Bridge
 }
 
 // Audit is config.yaml's audit section.
@@ -139,6 +141,7 @@ type file struct {
 	Audit struct {
 		Bodies *bool `yaml:"bodies"`
 	} `yaml:"audit"`
+	Bridges map[string]bridgeFile `yaml:"bridges"`
 }
 
 // rootList decodes a YAML mapping {name: path} keeping the file's order.
@@ -242,6 +245,11 @@ func parse(b []byte, dir string, read Reader) (Config, error) {
 	if f.Audit.Bodies != nil {
 		cfg.Audit.Bodies = *f.Audit.Bodies
 	}
+	bridges, berr := parseBridges(f.Bridges, dir)
+	if berr != nil {
+		return Config{}, berr
+	}
+	cfg.Bridges = bridges
 	if f.Normalizers != "" {
 		n, p, err := loadNormalizers(f.Normalizers, dir, read)
 		if err != nil {

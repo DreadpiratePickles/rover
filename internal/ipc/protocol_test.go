@@ -168,3 +168,17 @@ func TestPolicyApplyFrame(t *testing.T) {
 		}
 	}
 }
+
+// M11: a decide may carry the bridge's TLS group, and only a plain name.
+func TestDecideTLSGroup(t *testing.T) {
+	ok := `{"type":"decide","session_id":"s","seq":1,"dir":"c2s","raw":"e30=","tls_group":"X25519MLKEM768"}`
+	if _, err := Parse([]byte(ok)); err != nil {
+		t.Fatalf("valid group refused: %v", err)
+	}
+	for _, g := range []string{`"X25519 MLKEM"`, `"tls:\nx"`, `"` + strings.Repeat("A", 33) + `"`} {
+		bad := `{"type":"decide","session_id":"s","seq":1,"dir":"c2s","raw":"e30=","tls_group":` + g + `}`
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("tls_group %s accepted", g)
+		}
+	}
+}

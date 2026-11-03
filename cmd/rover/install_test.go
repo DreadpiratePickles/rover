@@ -43,7 +43,7 @@ func TestInstallUninstallEndToEnd(t *testing.T) {
 	}
 
 	out, err := run(dir, "install", "--client", "claude-code", "--dry-run")
-	if err != nil || !strings.Contains(out, "+      \"command\": \""+bins.rover) || !strings.Contains(out, "stripe is a remote server") || !strings.Contains(out, "Edit(~/.claude.json)") {
+	if err != nil || !strings.Contains(out, "+      \"command\": \""+bins.rover) || !strings.Contains(out, `"args": ["bridge", "--name", "stripe"`) || !strings.Contains(out, "Edit(~/.claude.json)") {
 		t.Fatalf("dry run (err %v):\n%s", err, out)
 	}
 	unchanged("--dry-run")
@@ -56,7 +56,7 @@ func TestInstallUninstallEndToEnd(t *testing.T) {
 		t.Fatalf("install --yes: %v\n%s", err, out)
 	}
 	if b, _ := os.ReadFile(cfg); //nolint:gosec // G304: the test's own temp file
-	bytes.Count(b, []byte(`"wrap", "--name`)) != 6 {
+	bytes.Count(b, []byte(`"wrap", "--name`)) != 6 || bytes.Count(b, []byte(`"bridge", "--name"`)) != 1 {
 		t.Fatalf("not wrapped:\n%s", b)
 	}
 	if b, _ := os.ReadFile(settings); //nolint:gosec // G304: the test's own temp file

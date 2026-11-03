@@ -241,3 +241,25 @@ func TestAuditBodiesDefaultOnAndCanBeTurnedOff(t *testing.T) {
 		t.Error("Default must log bodies")
 	}
 }
+
+func TestBridges(t *testing.T) {
+	cfg, err := Parse([]byte("bridges:\n  gh:\n    url: https://api.example.com/mcp\n    pq_required: true\n  local:\n    url: http://127.0.0.1:9000/mcp\n    auth: {type: bearer, keychain: tok}\n"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh, local := cfg.Bridges["gh"], cfg.Bridges["local"]
+	if !gh.PQRequired || gh.Auth.Type != AuthOAuth || gh.Auth.Keychain != "gh" || local.Auth.Type != AuthBearer || local.Auth.Keychain != "tok" {
+		t.Fatalf("%+v %+v", gh, local)
+	}
+	for _, bad := range []string{
+		"bridges:\n  x:\n    url: http://example.com/mcp\n",                      // plain http off loopback
+		"bridges:\n  x:\n    url: http://127.0.0.1/mcp\n    pq_required: true\n", // pq needs TLS
+		"bridges:\n  a/b:\n    url: https://e.com\n",
+		"bridges:\n  x:\n    url: https://e.com\n    auth: {type: basic}\n",
+		"bridges:\n  x:\n    url: https://e.com\n    headers: {a: b}\n",
+	} {
+		if _, err := Parse([]byte(bad), t.TempDir()); err == nil {
+			t.Errorf("accepted:\n%s", bad)
+		}
+	}
+}
