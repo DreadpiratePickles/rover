@@ -1,3 +1,6 @@
 bin/
 *.jsonl
 dist/
+
+# Local build output (go build ./cmd/rover)
+/rover
