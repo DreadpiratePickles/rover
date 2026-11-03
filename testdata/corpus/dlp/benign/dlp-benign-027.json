@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-027",
+ "label": "benign",
+ "text": "/usr/local/lib/python3.12/site-packages/requests/adapters.py:589 in send",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "python path"
+}

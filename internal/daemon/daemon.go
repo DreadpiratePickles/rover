@@ -25,6 +25,7 @@ import (
 	"github.com/DreadpiratePickles/rover/internal/audit"
 	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/config"
+	"github.com/DreadpiratePickles/rover/internal/dlp"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/jsonrpc"
 	"github.com/DreadpiratePickles/rover/internal/learn"
@@ -126,6 +127,8 @@ type Server struct {
 
 	// ctx lives as long as the server; Close cancels it, which denies
 	// every approval still running.
+	dlp      dlp.Detector // secrets (M10, dlp.go)
+	maxLine  int          // largest line roverd hands back (maxReplacement; tests lower it)
 	ctx      context.Context
 	cancel   context.CancelFunc
 	elicits  elicitTable // elicitations waiting for the client (approvals.go)
@@ -150,6 +153,8 @@ func New(o Options) *Server {
 	if o.PIDAlive == nil {
 		o.PIDAlive = pidAlive
 	}
+	det := dlp.New()
+	o.Logf = redactingLogf(det, o.Logf) // no log line carries a secret (M10)
 	if o.Notifier == nil {
 		o.Notifier = pin.NopNotifier{}
 	}
@@ -159,7 +164,10 @@ func New(o Options) *Server {
 	}
 	s := &Server{o: o, sessions: map[int]*Session{}, conns: map[net.Conn]struct{}{},
 		pins: pin.NewChecker(store, o.Now, o.Logf), notes: pin.NewCoalescerWith(o.Notifier, o.Now, blockedMessage),
-		closedDone: make(chan struct{}), elicits: elicitTable{m: map[string]elicitWait{}}, holds: holdTable{m: map[string]*holdEntry{}}}
+		closedDone: make(chan struct{}), elicits: elicitTable{m: map[string]elicitWait{}}, holds: holdTable{m: map[string]*holdEntry{}}, dlp: det, maxLine: maxReplacement}
+	if o.Audit != nil {
+		o.Audit.SetRedactor(s.redactEntry) // every audit write is redacted (M10)
+	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if o.State != nil {
 		s.rec = learn.NewRecorder(o.State, o.Logf)

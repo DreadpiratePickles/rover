@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-038",
+ "label": "benign",
+ "text": "date,region,revenue\n2026-01-01,eu-west-1,123456.78\n2026-01-02,us-east-1,98765.43\n",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "csv"
+}

@@ -11,7 +11,8 @@ import (
 
 func TestEvalPassesOnTheCorpus(t *testing.T) {
 	out, err := run(roverDir(t), "eval", "--corpus", filepath.Join("..", "..", "testdata", "corpus"))
-	if err != nil || !strings.Contains(out, "gates passed") || !strings.Contains(out, "tool_description") {
+	if err != nil || !strings.Contains(out, "gates passed") || !strings.Contains(out, "tool_description") ||
+		!strings.Contains(out, "dlp gates passed") || !strings.Contains(out, "private-key-pem") {
 		t.Fatalf("%v\n%s", err, out)
 	}
 }
@@ -36,7 +37,7 @@ func TestEvalFailsAGateWithExit1(t *testing.T) {
 	if !errors.As(err, &ee) || ee.ExitCode() != 1 {
 		t.Fatalf("want exit 1, got %v\n%s", err, out)
 	}
-	for _, want := range []string{"x-1  expected instruction_phrase, got nothing", "GATE FAILED: recall 0.000", "missing MIN_COUNTS"} {
+	for _, want := range []string{"x-1  expected instruction_phrase, got nothing", "GATE FAILED: recall 0.000", "missing MIN_COUNTS", "GATE FAILED: dlp corpus: no DLP cases"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}

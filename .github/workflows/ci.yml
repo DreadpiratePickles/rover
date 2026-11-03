@@ -105,6 +105,10 @@ jobs:
         run: go test ./internal/daemon -run='^$' -fuzz=FuzzUnescape -fuzztime=30s
       - name: fuzz propose.Build (30s)
         run: go test ./internal/policy/propose -run='^$' -fuzz=FuzzBuild -fuzztime=30s
+      - name: fuzz dlp.Find (30s)
+        run: go test ./internal/dlp -run='^$' -fuzz=FuzzFind -fuzztime=30s
+      - name: fuzz dlp.RedactJSON (30s)
+        run: go test ./internal/dlp -run='^$' -fuzz=FuzzRedact -fuzztime=30s
       # On a crash, keep the failing input so it can be reproduced locally
       # (copy it into internal/jsonrpc/testdata/fuzz/FuzzParse/ and run go test).
       - name: upload crashing input
@@ -124,6 +128,7 @@ jobs:
             internal/pin/testdata/fuzz/
             internal/detect/testdata/fuzz/
             internal/daemon/testdata/fuzz/
+            internal/dlp/testdata/fuzz/
           if-no-files-found: ignore
 
   govulncheck:

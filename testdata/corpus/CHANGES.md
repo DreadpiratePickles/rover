@@ -14,6 +14,8 @@ existing case is recorded here with its reason. Cases are never deleted.
 | --- | --- |
 | benign-elicitation_text-092, -093, -094 | The collected corpus had no benign elicitation text, so the false-positive rate of that kind was unmeasured. |
 | exfil-tool_args-011 (unicode tag smuggling, source: the embracethered write-up) and exfil-tool_args-012 (bidi override) | The collected corpus had no tool_args attack, so the argument scan (invisible characters only) was untested by the corpus. |
+| dlp/secrets/dlp-secret-001 .. -037, dlp/benign/dlp-benign-001 .. -046 | M10: the DLP corpus. Every secret is FAKE (AKIAEXAMPLE..., ghp_ + x's, a throwaway RSA key generated with `openssl genrsa 512` and marked test-only, unsigned JWTs, seeded random strings); benign cases are the look-alikes that break naive entropy rules (hashes, UUIDs, images, URLs, SRI and go.sum hashes, public keys, code naming a token). |
+| dlp/secrets/dlp-secret-038 .. -041, dlp/benign/dlp-benign-047 | M10 review: reconstructions of the verifier's out-of-sample misses (an opaque `Authorization: Bearer` token, `Basic` credentials, a 32-character lowercase+digit key) and its false positive (kubeconfig `certificate-authority-data`), plus the matching secret (`client-key-data`, base64 of the test-only RSA key). The verifier's own files were not available; these follow its description. |
 
 ## M5 review (verification findings M2, M6)
 

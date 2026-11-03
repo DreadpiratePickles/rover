@@ -67,3 +67,16 @@ when { resource.labels.contains("egress") && context.detection.max_score >= 70 }
 //   action == Action::"call_tool",
 //   resource in Server::"filesystem"
 // ) when { context.norm has path.under_projects && context.norm.path.under_projects };
+
+// Egress allow-list (templates/egress-allowlist.cedar; uncomment to use).
+// Rover already blocks an egress call whose arguments carry a credential
+// (M10 DLP); this also stops an egress tool from reaching any host you did
+// not list, whatever it sends. Edit the hosts, then `rover policy apply`.
+//
+// @id("egress-allowlist")
+// forbid (principal, action == Action::"call_tool", resource)
+// when {
+//   resource.labels.contains("egress") &&
+//   context.norm has url &&
+//   !["api.github.com", "slack.com"].contains(context.norm.url.host)
+// };

@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-030",
+ "label": "benign",
+ "text": "$ cat server.crt\n-----BEGIN CERTIFICATE-----\nBA7dIwtiEGp7npVUs/MucoGnAkOuGQDidtCmwy5oAQlYtsk1M5Scwqmf3CIdwaUG\nKuvNXHJC0eI3/hOCNZJwhJpOmde5Q9plZ3G3Q3gSuSkza+zMhGUyMScjcOHH1zEM\nQ2nGc2ok43CbUaJESipgsGRayg+2y4t1pdoyFC+7VE5eE8VJeNUbvUG7eS7Jf/MH\nWVReJ7FOMJHM94JaNZOvVjoYa3Z57m5AsAhgN00m3JmUsSOIwiXeFrg3yIhryfBl\ndmeCaWYBPhh8OsKzpNy021GtqAN3G3P/UxJhORismfM32qbwI3PP7+pqSFC9h3hT\n-----END CERTIFICATE-----",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "certificate"
+}

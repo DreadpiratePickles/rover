@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-032",
+ "label": "benign",
+ "text": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI+l2CPod4KaHiBH46YZZBIX+mjIeHRBNw/wpjIKaOytH dev@laptop",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "ssh public key"
+}

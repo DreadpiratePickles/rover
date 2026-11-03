@@ -13,6 +13,7 @@ func TestLastTimeSurvivesReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	l.SetRedactor(noRedact)
 	if !l.LastTime().IsZero() {
 		t.Fatal("empty log must have no last time")
 	}

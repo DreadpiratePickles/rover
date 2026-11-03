@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-001",
+ "label": "benign",
+ "text": "removed sha256:cbfee172e46fe599f8f9581da29d3e37b72e3a694826b9d691d6c005a8120dc0, sha256:1123a8f28dc354554c3fa92c7ba273bf0f77db7c6ce1fe8839cdffed07857d3d",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "audit reason with sha256"
+}

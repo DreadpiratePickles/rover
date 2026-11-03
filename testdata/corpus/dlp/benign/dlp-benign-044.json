@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-044",
+ "label": "benign",
+ "text": "go1.26.9 darwin/arm64; golangci-lint v2.14.0; node v22.11.0; cedar-go v1.8.0",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "semver and versions"
+}

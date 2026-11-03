@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-022",
+ "label": "benign",
+ "text": "{\"type\":\"object\",\"properties\":{\"token\":{\"type\":\"string\",\"description\":\"An API token\"},\"password\":{\"type\":\"string\"}}}",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "json schema token"
+}

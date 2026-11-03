@@ -226,3 +226,18 @@ func TestApprovalsSection(t *testing.T) {
 		}
 	}
 }
+
+func TestAuditBodiesDefaultOnAndCanBeTurnedOff(t *testing.T) {
+	for in, want := range map[string]bool{"": true, "mode: enforce\n": true, "audit:\n  bodies: false\n": false, "audit:\n  bodies: true\n": true} {
+		c, err := Parse([]byte(in), t.TempDir())
+		if err != nil || c.Audit.Bodies != want {
+			t.Errorf("%q: bodies %v (%v), want %v", in, c.Audit.Bodies, err, want)
+		}
+	}
+	if _, err := Parse([]byte("audit:\n  body: false\n"), t.TempDir()); err == nil {
+		t.Error("a misspelt audit key must be refused")
+	}
+	if !Default().Audit.Bodies {
+		t.Error("Default must log bodies")
+	}
+}

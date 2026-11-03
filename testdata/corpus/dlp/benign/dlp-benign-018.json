@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-018",
+ "label": "benign",
+ "text": "token = os.environ.get(\"GITHUB_TOKEN\")\nif not token:\n    raise SystemExit(\"set GITHUB_TOKEN\")\nheaders = {\"Authorization\": f\"token {token}\"}",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "python token var"
+}

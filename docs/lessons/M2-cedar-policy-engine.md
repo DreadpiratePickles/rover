@@ -147,7 +147,7 @@ blocked even in observe mode: they are not "unpermitted", they are broken.
 | --- | --- |
 | `rover policy init [--force]` | Writes `policy.cedar` (the starter), `config.yaml`, `schema.cedarschema` and `templates/*.cedar` into the config directory. Refuses to overwrite anything unless `--force`. |
 | `rover policy validate [--policy FILE]` | Loads a policy exactly as roverd would (parse, type-check against the schema in strict mode) and lists each policy id with its effect. Also loads `config.yaml`. Exit 1 on any error. |
-| `rover policy test <audit.jsonl>` | Replays logged messages through the **current** policy in enforce mode and prints the decision and deciding rules for each. Needs a log written with `rover daemon --log-bodies`; entries without a body are counted as skipped. |
+| `rover policy test <audit.jsonl>` | Replays logged messages through the **current** policy in enforce mode and prints the decision and deciding rules for each. Needs a log with bodies (the default since M10; in M2 this took `rover daemon --log-bodies`); entries without a body are counted as skipped. |
 | `rover policy apply` | Asks the running roverd to reload `config.yaml` and `policy.cedar`. A bad file is rejected and the previous policy stays in force. |
 
 `rover policy init` writes five templates: `filesystem-project-only`,
@@ -640,12 +640,13 @@ Expected: five lines of `id  effect`, then `ok: 5 policies (schema: ...)`.
 
 ```bash
 export ROVER_DIR=/tmp/rover-lab-m2
-./bin/rover daemon --log-bodies
+./bin/rover daemon
 ```
 
-`--log-bodies` records full message bodies so that `rover policy test` can
-replay them. Bodies can hold secrets until M10 adds redaction; this is a lab
-directory. You should see:
+roverd records full message bodies so that `rover policy test` can replay
+them. In M2 that took `--log-bodies`, and bodies could hold secrets; since
+M10 bodies are on by default and every entry is redacted before it is
+written (`--no-bodies` turns them off). You should see:
 
 ```
 ... roverd policy loaded (mode enforce)
@@ -725,8 +726,9 @@ replaying /tmp/rover-lab-m2/state/audit.jsonl in enforce mode (config.yaml says 
 The last column, `(logged: ...)`, is what actually happened at the time.
 When you change the policy and re-run `policy test`, a difference between the
 decision and the logged action is exactly what your edit would change. If the
-daemon ran without `--log-bodies`, entries have no body and are counted as
-`skipped (no body)`; the command tells you to use `--log-bodies`.
+daemon ran with `--no-bodies` (before M10: without `--log-bodies`), entries
+have no body and are counted as `skipped (no body)`; the command says how to
+record bodies.
 
 ### Apply a change
 

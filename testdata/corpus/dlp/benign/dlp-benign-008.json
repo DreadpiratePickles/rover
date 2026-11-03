@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-008",
+ "label": "benign",
+ "text": "{\"type\":\"image\",\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"}",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "bare png"
+}

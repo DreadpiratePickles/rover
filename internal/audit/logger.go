@@ -3,9 +3,10 @@
 //
 // LESSON (A1, M1):
 //   - Audit logs are themselves sensitive: tool arguments contain file paths,
-//     queries and sometimes secrets. The file is created 0600 (owner-only)
-//     and bodies are not logged unless the daemon is told to (M10 adds
-//     redaction, after which bodies can be on by default).
+//     queries and sometimes secrets. The file is created 0600 (owner-only),
+//     and from M10 every entry passes through the Redactor roverd installs
+//     (secrets become "[REDACTED:<kind>]") before it is hashed and written,
+//     which is why bodies are now logged by default (`--no-bodies` to stop).
 //   - Logs are written BEFORE the message is forwarded ("log-then-forward").
 //     If the gateway crashes mid-call, the record of what was attempted exists.
 //   - If the log cannot be written, the daemon blocks the message: a security
@@ -41,7 +42,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -70,8 +70,12 @@ type Entry struct {
 	PrevDigest string          `json:"prev_digest,omitempty"`
 	Bytes      int             `json:"bytes"`
 	Body       json.RawMessage `json:"body,omitempty"`
-	Prev       string          `json:"prev"` // hash of the previous entry, "" for the very first
-	Hash       string          `json:"hash,omitempty"`
+	// BodyTruncated says Body is a JSON string holding only the start of
+	// the body, cut to fit MaxLine (M10); BodySHA256 is the whole body's.
+	BodyTruncated bool   `json:"body_truncated,omitempty"`
+	BodySHA256    string `json:"body_sha256,omitempty"`
+	Prev          string `json:"prev"` // hash of the previous entry, "" for the very first
+	Hash          string `json:"hash,omitempty"`
 }
 
 // DefaultRotateBytes is the size at which the daemon starts a new log file.
@@ -91,6 +95,18 @@ type Logger struct {
 	// AnchorPath, when set, receives the newest hash after every write
 	// (written to a temp file and renamed, so it is never half-written).
 	AnchorPath string
+	// redact rewrites each entry before it is hashed (SetRedactor).
+	redact func(Entry) Entry
+}
+
+// SetRedactor installs f, which rewrites every entry before it is hashed
+// and written (M10: roverd removes secrets this way). Because Write calls
+// it, no writer of the log (decisions, approvals, pins, tamper alerts) can
+// forget to redact. nil removes it.
+func (l *Logger) SetRedactor(f func(Entry) Entry) {
+	l.mu.Lock()
+	l.redact = f
+	l.mu.Unlock()
 }
 
 // Open appends to path, creating it (and its directory) owner-only, and
@@ -149,6 +165,13 @@ func (l *Logger) LastTime() time.Time {
 // Write links e to the chain and appends it as one line. Prev and Hash are
 // set here; any values the caller put in them are overwritten.
 func (l *Logger) Write(e Entry) error {
+	l.mu.Lock()
+	redact := l.redact
+	l.mu.Unlock()
+	if redact == nil {
+		return ErrNoRedactor // fail closed: never write an unredacted entry
+	}
+	e = fit(redact(e)) // outside the lock: a large body takes a while to scan
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e.Prev = l.last
@@ -272,151 +295,57 @@ func lastEntry(path string) (string, time.Time, error) {
 	return res.LastHash, res.LastTime, nil
 }
 
-// Result is what Verify found.
-type Result struct {
-	Entries   int       // lines checked
-	LastHash  string    // hash of the final entry, "" if the log is empty
-	LastTime  time.Time // time of the final entry
-	FirstPrev string    // Prev of the first entry; non-empty means it continues an earlier file
-	File      string    // which file the problem is in (VerifyChain only)
-	Line      int       // 1-based line of the first problem, 0 if none
-	Err       error     // nil when the chain is intact
+// ErrNoRedactor refuses a Write before SetRedactor: an audit log that
+// might hold secrets is worse than none (M10).
+var ErrNoRedactor = errors.New("audit: no redactor installed")
+
+const (
+	// maxReason caps an entry's reason.
+	maxReason = 64 << 10
+	// fitHeadroom is kept free under MaxLine for the hash, prev and the
+	// truncation fields.
+	fitHeadroom = 4 << 10
+)
+
+// fit makes e encodable within MaxLine, so a size can never fail a write
+// (an audit failure blocks everything): the reason is capped, and a body
+// too large for the line is replaced by a JSON string holding its start,
+// with body_truncated and the whole body's SHA-256.
+func fit(e Entry) Entry {
+	if len(e.Reason) > maxReason {
+		e.Reason = strings.ToValidUTF8(e.Reason[:maxReason], "") + "...(truncated)"
+	}
+	if len(e.Body) == 0 {
+		return e
+	}
+	line, _, err := encode(e)
+	if err == nil && len(line) <= MaxLine-fitHeadroom {
+		return e
+	}
+	sum := sha256.Sum256(e.Body)
+	body := e.Body
+	e.Body, e.BodyTruncated, e.BodySHA256 = json.RawMessage(`""`), true, hex.EncodeToString(sum[:])
+	meta, _, _ := encode(e)
+	budget := MaxLine - fitHeadroom - len(meta)
+	n := min(len(body), budget)
+	for n > 0 {
+		s, _ := marshalString(string(body[:n]))
+		if len(s) <= budget {
+			e.Body = s
+			break
+		}
+		n = n * budget / len(s) * 9 / 10
+	}
+	return e
 }
 
-// ChainFiles lists the log files for path in chain order: rotated files
-// (path.<timestamp>, sorted) followed by the live file.
-func ChainFiles(path string) ([]string, error) {
-	rotated, err := filepath.Glob(path + ".*")
-	if err != nil {
+// marshalString is s as a JSON string without HTML escaping.
+func marshalString(s string) (json.RawMessage, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
 		return nil, err
 	}
-	files := make([]string, 0, len(rotated)+1)
-	for _, f := range rotated {
-		// Rotated files are named path.<UTC timestamp>; anything else that
-		// happens to share the prefix is not part of the chain.
-		suffix := strings.TrimPrefix(f, path+".")
-		if !isTimestamp(suffix) {
-			continue
-		}
-		files = append(files, f)
-	}
-	sort.Strings(files)
-	if _, err := os.Stat(path); err == nil {
-		files = append(files, path)
-	}
-	return files, nil
-}
-
-// VerifyChain checks a whole sequence of files as one chain: the first
-// entry of the first file must have no predecessor, each file must continue
-// the previous one, and, when anchor is non-empty, the anchored hash must be
-// one of the hashes in the chain. A chain whose head or tail was cut fails.
-func VerifyChain(files []string, anchor string) Result {
-	var total Result
-	prev := ""
-	anchorSeen := anchor == ""
-	for i, name := range files {
-		f, err := os.Open(name) //nolint:gosec // G304: Rover-owned audit-log path
-		if err != nil {
-			return Result{File: name, Err: fmt.Errorf("%w: %v", ErrChainBroken, err)}
-		}
-		res := verify(f, &anchorSeen, anchor)
-		_ = f.Close()
-		res.File = name
-		if res.Err != nil {
-			return res
-		}
-		if res.Entries == 0 {
-			continue
-		}
-		if i == 0 && res.FirstPrev != "" {
-			res.Line, res.Err = 1, fmt.Errorf("%w: first entry claims a predecessor %q but this is the oldest file (head of the log removed?)", ErrChainBroken, res.FirstPrev)
-			return res
-		}
-		if i > 0 && res.FirstPrev != prev {
-			res.Line, res.Err = 1, fmt.Errorf("%w: file does not continue the previous one (prev %q, want %q)", ErrChainBroken, res.FirstPrev, prev)
-			return res
-		}
-		prev = res.LastHash
-		total.Entries += res.Entries
-		total.LastHash = res.LastHash
-		if total.FirstPrev == "" && i == 0 {
-			total.FirstPrev = res.FirstPrev
-		}
-	}
-	if !anchorSeen {
-		total.Err = fmt.Errorf("%w: anchored hash %.12s... is not in the log (tail of the log removed?)", ErrChainBroken, anchor)
-	}
-	return total
-}
-
-// ErrChainBroken is wrapped by every verification failure.
-var ErrChainBroken = errors.New("audit chain broken")
-
-// MaxLine bounds a single audit line while verifying (bodies are capped by
-// the proxy's 16 MiB message limit, plus metadata).
-const MaxLine = 17 << 20
-
-// Verify walks one file and reports the first line whose bytes, hash or
-// link to the previous entry do not match. It does not know about other
-// files or the anchor; use VerifyChain for the whole log.
-func Verify(r io.Reader) Result {
-	seen := true
-	return verify(r, &seen, "")
-}
-
-func verify(r io.Reader, anchorSeen *bool, anchor string) Result {
-	var res Result
-	br := bufioReader(r)
-	prev := ""
-	for n := 1; ; n++ {
-		line, err := readLine(br)
-		if len(bytes.TrimSpace(line)) > 0 {
-			var e Entry
-			if uerr := json.Unmarshal(line, &e); uerr != nil {
-				return fail(res, n, fmt.Errorf("%w: not valid JSON: %v", ErrChainBroken, uerr))
-			}
-			if n == 1 {
-				res.FirstPrev = e.Prev
-				prev = e.Prev
-			}
-			if e.Prev != prev {
-				return fail(res, n, fmt.Errorf("%w: prev %q does not match previous hash %q", ErrChainBroken, e.Prev, prev))
-			}
-			claimed := e.Hash
-			canon, hash, eerr := encode(e)
-			if eerr != nil {
-				return fail(res, n, fmt.Errorf("%w: %v", ErrChainBroken, eerr))
-			}
-			if hash != claimed {
-				return fail(res, n, fmt.Errorf("%w: hash %q does not match contents (%q)", ErrChainBroken, claimed, hash))
-			}
-			if !bytes.Equal(bytes.TrimRight(canon, "\n"), bytes.TrimRight(line, "\r\n")) {
-				return fail(res, n, fmt.Errorf("%w: line is not in canonical form (edited after writing)", ErrChainBroken))
-			}
-			prev = hash
-			res.Entries++
-			res.LastHash, res.LastTime = hash, e.Time
-			if hash == anchor {
-				*anchorSeen = true
-			}
-		}
-		if errors.Is(err, io.EOF) {
-			return res
-		}
-		if err != nil {
-			return fail(res, n, fmt.Errorf("%w: %v", ErrChainBroken, err))
-		}
-	}
-}
-
-// isTimestamp matches the rotation suffix layout 20060102T150405.000000000Z.
-func isTimestamp(s string) bool {
-	_, err := time.Parse("20060102T150405.000000000Z", s)
-	return err == nil
-}
-
-func fail(res Result, line int, err error) Result {
-	res.Line, res.Err = line, err
-	return res
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }

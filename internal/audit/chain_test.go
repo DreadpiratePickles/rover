@@ -22,7 +22,7 @@ func writeN(t *testing.T, l *Logger, n int) {
 
 func TestVerifyChainDetectsRemovedHead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	l, _ := Open(path)
+	l, _ := openT(path)
 	writeN(t, l, 3)
 	_ = l.Close()
 	data, _ := os.ReadFile(path) //nolint:gosec // G304: test's own file
@@ -41,7 +41,7 @@ func TestVerifyChainDetectsRemovedTailViaAnchor(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.jsonl")
 	anchor := filepath.Join(dir, "audit.anchor")
-	l, _ := Open(path)
+	l, _ := openT(path)
 	l.AnchorPath = anchor
 	writeN(t, l, 3)
 	_ = l.Close()
@@ -67,7 +67,7 @@ func TestVerifyChainDetectsRemovedTailViaAnchor(t *testing.T) {
 func TestVerifyChainAcrossRotatedFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.jsonl")
-	l, _ := Open(path)
+	l, _ := openT(path)
 	l.RotateBytes = 400
 	writeN(t, l, 10)
 	_ = l.Close()
@@ -91,7 +91,7 @@ func TestVerifyChainAcrossRotatedFiles(t *testing.T) {
 // A body full of '<' must not inflate the line: HTML escaping is off.
 func TestBodiesAreNotHTMLEscaped(t *testing.T) {
 	var buf bytes.Buffer
-	l := New(&buf)
+	l := newT(&buf)
 	e := sample(1)
 	e.Body = json.RawMessage(`{"x":"` + strings.Repeat("<", 1000) + `"}`)
 	if err := l.Write(e); err != nil {
@@ -108,18 +108,9 @@ func TestBodiesAreNotHTMLEscaped(t *testing.T) {
 	}
 }
 
-func TestWriteRefusesOversizedEntry(t *testing.T) {
-	l := New(&bytes.Buffer{})
-	e := sample(1)
-	e.Body = json.RawMessage(`{"x":"` + strings.Repeat("a", MaxLine) + `"}`)
-	if err := l.Write(e); err == nil {
-		t.Fatal("an entry larger than MaxLine must be refused, not written")
-	}
-}
-
 func FuzzVerify(f *testing.F) {
 	var buf bytes.Buffer
-	l := New(&buf)
+	l := newT(&buf)
 	_ = l.Write(Entry{Time: time.Unix(1, 0).UTC(), Session: "s", Dir: "c2s", Kind: "request", Method: "ping", Bytes: 1})
 	f.Add(buf.Bytes())
 	f.Add([]byte("{"))

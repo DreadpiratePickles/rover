@@ -17,7 +17,7 @@ func sample(i int) Entry {
 
 func TestChainVerifies(t *testing.T) {
 	var buf bytes.Buffer
-	l := New(&buf)
+	l := newT(&buf)
 	for i := 0; i < 5; i++ {
 		if err := l.Write(sample(i)); err != nil {
 			t.Fatal(err)
@@ -32,7 +32,7 @@ func TestChainVerifies(t *testing.T) {
 // Acceptance (M1): editing one byte makes --verify fail at that line.
 func TestOneByteEditIsDetectedAtItsLine(t *testing.T) {
 	var buf bytes.Buffer
-	l := New(&buf)
+	l := newT(&buf)
 	for i := 0; i < 5; i++ {
 		_ = l.Write(sample(i))
 	}
@@ -48,7 +48,7 @@ func TestOneByteEditIsDetectedAtItsLine(t *testing.T) {
 
 func TestDroppedLineIsDetected(t *testing.T) {
 	var buf bytes.Buffer
-	l := New(&buf)
+	l := newT(&buf)
 	for i := 0; i < 4; i++ {
 		_ = l.Write(sample(i))
 	}
@@ -62,7 +62,7 @@ func TestDroppedLineIsDetected(t *testing.T) {
 
 func TestWhitespaceEditIsDetected(t *testing.T) {
 	var buf bytes.Buffer
-	l := New(&buf)
+	l := newT(&buf)
 	_ = l.Write(sample(1))
 	edited := bytes.Replace(buf.Bytes(), []byte(`"kind":`), []byte(`"kind": `), 1)
 	res := Verify(bytes.NewReader(edited))
@@ -73,7 +73,7 @@ func TestWhitespaceEditIsDetected(t *testing.T) {
 
 func TestOpenResumesChainAndRefusesCorruptTail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	l, err := Open(path)
+	l, err := openT(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestOpenResumesChainAndRefusesCorruptTail(t *testing.T) {
 	first := l.LastHash()
 	_ = l.Close()
 
-	l2, err := Open(path)
+	l2, err := openT(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,14 +103,14 @@ func TestOpenResumesChainAndRefusesCorruptTail(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
-	if _, err := Open(path); err == nil {
+	if _, err := openT(path); err == nil {
 		t.Fatal("Open must refuse to append to a broken chain")
 	}
 }
 
 func TestFileIsOwnerOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "audit.jsonl")
-	l, err := Open(path)
+	l, err := openT(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestFileIsOwnerOnly(t *testing.T) {
 func TestRotationKeepsChainAcrossFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.jsonl")
-	l, err := Open(path)
+	l, err := openT(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,5 +163,28 @@ func TestVerifyEmptyLog(t *testing.T) {
 	res := Verify(strings.NewReader(""))
 	if res.Err != nil || res.Entries != 0 {
 		t.Fatalf("%+v", res)
+	}
+}
+
+func TestRedactorRewritesEveryEntryBeforeItIsHashed(t *testing.T) {
+	// Arrange
+	var buf bytes.Buffer
+	l := newT(&buf)
+	l.SetRedactor(func(e Entry) Entry {
+		e.Reason = strings.ReplaceAll(e.Reason, "s3cret", "[REDACTED:test]")
+		return e
+	})
+
+	// Act
+	if err := l.Write(Entry{Session: "s", Dir: "c2s", Kind: "request", Reason: "token s3cret"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert
+	if strings.Contains(buf.String(), "s3cret") || !strings.Contains(buf.String(), "[REDACTED:test]") {
+		t.Fatalf("%s", buf.String())
+	}
+	if res := Verify(&buf); res.Err != nil {
+		t.Fatalf("the redacted entry must verify: %v", res.Err)
 	}
 }

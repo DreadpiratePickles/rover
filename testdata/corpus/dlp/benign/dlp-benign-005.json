@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-005",
+ "label": "benign",
+ "text": "ghcr.io/acme/app@sha256:b90cf5c8b49121a58a12dbd854ba78f35b9fd80c9ca2ca5166aacbe323b6055a",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "docker digest"
+}

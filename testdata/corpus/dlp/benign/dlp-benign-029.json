@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-029",
+ "label": "benign",
+ "text": "class AbstractSingletonProxyFactoryBean2Configuration extends BaseConfigurationSupport {}",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "camelcase identifier"
+}

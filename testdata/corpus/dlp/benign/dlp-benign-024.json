@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-024",
+ "label": "benign",
+ "text": "data:\n  token: {{ .Values.token | b64enc }}\n  password: <set-in-vault>\n",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "helm placeholder"
+}

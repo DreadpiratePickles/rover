@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-045",
+ "label": "benign",
+ "text": "https-everywhere-browser-extension-configuration-guide-2026-edition",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "long kebab slug"
+}

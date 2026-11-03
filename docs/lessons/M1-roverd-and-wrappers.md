@@ -57,8 +57,10 @@ So M1 splits the gateway in two.
   later milestones need (`pins`, `observations`, `approved_policy`,
   `approvals`, `grants`, `meta`) and a schema version. In M1 nothing is stored
   in it yet, but its file lock already stops a second daemon.
-- **Bodies are off by default.** `rover daemon --log-bodies` turns them on.
-  Until M10 adds redaction, the safe default is metadata only.
+- **Bodies were off by default in M1**, because nothing removed secrets
+  from them yet. *Update (M10):* every audit entry is now redacted before it
+  is written, so bodies are **on** by default; `rover daemon --no-bodies`
+  (or `audit.bodies: false` in config.yaml) logs metadata only.
 
 Paths follow plan §4.2 (`~/Library/Application Support/Rover/{state,run}` on
 macOS). `ROVER_DIR=/some/dir` puts everything under one directory instead,
@@ -305,7 +307,8 @@ export ROVER_DIR=/tmp/rover-lab
 ```
 
 You should see one line ending `listening on /tmp/rover-lab/run/roverd.sock
-(pid NNN, bodies=false)`. Leave it running.
+(pid NNN, bodies=true)` (it said `bodies=false` before M10 turned bodies on
+by default). Leave it running.
 
 **Terminal 2: wrap the echo server and drive it by hand**
 

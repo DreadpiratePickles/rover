@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-026",
+ "label": "benign",
+ "text": "The access token expires after one hour; use the refresh token to get a new one. Never paste a secret into an issue.",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "oauth prose"
+}

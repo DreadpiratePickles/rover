@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-023",
+ "label": "benign",
+ "text": "API_KEY=your-api-key-here\nPASSWORD=changeme\nSECRET=${VAULT_SECRET}\n",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "env example"
+}

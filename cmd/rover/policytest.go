@@ -85,7 +85,7 @@ func policyTest(args []string) int {
 	fmt.Printf("%d replayed: %d forward, %d block; %d not policed; %d skipped (no body)\n",
 		n.replayed, n.forwarded, n.blocked, n.unpoliced, n.skipped)
 	if n.skipped > 0 {
-		fmt.Println("to record bodies, run roverd as `rover daemon --log-bodies` (bodies can hold secrets until M10 adds redaction)")
+		fmt.Println("to record bodies, run roverd without --no-bodies and with audit.bodies not false in config.yaml (bodies are logged by default, secrets redacted)")
 	}
 	return 0
 }

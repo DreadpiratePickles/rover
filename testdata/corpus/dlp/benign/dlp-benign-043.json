@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-043",
+ "label": "benign",
+ "text": "order 01ARZ3NDEKTSV4RRFFQ69G5FAV, ref V1StGXR8_Z5jdHi6B-myT",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "ulid and nanoid"
+}

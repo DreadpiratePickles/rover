@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-047",
+ "label": "benign",
+ "text": "clusters:\n- cluster:\n    certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCkZ4T3FhZkdNKzR0RW1OQVhMQzVlQ0VlYmd6b2JpaC9iQlE1RytZM1ZDZTlSU2ZjTGUxcG40d1J6KzhCcng5SWkKTnBGdXdLSzcwdE1UbTZrNjl6V2lLK2RRNUw0L3Yyek1VSnFKL28xYWZuNm1ZL1JCY2ExMm95S1JiaGlUSHpDUgo5Y1RZbFlnN01ZblFHZVhuZ3dhbGdnWTZwbHVkbkdwMEJxK2tlS0M1cnRPbDZpR09LWVBIcEdFRTV5M1pJTkgwCnNESWhuSEVtZ0h0RTlKQWYwL1V1L0t0YUhDQjlNeWViZ3NVUFZDb3NmYXZWdnJlT2NtUVovaU0yUTIyYzdtZlQKS0VhMGNVaHBhQVlzK2l4d08yZGlZVVB2RGtrLzAzWWlFcEtrZERvY2VwUDI2RDMzVzREV2NXblIrRnExMTBwdApoUVVDMHRRRTlFMVlwbVM3cFc5cWdhSlJVeWRnelAvcnYvM3lrRnkyWThJdjQyQVB0VFdQK095Mm5aRlEwL1dNCmtZVXNIUk9jSUZ6YSt1UThEbG5KaFB3UEJ3dXMySlE2N3VKYllSSmliZDZ0RmVDdENYMGhldnRhd0RLMmZxV3QKdDBRT1Nia3I0czN4YmYyU24reDR6S0cyVVFuU3RiN2NSYlBENDJIUWkrVFVKb3dyTlp0ZGNFSXBSUlBTcVQwTgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==\n    server: https://k8s.example.com:6443\n  name: prod\n",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "kubeconfig certificate-authority-data: base64 of a public certificate (out-of-sample false positive, reconstructed)"
+}

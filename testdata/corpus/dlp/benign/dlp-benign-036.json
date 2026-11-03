@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-036",
+ "label": "benign",
+ "text": "Message-ID: <CAJ8z3x9F2kQ7mVb1nP4rT6wY0sD5gH8jK2lZ3xC4vB6nM7@mail.gmail.com>",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "message id"
+}

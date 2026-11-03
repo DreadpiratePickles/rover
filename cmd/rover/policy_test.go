@@ -116,7 +116,7 @@ func TestPolicyEndToEnd(t *testing.T) {
 	if out, err := run(dir, "policy", "validate"); err != nil || !strings.Contains(out, "hide-read-file  forbid") || !strings.Contains(out, "ok: 3 policies") {
 		t.Fatalf("validate: %v\n%s", err, out)
 	}
-	startDaemon(t, dir, "--log-bodies")
+	startDaemon(t, dir) // bodies are on by default (M10)
 	m := wrapEcho(t, dir)
 
 	// Act
@@ -230,7 +230,7 @@ func TestPolicyTestCountsBodylessEntriesAsSkipped(t *testing.T) {
 	out, err := run(dir, "policy", "test", logPath)
 
 	// Assert
-	if err != nil || !strings.Contains(out, "1 skipped (no body)") || !strings.Contains(out, "--log-bodies") || !strings.Contains(out, "config.yaml says observe") {
+	if err != nil || !strings.Contains(out, "1 skipped (no body)") || !strings.Contains(out, "--no-bodies") || !strings.Contains(out, "config.yaml says observe") {
 		t.Fatalf("policy test: %v\n%s", err, out)
 	}
 }

@@ -28,8 +28,9 @@ type Store interface {
 	Get(id string) (Record, bool, error)
 }
 
-// persisted drops what must not reach the disk: the arguments may hold
-// secrets until M10 redacts them.
+// persisted drops what must not reach the disk: the arguments. roverd
+// redacts the secrets it recognises (M10), but a record does not need them
+// and DLP cannot recognise every secret, so they stay in memory only.
 func persisted(r Record) Record {
 	r.Args = nil
 	r.Elicitor = nil

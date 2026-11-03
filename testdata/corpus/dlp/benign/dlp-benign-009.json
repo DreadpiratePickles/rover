@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-009",
+ "label": "benign",
+ "text": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAPdx3pjNrOLNg3eWWAkUrYPVoBr8Y5H9RClWNT/nmGxVSwB930CDVjzY9wercuEBSBQaifJ+0H5vAbWasDlT+xLQ8JmX/8lH9lFuIKt2EOVQFd1GJmF0vqlxgx",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "jpeg data"
+}

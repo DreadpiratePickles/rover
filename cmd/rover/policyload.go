@@ -66,11 +66,18 @@ labels: {}
 # approvals: calls a permit marks @rover_require("approval") wait for you to
 # confirm them in the system authentication dialog (Touch ID or your password
 # on macOS, polkit on Linux). No answer within timeout_s means deny.
-# show_args puts the call's arguments on the read-only details page; leave it
-# off until secrets are redacted (M10).
+# show_args puts the call's arguments, with secrets redacted, on the
+# read-only details page.
 # approvals:
 #   timeout_s: 120
 #   show_args: false
+
+# audit: the audit log records every message. bodies: true (the default)
+# keeps full message bodies, with secrets replaced by [REDACTED:<kind>]
+# before anything is written; false keeps metadata only. ` + "`rover daemon --no-bodies`" + `
+# turns bodies off whatever this says. Read when roverd starts.
+# audit:
+#   bodies: true
 `
 
 // errNoPolicyFile means neither policy.cedar nor policy.yaml exists.

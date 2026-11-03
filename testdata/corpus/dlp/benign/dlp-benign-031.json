@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-031",
+ "label": "benign",
+ "text": "-----BEGIN PUBLIC KEY-----\nQymHu6v8BlTiWaQJZL8qp4rPuUMEhLunuR6Klh63ILt+4tzUvdFbwEMGar+0B61B\nJjwDd23XEYr0z8XJLNFcAH0oj6qIVo9552x4e7jTRRDtfFBTLzN5WF+EMHVfxqJ1\nPa9wt73q/qrsIbRlQJnpJ3R6wI1+eUHUe1zygT5n50GyFwILDz3KXyCxV4So4O9D\n-----END PUBLIC KEY-----",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "public key"
+}

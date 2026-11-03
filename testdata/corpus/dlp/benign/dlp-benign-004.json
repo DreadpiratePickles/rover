@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-004",
+ "label": "benign",
+ "text": "7b0bb44f-2c28-3435-32f0-2f07a588bb14\n94ddd3fe-8256-f527-713f-c4db0cc3a00b\n87da9ec0-825f-c29d-0a6c-8a9ebb3d0b2c\nd173287b-d374-70dc-27e4-7795e7367e44\neda41899-b79d-d2c0-a93b-b0abb74f141c",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "uuids"
+}

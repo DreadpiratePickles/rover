@@ -1,0 +1,7 @@
+# The DLP corpus may grow, never shrink (plan §6 M10). One line per directory:
+# "<directory> <minimum number of cases>". internal/dlp/corpus_test.go and
+# `rover eval` fail when a directory has fewer cases. Every secret here is
+# FAKE (right shape, valid nowhere); the RSA key was generated for this
+# corpus with `openssl genrsa 512` and is test-only.
+secrets 41
+benign 47

@@ -1,0 +1,9 @@
+{
+ "id": "dlp-benign-007",
+ "label": "benign",
+ "text": "![logo](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==)",
+ "expect": [],
+ "secret": "",
+ "source": "synthetic",
+ "notes": "png data uri"
+}

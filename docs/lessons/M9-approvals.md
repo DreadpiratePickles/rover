@@ -35,8 +35,10 @@ policies.
      `approvals.timeout_s` (default 120 s) denies with the §5.1 isError body
      `approval denied` / `approval timed out`.
   The record ends `allowed`, `denied` or `timed_out` with the method and
-  time. Arguments are never written to disk (M10 has not built redaction
-  yet).
+  time. Arguments are never written to disk. *Update (M10):* the
+  arguments in the record are redacted before the Prompter sees them, so
+  `approvals.show_args: true` shows them with `[REDACTED:<kind>]` in place
+  of any secret.
 - **Authenticators.** macOS: `LocalAuth`, cgo + Objective-C calling
   `LAContext evaluatePolicy:LAPolicyDeviceOwnerAuthentication`, answered
   over a channel, cancelled (`invalidate`) when the approval times out.
