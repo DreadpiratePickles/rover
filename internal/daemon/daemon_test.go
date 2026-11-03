@@ -163,23 +163,25 @@ func TestWrappersWithSameClientPIDShareSession(t *testing.T) {
 }
 
 func TestSessionEndsWhenLastWrapperLeaves(t *testing.T) {
+	// M8: the session lingers until the agent pid is gone (linger_test.go).
 	s := start(t, Options{Audit: audit.New(&bytes.Buffer{}), SelfUID: 7,
 		PeerCreds: func(*net.UnixConn) (ipc.Creds, error) { return ipc.Creds{UID: 7, PID: 100}, nil },
-		ParentPID: parentOf(map[int]int{100: 5})})
+		ParentPID: parentOf(map[int]int{100: 5}), PIDAlive: func(int) bool { return false }})
 	a, _ := ipc.Dial(s.Addr(), hello(5, "fs"))
 	b, _ := ipc.Dial(s.Addr(), hello(5, "git"))
 	_ = a.Close()
 	time.Sleep(50 * time.Millisecond)
-	if len(s.Sessions()) != 1 {
-		t.Fatal("session should survive while one wrapper remains")
+	if len(s.Sessions()) != 1 || s.Sessions()[0].Lingering() {
+		t.Fatal("session should stay attached while one wrapper remains")
 	}
 	_ = b.Close()
 	deadline := time.Now().Add(2 * time.Second)
-	for len(s.Sessions()) != 0 && time.Now().Before(deadline) {
+	for (len(s.Sessions()) != 1 || !s.Sessions()[0].Lingering()) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
+	s.sweepSessions()
 	if len(s.Sessions()) != 0 {
-		t.Fatal("session should end when the last wrapper leaves")
+		t.Fatal("session should end when the last wrapper left and the agent is gone")
 	}
 }
 

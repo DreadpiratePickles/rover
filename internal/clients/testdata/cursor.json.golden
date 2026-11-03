@@ -1,0 +1,20 @@
+// Cursor accepts comments; rover must keep them
+{
+    "mcpServers":   {
+        /* the node one */
+        "server-name": {
+            "command": "/opt/rover/bin/rover",
+            "args": ["wrap", "--name", "server-name", "--", "npx", "-y", "mcp-server"],   // trailing comment
+            "env": {
+                "API_KEY": "value"
+            },
+        },
+        "py":{"command":"/opt/rover/bin/rover","args":["wrap", "--name", "py", "--", "python", "mcp-server.py"]},
+        "remote": {
+            "type": "http",
+            "url": "http://localhost:3000/mcp",
+            "headers": {"API_KEY": "value"}
+        }
+    },
+    "unknownTopLevel": {"keep": ["me", 1, true]}
+}

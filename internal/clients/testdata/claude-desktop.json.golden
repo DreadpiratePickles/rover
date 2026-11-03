@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "/opt/rover/bin/rover",
+      "args": ["wrap", "--name", "filesystem", "--", "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/username/Desktop",
+        "/Users/username/Downloads"
+      ]
+    },
+    "brave-search": {
+      "command": "/opt/rover/bin/rover",
+      "args": ["wrap", "--name", "brave-search", "--", "npx", "-y", "@modelcontextprotocol/server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "..."
+      }
+    }
+  },
+  "globalShortcut": ""
+}

@@ -21,6 +21,9 @@ import (
 type replaySession struct {
 	client, version string
 	flags           policy.SessionCtx
+	// pending maps "<server>:<id>" of a forwarded tools/call to its labels,
+	// so its logged result sets the flags the way roverd did (M8).
+	pending map[string][]string
 }
 
 type replayCounts struct{ replayed, forwarded, blocked, unpoliced, skipped int }
@@ -53,7 +56,7 @@ func policyTest(args []string) int {
 		return 1
 	}
 	eng, cfg := l.engine, l.cfg
-	f, err := os.Open(args[0])
+	f, err := os.Open(args[0]) //nolint:gosec // G703: reading the file the operator names on the command line is this command's job
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -90,10 +93,13 @@ func policyTest(args []string) int {
 func replayEntry(eng *policy.Engine, cfg config.Config, e audit.Entry, sessions map[string]*replaySession, n *replayCounts) {
 	st := sessions[e.Session]
 	if st == nil {
-		st = &replaySession{}
+		st = &replaySession{pending: map[string][]string{}}
 		sessions[e.Session] = st
 	}
 	m := jsonrpc.Parse(e.Body)
+	if e.Dir == policy.DirS2C && m.Kind == jsonrpc.KindResult {
+		replayResult(st, e, m)
+	}
 	if e.Dir == policy.DirC2S && m.Kind == jsonrpc.KindRequest && m.Method == "initialize" {
 		st.client, st.version = m.ClientInfo() // strict, like roverd
 	}
@@ -106,7 +112,8 @@ func replayEntry(eng *policy.Engine, cfg config.Config, e audit.Entry, sessions 
 	if o.Action == ipc.ActionForward {
 		n.forwarded++
 		if m.Method == "tools/call" {
-			st.flags = daemon.NextFlags(st.flags, cfg.ToolLabels(e.Server, m.ToolName()))
+			st.flags = daemon.AfterCall(st.flags, e.Server)
+			st.pending[e.Server+":"+string(m.ID)], _ = cfg.EffectiveLabels(e.Server, m.ToolName())
 		}
 	} else {
 		n.blocked++
@@ -121,4 +128,25 @@ func replayEntry(eng *policy.Engine, cfg config.Config, e audit.Entry, sessions 
 	}
 	fmt.Printf("%s  %-12s %-28s %-7s rules=%s (logged: %s)\n",
 		e.Time.Local().Format(time.DateTime), e.Server, what, o.Action, rules, e.Action)
+}
+
+// replayResult applies a logged tools/call result to the replayed session:
+// the call's labels (daemon.AfterResult) if the result reached the agent,
+// and saw_untrusted if detection rewrote it. The log does not record a
+// finding's severity, so a medium finding roverd left unedited (in a tool
+// list) is not replayed: replay can under-taint, never over-taint.
+func replayResult(st *replaySession, e audit.Entry, m jsonrpc.Message) {
+	k := e.Server + ":" + string(m.ID)
+	labels, ok := st.pending[k]
+	if !ok {
+		return
+	}
+	delete(st.pending, k)
+	if e.Action == ipc.ActionBlock {
+		return
+	}
+	st.flags = daemon.AfterResult(st.flags, labels, daemon.ResultIsError(m.Result))
+	if e.Action == ipc.ActionReplace && len(e.Findings) > 0 {
+		st.flags.SawUntrusted = true
+	}
 }

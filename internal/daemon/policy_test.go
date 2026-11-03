@@ -219,18 +219,21 @@ when { context.session.touched_private && resource.labels.contains("egress") };`
 
 	// Act
 	before := decide(t, c, "c2s", call("1", "send"))
+	decide(t, c, "s2c", okResult("1"))
 	read := decide(t, c, "c2s", call("2", "read_file"))
-	after := decide(t, c, "c2s", call("3", "send"))
+	whilePending := decide(t, c, "c2s", call("3", "send"))
+	decide(t, c, "s2c", okResult("2"))
+	after := decide(t, c, "c2s", call("4", "send"))
 
 	// Assert
-	if before.Action != ipc.ActionForward || read.Action != ipc.ActionForward {
-		t.Fatalf("before %+v read %+v", before, read)
+	if before.Action != ipc.ActionForward || read.Action != ipc.ActionForward || whilePending.Action != ipc.ActionForward {
+		t.Fatalf("before %+v read %+v pending %+v", before, read, whilePending)
 	}
 	if after.Action != ipc.ActionBlock || after.RuleIDs[0] != "no-egress-after-private" {
-		t.Fatalf("egress after reads_private must be blocked: %+v", after)
+		t.Fatalf("egress after a successful reads_private must be blocked: %+v", after)
 	}
 	f := s.Sessions()[0].Flags()
-	if !f.TouchedPrivate || f.SawUntrusted || f.Calls != 2 {
+	if !f.TouchedPrivate || f.SawUntrusted || f.Calls != 3 {
 		t.Fatalf("session flags = %+v (blocked calls must not count)", f)
 	}
 }

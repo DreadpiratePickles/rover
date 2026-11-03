@@ -53,7 +53,7 @@ func isSpaceRepeat(re *syntax.Regexp) bool {
 		return false
 	}
 	for _, r := range re.Sub[0].Rune {
-		if r > ' ' || !isSpace(byte(r)) {
+		if r < 0 || r > ' ' || !isSpace(byte(r)) {
 			return false
 		}
 	}

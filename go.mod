@@ -2,10 +2,11 @@ module github.com/DreadpiratePickles/rover
 
 go 1.25.0
 
-toolchain go1.25.14
+toolchain go1.26.9
 
 require (
 	github.com/cedar-policy/cedar-go v1.8.0
+	github.com/fsnotify/fsnotify v1.9.0
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.41.0

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "database-tools": {
+      "command": "/opt/rover/bin/rover",
+      "args": ["wrap", "--name", "database-tools", "--", "${CLAUDE_PLUGIN_ROOT}/servers/db-server", "--config", "${CLAUDE_PLUGIN_ROOT}/config.json"],
+      "env": {
+        "DB_URL": "${DB_URL}"
+      }
+    },
+    "shared-server": {
+      "type": "http",
+      "url": "https://example.com/mcp"
+    }
+  }
+}

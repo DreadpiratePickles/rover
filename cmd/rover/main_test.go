@@ -22,6 +22,9 @@ import (
 var bins struct{ rover, echo string }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("ROVER_TEST_DRIVER") == "1" { // trifecta_test.go: this process is an agent
+		os.Exit(runTrifectaDriver())
+	}
 	dir, err := os.MkdirTemp("", "rover-bins-")
 	if err != nil {
 		panic(err)
@@ -50,8 +53,11 @@ func roverDir(t *testing.T) string {
 	return d
 }
 
+// env runs a test binary with its own ROVER_DIR and its own HOME (M7: the
+// client adapters and roverd's tamper watch read configs under HOME; a test
+// must never see, let alone edit, the developer's real ones).
 func env(dir string, extra ...string) []string {
-	return append(append(os.Environ(), "ROVER_DIR="+dir), extra...)
+	return append(append(os.Environ(), "ROVER_DIR="+dir, "HOME="+filepath.Join(dir, "home")), extra...)
 }
 
 // lockedBuf collects a subprocess's stderr; tests read it while it runs.
@@ -171,6 +177,12 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
 			t.Fatal(err)
 		}
+		if e.Kind == "session" { // M8: the last wrapper left, the session lingers
+			if e.Action != "session_lingering" {
+				t.Fatalf("session entry: %+v", e)
+			}
+			continue
+		}
 		if e.Server != "echo" || e.Action != "forward" {
 			t.Fatalf("entry missing server/action: %+v", e)
 		}
@@ -190,7 +202,7 @@ func TestEndToEndThroughDaemon(t *testing.T) {
 	}
 	data, _ := os.ReadFile(logPath) //nolint:gosec // G304: test's own file
 	data = bytes.Replace(data, []byte(`"method":"tools/call"`), []byte(`"method":"tools/cull"`), 1)
-	if err := os.WriteFile(logPath, data, 0o600); err != nil {
+	if err := os.WriteFile(logPath, data, 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
 	vout, verr := run(dir, "log", "--verify")

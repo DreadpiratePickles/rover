@@ -39,7 +39,7 @@ func usePolicy(t *testing.T, dir, src, mode string) {
 		t.Fatal(err)
 	}
 	cfg = bytes.Replace(cfg, []byte("\nmode: observe\n"), []byte("\nmode: "+mode+"\n"), 1)
-	if err := os.WriteFile(cfgPath, cfg, 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, cfg, 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
 }

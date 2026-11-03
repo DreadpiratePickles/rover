@@ -1,0 +1,35 @@
+{
+  "numStartups": 42,
+  "theme": "dark",
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/alice/lab"
+      ],
+      "env": {"DEBUG": "1"}
+    },
+    "git":{"command":"uvx","args":["mcp-server-git"]},
+    "noargs": {"command": "/usr/local/bin/my-server"},
+    "emptyargs": { "command" : "echo-server" , "args" : [ ] },
+    "stripe": {
+      "type": "http",
+      "url": "https://mcp.stripe.com"
+    },
+    "weird name!": {"command": "srv", "args": ["--port", "8080"], "x-unknown": [1, {"a": null}]}
+  },
+  "projects": {
+    "/Users/alice/proj": {
+      "allowedTools": [],
+      "hasTrustDialogAccepted": true,
+      "mcpServers": {
+        "local-db": {"command": "db-mcp", "args": ["--ro"], "env": {"DB_URL": "${DB_URL}"}}
+      }
+    },
+    "/Users/alice/other": {"mcpServers": {}}
+  },
+  "userID": "abc"
+}

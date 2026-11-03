@@ -45,8 +45,13 @@ mode: observe
 roots: {}
 #  projects: ~/projects
 
-# labels: what each tool can do, for policies such as the trifecta guard.
-# Allowed labels: reads_private, reads_untrusted, egress, destructive.
+# labels: what each tool can do, for policies such as the trifecta guard in
+# policy.cedar. Allowed labels: reads_private, reads_untrusted, egress,
+# destructive. Rover already knows the official servers (filesystem, fetch,
+# git, github, memory, slack, ...); a tool listed here REPLACES its built-in
+# labels ([] means none). A tool nobody labelled gets the conservative
+# default [reads_untrusted, egress]. ` + "`rover policy labels [server]`" + ` shows
+# the labels in force and where each came from.
 labels: {}
 #  filesystem:
 #    read_file: [reads_private]

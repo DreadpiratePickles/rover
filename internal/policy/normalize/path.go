@@ -230,7 +230,7 @@ func resolve(p string) (string, error) {
 }
 
 func splitPath(p string) []string {
-	return strings.FieldsFunc(p, func(r rune) bool { return os.IsPathSeparator(uint8(r)) && r < utf8.RuneSelf })
+	return strings.FieldsFunc(p, func(r rune) bool { return r >= 0 && r < utf8.RuneSelf && os.IsPathSeparator(uint8(r)) })
 }
 
 func isNotExist(err error) bool {

@@ -27,10 +27,10 @@ func (s *scan) pass() {
 		var c byte
 		switch {
 		case i-wi < 8:
-			c = byte(w >> (8 * (i - wi)))
+			c = byte(w >> (8 * (i - wi)) & 0xff)
 		case i+8 <= len(t):
 			w, wi = load8(t, i), i
-			c = byte(w)
+			c = byte(w & 0xff)
 		default:
 			c = t[i]
 		}
@@ -157,6 +157,6 @@ func (s *scan) rune(r, prev rune, i, size int, tags *tagState, zw, bidi *runs) {
 // insideWord reports an invisible character between two ASCII letters or
 // digits ("norm\u200bal"): it splits a word so a filter misses it.
 func (s *scan) insideWord(prev rune, next int) bool {
-	alnum := func(c rune) bool { return c < 0x80 && isWordByte(byte(c|0x20)) && c != '_' }
+	alnum := func(c rune) bool { return c < 0x80 && isWordByte(byte((c|0x20)&0xff)) && c != '_' }
 	return alnum(prev) && next < len(s.text) && alnum(rune(s.text[next]))
 }

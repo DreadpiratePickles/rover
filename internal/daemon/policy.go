@@ -85,12 +85,24 @@ func InputFor(cfg config.Config, server, transport, dir string, m jsonrpc.Messag
 		Transport:     transport,
 		Dir:           dir,
 		Msg:           m,
-		Labels:        cfg.Labels[server],
+		Labels:        callLabels(cfg, server, m),
 		Session:       flags,
 		Now:           now.Local(), // context.time is the user's wall clock
 		Roots:         cfg.Roots,
 		Normalizers:   cfg.ToolNormalizers(server, m.ToolName()),
 	}
+}
+
+// callLabels is Input.Labels for a tools/call: the called tool's effective
+// labels (built-in, config, or the conservative default). Other messages
+// have no tool, so no labels.
+func callLabels(cfg config.Config, server string, m jsonrpc.Message) map[string][]string {
+	if m.Kind != jsonrpc.KindRequest || m.Method != "tools/call" {
+		return nil
+	}
+	tool := m.ToolName()
+	ls, _ := cfg.EffectiveLabels(server, tool)
+	return map[string][]string{tool: ls}
 }
 
 // judgment is what decide does with one message: the verdict for the
@@ -107,7 +119,7 @@ type judgment struct {
 	call        bool
 	pinEvents   []pin.Event    // audited before the message itself, mismatches notified
 	poisoned    []poisonEvent  // tools detection removed: audited and notified the same way
-	untrusted   bool           // a result with a detection finding: the session saw untrusted data
+	untrusted   bool           // a result with a medium/high detection finding: the session saw untrusted data
 	obs         *learn.Pending // learn mode: the observation of a forwarded request
 	learnFlags  []string       // learn mode: medium/high finding ids that flag the request's observation
 }
@@ -201,7 +213,7 @@ func (s *Server) judgePolicy(st *loaded, sess *Session, server, transport, dir s
 	}
 	if j.action == ipc.ActionForward && dir == policy.DirC2S && m.Kind == jsonrpc.KindRequest && m.Method == "tools/call" {
 		j.call = true
-		j.callLabels = st.cfg.ToolLabels(server, m.ToolName())
+		j.callLabels, _ = st.cfg.EffectiveLabels(server, m.ToolName())
 	}
 	return j
 }
@@ -284,7 +296,7 @@ func (s *Server) filterList(st *loaded, sess *Session, server string, m jsonrpc.
 		return s.detectResult(m, "")
 	}
 	j := judgment{action: ipc.ActionForward, audit: ipc.ActionForward, pinEvents: events, poisoned: removed, findings: found,
-		learnFlags: listFlags}
+		learnFlags: listFlags, untrusted: len(listFlags) > 0}
 	if len(reasons) > 0 {
 		j.action, j.audit, j.reason, j.replacement = ipc.ActionReplace, ipc.ActionReplace, strings.Join(reasons, "; "), withResult(m, result)
 	}

@@ -1,4 +1,4 @@
-# golangci-lint v2 configuration. CI pins golangci-lint v2.5.0 (see Makefile
+# golangci-lint v2 configuration. CI pins golangci-lint v2.14.0 (see Makefile
 # "tools" and .github/workflows/ci.yml). Validate with: golangci-lint config verify
 version: "2"
 

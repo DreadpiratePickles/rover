@@ -4,7 +4,7 @@
 # If you change one, change the other.
 
 GOVULNCHECK_VERSION := v1.7.0
-GOLANGCI_LINT_VERSION := v2.5.0
+GOLANGCI_LINT_VERSION := v2.14.0
 
 # Run every Go command with the toolchain go.mod pins, so `make ci` on a laptop
 # with a newer or older Go gives the same answer as CI (govulncheck in
@@ -13,7 +13,7 @@ export GOTOOLCHAIN ?= $(shell awk '/^toolchain /{print $$2}' go.mod)
 
 FUZZTIME := 30s
 
-.PHONY: build test vet race fuzz eval lint vuln ci tools clean
+.PHONY: build test vet race fuzz eval lint vuln ci tools clean snapshot
 
 build:
 	go build -o bin/rover ./cmd/rover
@@ -37,7 +37,9 @@ race:
 # verifier, the line reader under all of them, and (M2) tool-argument
 # conversion, path normalisation, the policy decision and tools/list filtering,
 # (M3) the policy.yaml compiler, (M4) the canonical JSON of tool pins, and
-# (M5) the detection rules and roverd's rewriting of results.
+# (M5) the detection rules and roverd's rewriting of results, and (M7) the
+# client-config reader, which roverd's tamper watch runs on files an agent
+# can write.
 fuzz:
 	go test ./internal/jsonrpc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/ipc -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
@@ -53,6 +55,7 @@ fuzz:
 	go test ./internal/daemon -run='^$$' -fuzz=FuzzScanResult -fuzztime=$(FUZZTIME)
 	go test ./internal/daemon -run='^$$' -fuzz=FuzzUnescape -fuzztime=$(FUZZTIME)
 	go test ./internal/policy/propose -run='^$$' -fuzz=FuzzBuild -fuzztime=$(FUZZTIME)
+	go test ./internal/clients -run='^$$' -fuzz=FuzzParseDoc -fuzztime=$(FUZZTIME)
 
 # The detection gates (plan §6 M5): recall, false positives and corpus size
 # on testdata/corpus. Exits non-zero if a gate fails.
@@ -79,12 +82,24 @@ ci:
 # golangci-lint $(GOLANGCI_LINT_VERSION) is not installed here: upstream advises
 # against `go install` for it. Get the release binary instead, either from
 #   https://github.com/golangci/golangci-lint/releases/tag/$(GOLANGCI_LINT_VERSION)
-# (check it against golangci-lint-2.5.0-checksums.txt from the same page), or
+# (check it against golangci-lint-2.14.0-checksums.txt from the same page), or
 # with the install script pinned to the same tag, which verifies the checksum:
 #   curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$(GOLANGCI_LINT_VERSION)/install.sh \
 #     | sh -s -- -b "$$(go env GOPATH)/bin" $(GOLANGCI_LINT_VERSION)
 tools:
 	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
+# A local release build (plan M7, v0.1.0): darwin and linux, arm64 and
+# amd64, tar.gz archives and checksums in dist/. --snapshot never publishes
+# or tags anything; Bobby tags releases.
+snapshot:
+	@command -v goreleaser >/dev/null 2>&1 || { \
+		echo "goreleaser is not installed. Install it (v2), then rerun make snapshot:"; \
+		echo "  brew install goreleaser/tap/goreleaser"; \
+		echo "  or: go install github.com/goreleaser/goreleaser/v2@latest"; \
+		echo "  or: https://goreleaser.com/install/"; \
+		exit 1; }
+	goreleaser release --snapshot --clean
+
 clean:
-	rm -rf bin
+	rm -rf bin dist

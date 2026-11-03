@@ -100,7 +100,7 @@ func TestOpenResumesChainAndRefusesCorruptTail(t *testing.T) {
 
 	data, _ := os.ReadFile(path) //nolint:gosec // G304: the test's own temp file
 	data = bytes.Replace(data, []byte(`"session":"s"`), []byte(`"session":"x"`), 1)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil { //nolint:gosec // G703: a path the test built under its own temp directory
 		t.Fatal(err)
 	}
 	if _, err := Open(path); err == nil {

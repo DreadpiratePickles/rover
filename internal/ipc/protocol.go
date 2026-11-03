@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Version is the protocol version carried in hello. roverd refuses a hello
@@ -54,7 +55,21 @@ const (
 	// OpObservationsDump returns the learn-mode observations (M6) as a JSON
 	// array, oldest first, capped at 50,000 entries. Read-only.
 	OpObservationsDump = "observations_dump"
+	// OpDoctorState returns what `rover doctor` needs from roverd (M7): the
+	// policy mode, whether a policy is loaded, and the tamper alerts.
+	// Read-only.
+	OpDoctorState = "doctor_state"
+	// OpTamperResolve (after `rover install`) re-reads the config at Path,
+	// takes its wrapped servers as the new baseline, clears its tamper
+	// alerts and watches it; OpTamperForget (after `rover uninstall`) clears
+	// its alerts and stops watching it. Both are audited.
+	// TODO(M9): like pin approval, these should need OS authentication.
+	OpTamperResolve = "tamper_resolve"
+	OpTamperForget  = "tamper_forget"
 )
+
+// MaxPath bounds the path in a tamper_resolve or tamper_forget frame.
+const MaxPath = 4096
 
 // MaxToolName bounds the tool named in an admin frame.
 const MaxToolName = 1024
@@ -110,6 +125,11 @@ type Frame struct {
 	// human saw in `rover pin list` (at least MinDigestPrefix hex digits).
 	Digest string          `json:"digest,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
+	// Path is the config file of tamper_resolve and tamper_forget; Adapter
+	// and Scope name its client and scope (tamper_resolve).
+	Path    string `json:"path,omitempty"`
+	Adapter string `json:"adapter,omitempty"`
+	Scope   string `json:"scope,omitempty"`
 }
 
 // ErrBadFrame wraps every parse or validation failure.
@@ -187,6 +207,9 @@ func (f Frame) Validate() error {
 }
 
 func validateAdmin(f Frame) error {
+	if (f.Path != "" || f.Adapter != "" || f.Scope != "") && f.Op != OpTamperResolve && f.Op != OpTamperForget {
+		return fmt.Errorf("%w: %s takes no path, adapter or scope", ErrBadFrame, f.Op)
+	}
 	needServer, needTool := true, false
 	switch f.Op {
 	case OpPinList:
@@ -194,7 +217,15 @@ func validateAdmin(f Frame) error {
 	case OpPinApprove:
 		needTool = true
 	case OpPinReset:
-	case OpObservationsDump:
+	case OpTamperResolve, OpTamperForget:
+		if len(f.Path) == 0 || len(f.Path) > MaxPath || f.Path[0] != '/' || strings.ContainsRune(f.Path, 0) || f.ServerName != "" || f.Tool != "" {
+			return fmt.Errorf("%w: %s needs an absolute path of at most %d bytes and nothing else", ErrBadFrame, f.Op, MaxPath)
+		}
+		if len(f.Adapter) > 64 || len(f.Scope) > MaxPath || (f.Op == OpTamperResolve) != (f.Adapter != "") {
+			return fmt.Errorf("%w: tamper_resolve needs an adapter (1..64 bytes), tamper_forget none", ErrBadFrame)
+		}
+		return nil
+	case OpObservationsDump, OpDoctorState:
 		needServer = false
 		if f.ServerName != "" {
 			return fmt.Errorf("%w: %s takes no server", ErrBadFrame, f.Op)

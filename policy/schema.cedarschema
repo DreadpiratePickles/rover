@@ -32,7 +32,13 @@ entity Server   { name: String, transport: String, pinned: Bool };
 entity Tool in [Server] { name: String, labels: Set<String> };    // labels: reads_private | reads_untrusted | egress | destructive
 entity Resource in [Server] { uri: String };
 
-type Session   = { touched_private: Bool, saw_untrusted: Bool, calls: Long };
+// context.session: what this agent has done across every server (M8).
+//   touched_private  a reads_private tool call SUCCEEDED (its result arrived)
+//   saw_untrusted    a reads_untrusted result arrived, or any result had a
+//                    medium or high detection finding
+//   calls            forwarded tools/call requests
+//   servers_touched  names of the servers with at least one forwarded call
+type Session   = { touched_private: Bool, saw_untrusted: Bool, calls: Long, servers_touched: Set<String> };
 type Device    = { managed: Bool, healthy: Bool, quarantined: Bool, tags: Set<String> };
 type Time      = { hour: Long, weekday: Long };                    // weekday 0 = Sunday
 type Detection = { max_score: Long, findings: Set<String> };

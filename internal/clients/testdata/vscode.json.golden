@@ -1,0 +1,18 @@
+{
+	// VS Code workspace MCP config (JSONC)
+	"inputs": [
+		{"type": "promptString", "id": "api-key", "description": "API key", "password": true}
+	],
+	"servers": {
+		"github": {
+			"type": "http",
+			"url": "https://api.githubcopilot.com/mcp"
+		},
+		"playwright": {
+			"type": "stdio",
+			"command": "/opt/rover/bin/rover",
+			"args": ["wrap", "--name", "playwright", "--", "npx", "-y", "@microsoft/mcp-server-playwright"],
+			"envFile": "${workspaceFolder}/.env"
+		},
+	}
+}

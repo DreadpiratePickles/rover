@@ -1,0 +1,35 @@
+{
+  "numStartups": 42,
+  "theme": "dark",
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "/opt/rover/bin/rover",
+      "args": ["wrap", "--name", "filesystem", "--", "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/alice/lab"
+      ],
+      "env": {"DEBUG": "1"}
+    },
+    "git":{"command":"/opt/rover/bin/rover","args":["wrap", "--name", "git", "--", "uvx", "mcp-server-git"]},
+    "noargs": {"command": "/opt/rover/bin/rover", "args": ["wrap", "--name=noargs", "--", "/usr/local/bin/my-server"]},
+    "emptyargs": { "command" : "/opt/rover/bin/rover" , "args" : ["wrap", "--name", "emptyargs", "--", "echo-server" ] },
+    "stripe": {
+      "type": "http",
+      "url": "https://mcp.stripe.com"
+    },
+    "weird name!": {"command": "/opt/rover/bin/rover", "args": ["wrap", "--name", "weird_name_", "--", "srv", "--port", "8080"], "x-unknown": [1, {"a": null}]}
+  },
+  "projects": {
+    "/Users/alice/proj": {
+      "allowedTools": [],
+      "hasTrustDialogAccepted": true,
+      "mcpServers": {
+        "local-db": {"command": "/opt/rover/bin/rover", "args": ["wrap", "--name", "local-db", "--", "db-mcp", "--ro"], "env": {"DB_URL": "${DB_URL}"}}
+      }
+    },
+    "/Users/alice/other": {"mcpServers": {}}
+  },
+  "userID": "abc"
+}

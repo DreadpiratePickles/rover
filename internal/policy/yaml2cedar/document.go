@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/DreadpiratePickles/rover/internal/labels"
 )
 
 // Names that end up inside Cedar text. They are restricted, not escaped:
@@ -23,11 +25,6 @@ var (
 	// hostRE: a host for host_in; lowercase because norm.url.host is.
 	hostRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)*$`)
 )
-
-// validLabels are the tool labels of plan §5.1.
-var validLabels = map[string]bool{
-	"reads_private": true, "reads_untrusted": true, "egress": true, "destructive": true,
-}
 
 var cedarReserved = map[string]bool{
 	"true": true, "false": true, "if": true, "then": true, "else": true,
@@ -190,7 +187,7 @@ func (c compiler) label(n *yaml.Node) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !validLabels[l] {
+	if !labels.Valid(l) {
 		return "", c.errAt(n, "unknown label %q (want reads_private, reads_untrusted, egress or destructive)", l)
 	}
 	return l, nil

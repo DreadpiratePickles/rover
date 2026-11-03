@@ -133,6 +133,12 @@ func (s *Server) Admin(f ipc.Frame) ipc.Frame {
 	if f.Op == ipc.OpObservationsDump {
 		return s.dumpObservations()
 	}
+	if f.Op == ipc.OpDoctorState {
+		return s.doctorState()
+	}
+	if f.Op == ipc.OpTamperResolve || f.Op == ipc.OpTamperForget {
+		return s.tamperAdmin(f)
+	}
 	if f.Op != ipc.OpPinList {
 		s.mu.Lock()
 		unhealthy := s.unhealthy

@@ -29,7 +29,10 @@ with a beginner-friendly lesson in [docs/lessons/](docs/lessons/).
 | M4 | Tool pinning (rug-pull defence): TOFU digests, changed/new tools filtered and blocked, `rover pin list/approve/reset` | done |
 | M5 | Detection tier 1 (local rules: invisible characters, instruction phrases, exfil URLs, shadowing, ...), evaluation corpus, `rover eval` gates | done |
 | M6 | Learn mode (observe records call shapes) and policy proposals: `rover policy propose/diff`, flagged calls excluded | done |
-| M7 | Client installers and doctor | next |
+| M7 | Client installers (`rover install/uninstall`, Claude Code deny rules, `--service`), tamper watch, `rover doctor`, `rover version`, goreleaser snapshot | done |
+| — | **Phase 1 complete: v0.1.0** (snapshot via `make snapshot`; tagging is Bobby's) | |
+| M8 | Session context and the lethal trifecta: per-session taint flags across servers, built-in tool labels with a conservative default, `rover policy labels`, trifecta guard active in the starter | done |
+| M9 | Approvals and OS authentication | next |
 | — | Everything else | see docs/IMPLEMENTATION_PLAN.md |
 
 ## Quick start
@@ -43,6 +46,8 @@ make fuzz           # fuzz every parser of attacker input for 30s each
 ./bin/rover policy init
 $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where files live"
 ./bin/rover policy validate  # type-check it against the schema (and run `cedar validate` if installed)
+./bin/rover policy labels    # each tool's labels and where they came from (built-in, config, default);
+                             # the starter's trifecta guard blocks egress after private + untrusted
 ./bin/rover policy apply     # ask a running roverd to reload it (enforce -> observe is refused until M9)
 
 # or write the policy in YAML (plan §5.4) and read the Cedar it compiles to
@@ -50,6 +55,7 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
 ./bin/rover policy compile ~/Library/Application\ Support/Rover/policy.yaml
 ./bin/rover policy validate ~/Library/Application\ Support/Rover/policy.yaml
 ./bin/rover policy validate --print-schema   # the schema generated from your roots
+# YAML session conditions: when: { session: { touched_private: true, servers_touched: [hr-db] } }
 
 # wrap any stdio MCP server; roverd starts itself the first time
 # (--name may only use A-Za-z0-9_.-)
@@ -77,7 +83,29 @@ $EDITOR ~/Library/Application\ Support/Rover/policy.cedar   # macOS; see "Where 
                                      # listed as "suspicious, not proposed"; new roots to add
 ./bin/rover policy propose --out proposal.cedar
 ./bin/rover policy diff              # current policy vs the proposal (or: policy diff FILE)
+
+# client installers (M7): wrap every stdio server of Claude Code, Cursor,
+# Claude Desktop (macOS) and VS Code (.vscode/mcp.json); each change is shown
+# as a diff and asked about (y/N), the original is backed up under the state
+# directory, and remote servers are left alone until M11
+./bin/rover install --dry-run        # show every diff, write nothing
+./bin/rover install                  # or: --client claude-code --yes
+./bin/rover uninstall                # restore the backups (byte-identical) or unwrap in place
+./bin/rover install --service        # launchd agent / systemd user unit for roverd (--yes loads it)
+./bin/rover doctor                   # PASS/WARN/FAIL per check; --json for scripts; exit 1 on FAIL
+./bin/rover version
+make snapshot                        # goreleaser snapshot of the v0.1.0 archives into dist/
 ```
+
+`rover install --client claude-code` also proposes `permissions.deny` rules
+for `~/.claude/settings.json` (`Edit(...)` on Rover's config and state
+directories, `~/.claude.json` and `~/.cursor/mcp.json`) and prints the JSON
+before merging it. They are defence in depth: they stop Claude Code's file
+tools, not every program an agent can run. roverd watches the configs and
+raises a `tamper` alert (audit entry, notification, `rover doctor`) when a
+wrapped server is unwrapped or pointed at another binary. See
+[docs/adapters.md](docs/adapters.md) for the verified config paths and how to
+add a client.
 
 Detection tier 1 is a set of local rules (no model, nothing leaves the
 machine): invisible Unicode, ANSI escapes, hidden HTML, known instruction
@@ -110,7 +138,7 @@ would always be false. In a `policy.yaml`, every server with at least one
 `<server>-list-tools`), so the agent can see the tools it may call; a server
 with only deny rules gets none.
 
-In an agent's MCP config, change
+`rover install` does this for you; by hand, in an agent's MCP config, change
 
 ```json
 "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/lab"] }
@@ -127,7 +155,7 @@ to
 | | macOS | Linux |
 | --- | --- | --- |
 | Config: `policy.cedar` or `policy.yaml`, `config.yaml`, `schema.cedarschema`, `templates/` | `~/Library/Application Support/Rover/` | `$XDG_CONFIG_HOME/rover/` |
-| State: `state.db`, `audit.jsonl`, `roverd.log` | `~/Library/Application Support/Rover/state/` | `$XDG_STATE_HOME/rover/` |
+| State: `state.db`, `audit.jsonl`, `roverd.log`, `backups/` (client configs, M7) | `~/Library/Application Support/Rover/state/` | `$XDG_STATE_HOME/rover/` |
 | Socket, lock and pid files | `~/Library/Application Support/Rover/run/` | `$XDG_RUNTIME_DIR/rover/` |
 
 Which policy roverd loads: `policy.cedar` if it exists; otherwise
@@ -146,7 +174,7 @@ on for a lab).
 ## Layout
 
 ```
-cmd/rover/             CLI: wrap, daemon, log, policy, pin, eval
+cmd/rover/             CLI: wrap, daemon, log, policy, pin, eval, install, uninstall, doctor, version
 internal/policy/       the Cedar decision point: Decide, tools/list hiding (fuzzed)
 internal/policy/convert/    tool arguments -> Cedar values, with limits (fuzzed)
 internal/policy/normalize/  path/url/... normalisers run before the policy (fuzzed)
@@ -154,12 +182,13 @@ internal/policy/yaml2cedar/ policy.yaml -> Cedar, strict, golden-tested (fuzzed)
 internal/config/       config.yaml: mode, roots, tool labels, normalisers
 policy/                the shipped schema, starter policies (Cedar, YAML) and templates (embedded)
 internal/proxy/        the wrapper's pump: read, ask roverd, apply the verdict, forward the original bytes
-internal/daemon/       roverd: accept loop, peer check, sessions, the decision path
+internal/daemon/       roverd: accept loop, peer check, sessions, the decision path, tamper watch
 internal/ipc/          wrapper <-> roverd protocol (fuzzed) and peer credentials
 internal/audit/        hash-chained JSONL audit log and its verifier
 internal/state/        bbolt database (pins from M4; approvals, ... from later milestones)
 internal/detect/       detection tier 1: rules (fuzzed), rules/*.txt phrase lists, corpus evaluation
 internal/pin/          tool pinning: canonical JSON + SHA-256 per tool (fuzzed), TOFU, mismatch tracking, diffs
+internal/clients/      client config adapters: strict byte-preserving rewrite (fuzzed), backups, deny rules
 internal/paths/        where files go, and the permission checks
 internal/framing/      newline-delimited reading with a hard size limit
 internal/jsonrpc/      classify JSON-RPC messages (fuzzed)
@@ -181,7 +210,7 @@ make tools          # install the pinned govulncheck
 Tools needed:
 
 - Go 1.25+. `go.mod` pins the toolchain, and Go downloads it if yours is older (unless `GOTOOLCHAIN=local`).
-- [golangci-lint](https://golangci-lint.run) v2.5.0, installed from the release binary (see the `tools` target in the Makefile).
+- [golangci-lint](https://golangci-lint.run) v2.14.0, installed from the release binary (see the `tools` target in the Makefile).
 - govulncheck v1.7.0 (`make tools`), with `$(go env GOPATH)/bin` on your `PATH`.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on Linux and macOS for every push to `main` and every pull request.

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/config"
 	"github.com/DreadpiratePickles/rover/internal/framing"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
@@ -64,6 +65,16 @@ type Options struct {
 	// DisableDetection turns detection tier 1 off. Tests only: it exists so
 	// a test can measure what detection adds to a decision (plan §6 M5).
 	DisableDetection bool
+
+	// Tamper watch (M7, tamper.go): the configs, the rover binary their servers
+	// must run, the settle time (500 ms) and the retry tick (every 10 s).
+	TamperFiles    []clients.ConfigFile
+	RoverPath      string
+	TamperDebounce time.Duration
+	TamperRetry    <-chan time.Time
+	// PIDAlive reports whether an agent pid exists (sessionlife.go); nil
+	// means kill(pid, 0).
+	PIDAlive func(int) bool
 }
 
 // Server accepts wrapper connections and answers decide frames.
@@ -87,6 +98,7 @@ type Server struct {
 	// rec records learn-mode observations (M6); nil without a state DB.
 	rec        *learn.Recorder
 	taint      toolTaint     // learn mode: tools whose last listing was flagged
+	tamper     tamperState   // the client-config watch (tamper.go)
 	closedDone chan struct{} // closed when Close has finished (final flush)
 }
 
@@ -103,6 +115,9 @@ func New(o Options) *Server {
 	}
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
+	}
+	if o.PIDAlive == nil {
+		o.PIDAlive = pidAlive
 	}
 	if o.Notifier == nil {
 		o.Notifier = pin.NopNotifier{}
@@ -147,6 +162,10 @@ func (s *Server) Listen() error {
 		_ = ln.Close()
 		return err
 	}
+	// The baseline of wrapped servers is read before Listen returns.
+	if err := s.startTamperWatch(); err != nil {
+		s.o.Logf("%v; client configs are not watched", err)
+	}
 	return nil
 }
 
@@ -163,6 +182,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer t.Stop()
 		s.rec.Start(t.C)
 	}
+	s.startSweeper(ctx)
 	go func() {
 		<-ctx.Done()
 		s.Close()
@@ -196,6 +216,7 @@ func (s *Server) Close() {
 		conns = append(conns, c)
 	}
 	s.mu.Unlock()
+	s.stopTamperWatch()
 	if s.ln != nil {
 		_ = s.ln.Close()
 	}
@@ -350,13 +371,13 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	server := hello.ServerName
 	m := jsonrpc.Parse(f.Raw)
 	now := s.o.Now()
-	e, cursor, obsKey := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
-	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, cursor, now)
+	e, req, evicted := sess.observe(server, f.Dir, m, s.o.LogBodies, now)
+	j := s.judge(sess, server, hello.Transport, f.Dir, m, e.ReplyTo, req.cursor, now)
 	e.Action, e.RuleIDs, e.Findings = j.audit, j.ruleIDs, j.findings
 	if j.audit != ipc.ActionForward {
 		e.Reason = j.reason
 	}
-	entries := append(append(pinEntries(e, j.pinEvents), poisonEntries(e, j.poisoned)...), e)
+	entries := append(append(append(evictedEntries(sess, now, evicted), pinEntries(e, j.pinEvents)...), poisonEntries(e, j.poisoned)...), e)
 	if j.action == ipc.ActionBlock && m.Kind == jsonrpc.KindRequest {
 		sess.forget(server, f.Dir, m.ID)
 	}
@@ -372,13 +393,8 @@ func (s *Server) decide(sess *Session, hello ipc.Frame, f ipc.Frame) ipc.Frame {
 	}
 	s.notifyPins(j.pinEvents)
 	s.notifyPoison(j.poisoned)
-	if j.call {
-		sess.noteForwardedCall(j.callLabels)
-	}
-	if j.untrusted {
-		sess.noteUntrusted()
-	}
-	s.learnAfter(sess, server, f.Dir, m, j, obsKey)
+	s.noteSession(sess, server, f.Dir, m, j, req)
+	s.learnAfter(sess, server, f.Dir, m, j, req.obsKey)
 	return ipc.Frame{
 		Type: ipc.TypeVerdict, Seq: f.Seq, Action: j.action, Reason: j.reason, RuleIDs: j.ruleIDs,
 		ResponseRaw: j.responseRaw, ReplacementRaw: j.replacement,

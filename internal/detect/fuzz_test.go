@@ -14,8 +14,12 @@ func FuzzScan(f *testing.F) {
 		"\x1b[8mx\x1b]0;t\x07", "![a](https://e.x/?d=1)", "[a](http://e?x=1", "<!--", "~/.ssh/id_rsa .env",
 		"a\u200bb\u202ec\U000E0041", "\U0001F3F4\U000E0067\U000E007F", "<p hidden>x", "display:none", "\xff\xfe\xc2\x9b",
 	}
-	for i, s := range seeds {
-		f.Add(byte(i%len(Kinds)), []byte(s))
+	var kind byte // cycles through the kinds
+	for _, s := range seeds {
+		f.Add(kind, []byte(s))
+		if kind++; int(kind) == len(Kinds) {
+			kind = 0
+		}
 	}
 	known := map[string]bool{}
 	for _, id := range RuleIDs {

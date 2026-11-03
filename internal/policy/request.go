@@ -215,6 +215,7 @@ func buildContext(in Input, findings []string, extra types.RecordMap) types.Reco
 			"touched_private": types.Boolean(in.Session.TouchedPrivate),
 			"saw_untrusted":   types.Boolean(in.Session.SawUntrusted),
 			"calls":           types.Long(in.Session.Calls),
+			"servers_touched": stringSet(in.Session.ServersTouched),
 		}),
 		"device": types.NewRecord(types.RecordMap{
 			"managed":     types.Boolean(in.Device.Managed),

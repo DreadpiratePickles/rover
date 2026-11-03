@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/DreadpiratePickles/rover/internal/audit"
+	"github.com/DreadpiratePickles/rover/internal/clients"
 	"github.com/DreadpiratePickles/rover/internal/daemon"
 	"github.com/DreadpiratePickles/rover/internal/ipc"
 	"github.com/DreadpiratePickles/rover/internal/paths"
@@ -108,6 +109,9 @@ func runDaemon(args []string) int {
 		State:      db,
 		Notifier:   pin.OSNotifier{Logf: logf},
 
+		TamperFiles: watchedConfigs(dirs, logf),
+		RoverPath:   roverPathForDaemon(logf),
+
 		StateDBCreated:  stateCreated,
 		AuditHadHistory: hadHistory,
 	})
@@ -131,6 +135,25 @@ func runDaemon(args []string) int {
 	}
 	logf("stopped")
 	return 0
+}
+
+// watchedConfigs are the client configs roverd watches for tampering
+// (M7): every file `rover install` has written and not since uninstalled
+// (from the backup manifests, which include project configs in other
+// directories). A config rover never installed into is not watched: its
+// servers were never wrapped, so there is nothing to tamper with, and
+// `rover doctor` reports it. A manifest that cannot be read is logged and
+// the others are still watched. `rover install` adds new files to a running
+// roverd (tamper_resolve).
+func watchedConfigs(dirs paths.Dirs, logf func(string, ...any)) []clients.ConfigFile {
+	files, errs := clients.InstalledFiles(filepath.Join(dirs.State, "backups"))
+	for _, err := range errs {
+		logf("tamper watch: %v; that config is not watched", err)
+	}
+	if len(files) > 0 {
+		logf("tamper watch: watching %d client config file(s)", len(files))
+	}
+	return files
 }
 
 // reloadOnHUP reloads config.yaml and the policy (policy.cedar, else
@@ -157,4 +180,16 @@ func reloadOnHUP(hup <-chan os.Signal, dirs paths.Dirs, srv *daemon.Server, last
 		}
 		logf("policy reloaded (mode %s)", cfg.Mode)
 	}
+}
+
+// roverPathForDaemon is the binary wrapped servers must run: this one.
+// Without it (a `go run` binary) the watch falls back to the command each
+// server had when it was first seen wrapped.
+func roverPathForDaemon(logf func(string, ...any)) string {
+	p, err := selfPath("")
+	if err != nil {
+		logf("tamper watch: %v; checking wrapped servers against their first-seen command instead", err)
+		return ""
+	}
+	return p
 }
