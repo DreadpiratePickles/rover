@@ -1,11 +1,3 @@
-<!--
-MAINTAINER TODO (Bobby): the reporting link below only works once
-"Private vulnerability reporting" is switched on for this repository:
-GitHub → DreadpiratePickles/rover → Settings → Code security
-(called "Code security and analysis" on some accounts) → Private vulnerability reporting → Enable.
-Until then, the link returns an error and reporters have no private channel.
-Delete this comment once it's enabled.
--->
 
 # Security policy
 
